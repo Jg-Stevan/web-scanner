@@ -17,12 +17,17 @@
  *   - con cv.then(...)  → modularizado: then() envuelve onRuntimeInitialized
  *   - sin cv.then       → build clásico: asigna y envuelve el previo
  *
- * La URL del core es ABSOLUTA: importScripts anidado resuelve contra la
- * URL base del worker (/scanner/…), no contra este archivo.
+ * La URL del core NO puede ser absoluta: GitHub Pages sirve el repo bajo
+ * /web-scanner/ y una ruta "/vendor/…" apuntaría fuera del sitio (404).
+ * Como importScripts anidado resuelve contra la URL base del worker
+ * (/scanner/…), se calcula dinámicamente desde self.location:
+ *   · servidor en raíz → /vendor/opencv-4.5.5-core.js
+ *   · GitHub Pages     → /web-scanner/vendor/opencv-4.5.5-core.js
  */
 "use strict";
 
-importScripts("/vendor/opencv-4.5.5-core.js");
+var OPENCV_CORE_URL = new URL("../vendor/opencv-4.5.5-core.js", self.location.href).href;
+importScripts(OPENCV_CORE_URL);
 
 (function () {
   /** @type {any} */

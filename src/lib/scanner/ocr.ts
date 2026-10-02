@@ -39,6 +39,10 @@ export async function requestOcr(image: string): Promise<string> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image }),
   });
+  // GitHub Pages (hosting estático) no tiene endpoints: detectarlo y avisar claro.
+  if (res.status === 404) {
+    throw new Error("OCR no disponible en el despliegue estático (requiere servidor)");
+  }
   const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
   if (!res.ok) throw new Error(data.error ?? "Error de OCR");
   return (data.text ?? "").trim();

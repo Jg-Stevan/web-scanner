@@ -152,7 +152,11 @@ interface PendingEntry {
   reject: (err: Error) => void;
 }
 
-const WORKER_URL = "/scanner/detection-worker.js?v=7";
+// GitHub Pages sirve la app bajo /web-scanner/ → el worker se referencia con
+// el prefijo público del build (vacío en dev/servidor local). OpenCV dentro
+// del worker ya se resuelve con rutas RELATIVAS al script → funciona igual.
+const PUBLIC_BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const WORKER_URL = `${PUBLIC_BASE}/scanner/detection-worker.js?v=7`;
 const READY_TIMEOUT_MS = 25000;
 
 export class ScannerWorkerClient {
