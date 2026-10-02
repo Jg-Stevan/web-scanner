@@ -45,6 +45,20 @@ interface ScannerState {
   /** Índice de página en edición dentro del editor */
   editingIndex: number;
 
+  /** Edición MANUAL de una página YA GUARDADA: mientras esté activo, el editor
+   *  trabaja sobre esa página del documento (write-back) en vez de crear un
+   *  documento nuevo. E2c: "la edición manual" también existe post-guardado. */
+  editSavedPageCtx: { docId: string; pageId: string } | null;
+  /** Abre el editor de bordes sobre una página guardada (carga la página como
+   *  sesión de edición y recuerda el destino del write-back). */
+  beginEditSavedPage: (docId: string, pageId: string) => void;
+  /** Cancela la edición de página guardada (vuelve al detalle, sin cambios). */
+  clearEditSavedPage: () => void;
+  /** Procesa la página editada y la escribe de vuelta en su documento
+   *  (respeta quadManual → warp SIN refine y SIN shrink). Devuelve el docId
+   *  o null si no hay contexto. */
+  saveEditedPageToDocument: () => Promise<string | null>;
+
   /** Modo lote: nº de documentos guardados en cadena durante la sesión de
    *  cámara actual (sin volver a la biblioteca). 0 = lote inactivo. */
   batchSavedCount: number;
@@ -106,6 +120,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   activeDocumentId: null,
   capturePages: [],
   editingIndex: 0,
+  editSavedPageCtx: null,
   batchSavedCount: 0,
   settings: DEFAULT_SETTINGS,
   hydrated: false,
@@ -182,7 +197,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       capturePages: s.capturePages.map((p) => (p.id === id ? { ...p, ...patch } : p)),
     })),
   setEditingIndex: (i) => set({ editingIndex: i }),
-  clearCaptureSession: () => set({ capturePages: [], editingIndex: 0 }),
+  clearCaptureSession: () => set({ capturePages: [], editingIndex: 0, editSavedPageCtx: null }),
 
   startBatchDocument: () =>
     set((s) => ({
@@ -261,6 +276,94 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     // reload caería al final aunque aquí esté primero).
     void saveManualOrder(get().documents.map((d) => d.id));
     return doc;
+  },
+
+  // ── Edición manual de página guardada (E2c) ──────────────────────────
+  beginEditSavedPage: (docId, pageId) => {
+    const doc = get().documents.find((d) => d.id === docId);
+    const page = doc?.pages.find((p) => p.id === pageId);
+    if (!doc || !page) return;
+    set({
+      capturePages: [
+        {
+          id: page.id,
+          original: page.original,
+          quad: page.quad,
+          quadManual: page.quadManual,
+          filter: page.filter,
+          rotation: page.rotation,
+          quality: page.quality,
+        },
+      ],
+      editingIndex: 0,
+      editSavedPageCtx: { docId, pageId },
+      view: "editor",
+      batchSavedCount: 0,
+    });
+  },
+
+  clearEditSavedPage: () => {
+    const ctx = get().editSavedPageCtx;
+    set({ capturePages: [], editingIndex: 0, editSavedPageCtx: null });
+    if (ctx) set({ activeDocumentId: ctx.docId, view: "document" });
+  },
+
+  saveEditedPageToDocument: async () => {
+    const { editSavedPageCtx, capturePages, settings } = get();
+    if (!editSavedPageCtx || capturePages.length === 0) return null;
+    const p = capturePages[0]!;
+    const { docId, pageId } = editSavedPageCtx;
+    let processed = p.original;
+    let thumbnail = p.original;
+    let precision: ScanPage["precision"];
+    try {
+      const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
+        manual: p.quadManual === true,
+        unsharpOriginal: settings.unsharpOriginal,
+      });
+      processed = res.processed;
+      thumbnail = res.thumbnail;
+      precision = res.precision;
+    } catch {
+      /* conserva la imagen actual */
+    }
+    set((s) => ({
+      documents: s.documents.map((d) =>
+        d.id === docId
+          ? {
+              ...d,
+              updatedAt: Date.now(),
+              pages: d.pages.map((pg) =>
+                pg.id === pageId
+                  ? {
+                      ...pg,
+                      original: p.original,
+                      quad: p.quad,
+                      quadManual: p.quadManual,
+                      filter: p.filter,
+                      rotation: p.rotation,
+                      processed,
+                      thumbnail,
+                      precision,
+                      // El OCR previo puede quedar desalineado tras re-recortar:
+                      // se re-marca como pendiente (no se borra el texto viejo
+                      // — el usuario decide si re-reconocer).
+                      ocrDone: false,
+                    }
+                  : pg
+              ),
+            }
+          : d
+      ),
+      capturePages: [],
+      editingIndex: 0,
+      editSavedPageCtx: null,
+      activeDocumentId: docId,
+      view: "document",
+    }));
+    const after = get().documents.find((d) => d.id === docId);
+    if (after) void persistDocument(after);
+    return docId;
   },
 
   deleteDocument: (id) => {

@@ -417,8 +417,10 @@ async function cropQuad(
   ctx.save();
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate((rotation * Math.PI) / 180);
-  ctx.scale(swapped ? -scale : scale, swapped ? scale : scale);
-  if (swapped) ctx.translate(0, 0);
+  // La rotación ya intercambia los ejes para 90/270 — el scale debe ser
+  // uniforme (el `-scale` anterior ESPEJABA la imagen en rotaciones 90/270,
+  // bug E6 del fallback canvas).
+  ctx.scale(scale, scale);
   ctx.drawImage(img, -left, -top, w, h, -w / 2, -h / 2, w, h);
   ctx.restore();
   return canvas;
