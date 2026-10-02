@@ -42,8 +42,10 @@ export interface ProcessOptions {
   unsharpOriginal?: boolean;
 }
 
-/** Lado mayor tope del resultado (protege memoria de data URLs en iOS). */
-const PROCESSED_MAX_LONG_SIDE = 2000;
+/** Lado mayor tope del resultado. 2560 = mismo cap que la captura original:
+ *  salida a resolución de fuente (~300 DPI en carta) sin reescalado extra.
+ *  IndexedDB guarda Blobs → sin problema de cuota de localStorage. */
+const PROCESSED_MAX_LONG_SIDE = 2560;
 
 /** Mapea los presets de la app a los modos reales del worker. */
 export function filterToEnhanceMode(filter: PageFilter): EnhanceMode {
@@ -395,7 +397,7 @@ async function cropQuad(
   img: HTMLImageElement,
   quad: Quad,
   rotation: number,
-  maxSize = 1400
+  maxSize = 2000
 ): Promise<HTMLCanvasElement> {
   const xs = quad.map((p) => p.x * img.width);
   const ys = quad.map((p) => p.y * img.height);
@@ -752,15 +754,20 @@ export async function evaluateQuality(src: string): Promise<PageQuality> {
   }
 }
 
-/** Genera una imagen de página de demo (factura) como data URL. */
+/** Genera una imagen de página de demo (factura) como data URL.
+ *  Se renderiza a 3× (1920×2580) — resolución de cámara real: las capturas
+ *  de demo/simulado ejercitan el pipeline completo (detect→warp→enhance)
+ *  con calidad de sensor, no de preview VGA. */
 export function generateDemoPage(seed = 1): string {
+  const SCALE = 3;
   const W = 640;
   const H = 860;
   const canvas = document.createElement("canvas");
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = W * SCALE;
+  canvas.height = H * SCALE;
   const ctx = canvas.getContext("2d");
   if (!ctx) return "";
+  ctx.scale(SCALE, SCALE);
   // Fondo papel
   ctx.fillStyle = "#f7f4ec";
   ctx.fillRect(0, 0, W, H);
@@ -848,5 +855,5 @@ export function generateDemoPage(seed = 1): string {
   ctx.font = "11px -apple-system, sans-serif";
   ctx.fillText("Director · 26/10/2026", W - 260, H - 60);
 
-  return canvas.toDataURL("image/jpeg", 0.9);
+  return canvas.toDataURL("image/jpeg", 0.92);
 }

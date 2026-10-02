@@ -26,6 +26,7 @@ import {
   getScannerWorker,
   type ScannerWorkerClient,
 } from "./detector-client";
+import { generateDemoPage } from "./image-processor";
 import {
   computeEccentricityScore,
   computeExposureScore,
@@ -368,6 +369,9 @@ export class SyntheticCamera {
   private img: HTMLImageElement | null = null;
   private t0 = 0;
   private running = false;
+  /** Throttle de dibujo (~30 fps): a 1920×2560, rAF a 60 fps es CPU gastada
+   *  — el track captureStream(12) muestrea 12 fps para detección igual. */
+  private lastDraw = 0;
 
   /** Arranca y devuelve el MediaStream del canvas (12 fps). */
   async start(): Promise<MediaStream | null> {
@@ -376,14 +380,21 @@ export class SyntheticCamera {
       return null;
     }
     const canvas = document.createElement("canvas");
-    // 3:4 — típico de cámara trasera en portrait.
-    canvas.width = 640;
-    canvas.height = 854;
+    // 3:4 — típico de cámara trasera en portrait. RESOLUCIÓN DE SENSOR
+    // (1920×2560): las capturas del stream sintético salen a calidad de
+    // cámara real (grabVideoFrame lee video.videoWidth) — el pipeline
+    // detect→warp→enhance se ejercita como en un teléfono de verdad,
+    // no sobre un preview VGA de 640px.
+    canvas.width = 1920;
+    canvas.height = 2560;
     this.ctx = canvas.getContext("2d", { willReadFrequently: false });
     if (!this.ctx) return null;
     this.canvas = canvas;
 
-    // Carga la foto de prueba (fallback: factura demo si no existe).
+    // Carga la foto de prueba si existe (ruta RELATIVA: sirve en dev en
+    // raíz y bajo el basePath /web-scanner de GitHub Pages). Fallback:
+    // factura demo HI-RES (1920×2580) generada en memoria — antes este
+    // fallback devolvía null y la app caía a "simulated" con capturas VGA.
     const loaded = await new Promise<boolean>((resolve) => {
       const im = new Image();
       im.onload = () => {
@@ -391,9 +402,21 @@ export class SyntheticCamera {
         resolve(true);
       };
       im.onerror = () => resolve(false);
-      im.src = "/qa/test-doc.jpg";
+      im.src = "qa/test-doc.jpg";
     });
-    if (!loaded || !this.img) return null;
+    if (!loaded || !this.img) {
+      try {
+        const im = new Image();
+        await new Promise<void>((resolve, reject) => {
+          im.onload = () => resolve();
+          im.onerror = () => reject(new Error("demo img falló"));
+          im.src = generateDemoPage(1);
+        });
+        this.img = im;
+      } catch {
+        return null;
+      }
+    }
 
     try {
       this.stream = canvas.captureStream(12);
@@ -408,6 +431,12 @@ export class SyntheticCamera {
 
   private draw = (): void => {
     if (!this.running || !this.ctx || !this.canvas || !this.img) return;
+    const now = performance.now();
+    if (now - this.lastDraw < 33) {
+      this.raf = requestAnimationFrame(this.draw);
+      return;
+    }
+    this.lastDraw = now;
     const ctx = this.ctx;
     const W = this.canvas.width;
     const H = this.canvas.height;

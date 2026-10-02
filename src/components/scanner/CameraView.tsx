@@ -245,7 +245,7 @@ export default function CameraView() {
       const blob = await Promise.race([
         capture.takePhoto(),
         new Promise<never>((_, reject) =>
-          window.setTimeout(() => reject(new Error("takePhoto timeout")), 3000)
+          window.setTimeout(() => reject(new Error("takePhoto timeout")), 5000)
         ),
       ]);
       if (!blob || blob.size === 0) return null;
