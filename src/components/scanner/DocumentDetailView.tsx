@@ -411,6 +411,8 @@ export default function DocumentDetailView() {
   const setOcrText = useScannerStore((s) => s.setOcrText);
   const exportQuality = useScannerStore((s) => s.settings.exportQuality);
   const unsharpOriginal = useScannerStore((s) => s.settings.unsharpOriginal);
+  /** E2c: reabrir el editor de bordes manual sobre esta página guardada. */
+  const beginEditSavedPage = useScannerStore((s) => s.beginEditSavedPage);
 
   // Página activa por ID (robusto frente a reordenaciones y borrados).
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -1669,7 +1671,13 @@ export default function DocumentDetailView() {
 
       {/* Bottom bar blanca sticky */}
       <footer className="flex-shrink-0 border-t border-[#e5e5ea] bg-white pb-safe">
-        <nav className="grid grid-cols-4 px-2 pt-1" aria-label="Acciones de la página">
+        <nav className="grid grid-cols-5 px-1.5 pt-1" aria-label="Acciones de la página">
+          <BarButton
+            label="Editar bordes"
+            onClick={() => beginEditSavedPage(doc.id, page.id)}
+            disabled={busy}
+            icon={<Pencil className="size-6 text-[#007aff]" />}
+          />
           <BarButton
             label="Recortar"
             onClick={cropPage}

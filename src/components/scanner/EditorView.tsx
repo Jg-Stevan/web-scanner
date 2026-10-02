@@ -64,8 +64,28 @@ const CSS_FILTERS: Record<PageFilter, string> = {
 
 const TWEEN_MS = 280;
 
+/** Lupa 3× durante el arrastre de un handle (puerto fiel del AdjustEditor del
+ *  producto: EDITOR_LOUPE_SCALE=3 + EDITOR_LOUPE_RADIUS=84 — F4 validación
+ *  humana 2026-09-25: "la lupa aparece en el lado opuesto al dedo" y el
+ *  crosshair marca el punto de corte real, no el dedo). */
+const LOUPE_SCALE = 3;
+const LOUPE_RADIUS = 84;
+const LOUPE_GAP = 14;
+
 function clampN(v: number) {
-  return Math.min(0.98, Math.max(0.02, v));
+  return Math.min(1, Math.max(0, v));
+}
+
+/** Centro de la lupa (puerto de loupeCenter): lado VERTICAL opuesto al handle
+ *  (arriba por defecto; abajo si el círculo no cabe arriba), X clampeada al
+ *  contenedor. La FUENTE sigue centrada en el handle: el crosshair de la lupa
+ *  marca siempre el punto de corte real. */
+function loupeCenterAt(hx: number, hy: number, w: number, h: number) {
+  const R = LOUPE_RADIUS;
+  const x = Math.min(Math.max(hx, R), Math.max(R, w - R));
+  let y = hy - (R + LOUPE_GAP);
+  if (y - R < 0) y = Math.min(hy + R + LOUPE_GAP, Math.max(R, h - R));
+  return { x, y };
 }
 
 function quadsClose(a: Quad, b: Quad) {
@@ -87,6 +107,10 @@ export default function EditorView() {
   const saveSessionAsDocument = useScannerStore((s) => s.saveSessionAsDocument);
   const startBatchDocument = useScannerStore((s) => s.startBatchDocument);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
+  /** E2c: edición de una página YA guardada (write-back al documento). */
+  const editCtx = useScannerStore((s) => s.editSavedPageCtx);
+  const saveEditedPageToDocument = useScannerStore((s) => s.saveEditedPageToDocument);
+  const clearEditSavedPage = useScannerStore((s) => s.clearEditSavedPage);
 
   const page: CapturePage | undefined =
     capturePages[editingIndex] ?? capturePages[capturePages.length - 1];
@@ -112,6 +136,15 @@ export default function EditorView() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [portalEl, setPortalEl] = useState<HTMLElement | null>(null);
   const [badgeVisible, setBadgeVisible] = useState(false);
+  /** Lupa 3× durante el arrastre: {x,y} = centro en coords del contenedor del
+   *  preview; {fx,fy} = punto de corte en fracciones de la imagen ORIGINAL
+   *  (sin rotar — la lupa siempre muestra los píxeles que se van a cortar). */
+  const [loupe, setLoupe] = useState<{
+    x: number;
+    y: number;
+    fx: number;
+    fy: number;
+  } | null>(null);
 
   // ── Refs ─────────────────────────────────────────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
@@ -311,6 +344,48 @@ export default function EditorView() {
     [page?.rotation]
   );
 
+  /** Actualiza la lupa para el handle arrastrado del quad `q` (recién movido):
+   *  calcula la posición de pantalla del punto (con la rotación CSS del
+   *  contenedor interior) y coloca el círculo en el lado opuesto (F4). */
+  const updateLoupe = useCallback(
+    (q: Quad, kind: "corner" | "mid", index: number) => {
+      const cont = containerRef.current;
+      const el = innerRef.current;
+      if (!cont || !el) return;
+      let fx: number;
+      let fy: number;
+      if (kind === "corner") {
+        fx = q[index]!.x;
+        fy = q[index]!.y;
+      } else {
+        const a = q[index]!;
+        const b = q[(index + 1) % 4]!;
+        fx = (a.x + b.x) / 2;
+        fy = (a.y + b.y) / 2;
+      }
+      const ir = el.getBoundingClientRect();
+      const cr = cont.getBoundingClientRect();
+      if (ir.width < 2 || ir.height < 2 || cr.width < 2) return;
+      const r = ((page?.rotation ?? 0) % 360 + 360) % 360;
+      const swapped = r === 90 || r === 270;
+      // Dims display de la imagen SIN rotar (el div interior):
+      const iw = swapped ? ir.height : ir.width;
+      const ih = swapped ? ir.width : ir.height;
+      const cx = ir.left + ir.width / 2 - cr.left;
+      const cy = ir.top + ir.height / 2 - cr.top;
+      const px = fx * iw - iw / 2;
+      const py = fy * ih - ih / 2;
+      const rad = (r * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const hx = cx + px * cos - py * sin;
+      const hy = cy + px * sin + py * cos;
+      const c = loupeCenterAt(hx, hy, cr.width, cr.height);
+      setLoupe({ x: c.x, y: c.y, fx, fy });
+    },
+    [page?.rotation]
+  );
+
   const onHandleDown = useCallback(
     (e: ReactPointerEvent<HTMLElement>, kind: "corner" | "mid", index: number) => {
       if (!page) return;
@@ -322,8 +397,9 @@ export default function EditorView() {
       }
       dragRef.current = { kind, index };
       draggingRef.current = true;
+      updateLoupe(displayRef.current, kind, index);
     },
-    [page]
+    [page, updateLoupe]
   );
 
   const onContainerPointerMove = useCallback(
@@ -348,8 +424,9 @@ export default function EditorView() {
       }
       displayRef.current = q;
       setDisplayQuad(q);
+      updateLoupe(q, d.kind, d.index);
     },
-    [pointerToNormalized]
+    [pointerToNormalized, updateLoupe]
   );
 
   const onContainerPointerUp = useCallback(() => {
@@ -357,6 +434,7 @@ export default function EditorView() {
     if (!d) return;
     dragRef.current = null;
     draggingRef.current = false;
+    setLoupe(null);
     if (page) {
       manualIds.current.add(page.id);
       updateCapturePage(page.id, { quad: displayRef.current, quadManual: true });
@@ -398,12 +476,19 @@ export default function EditorView() {
   };
 
   const handleRepeat = () => {
+    if (editCtx) {
+      // Edición de página guardada: "Repetir" = cancelar sin tocar el documento.
+      clearEditSavedPage();
+      return;
+    }
     if (page) removeCapturePage(page.id);
     setView("camera");
   };
 
   /** Procesa TODAS las páginas de la sesión, guarda el documento, muestra
-   *  el overlay de éxito (check dibujado) y navega a la Digitalización. */
+   *  el overlay de éxito (check dibujado) y navega a la Digitalización.
+   *  En modo edición de página guardada (E2c): procesa y escribe de vuelta
+   *  en su documento — sin overlay, con toast y regreso al detalle. */
   const handleSave = useCallback(async () => {
     if (saving || savedInfo) return;
     const s = useScannerStore.getState();
@@ -414,6 +499,21 @@ export default function EditorView() {
     }
     setSaving(true);
     try {
+      if (s.editSavedPageCtx) {
+        const docId = await s.saveEditedPageToDocument();
+        if (docId) {
+          if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+            navigator.vibrate([28, 60, 28]);
+          }
+          toast.success("Página actualizada", {
+            description: "Bordes editados aplicados al documento.",
+          });
+        } else {
+          toast.error("No se pudo actualizar la página");
+        }
+        setSaving(false);
+        return;
+      }
       const n = s.documents.length + 1;
       const doc = await s.saveSessionAsDocument(`Digitalización ${n}`);
       if (doc) {
@@ -462,7 +562,7 @@ export default function EditorView() {
         <button
           type="button"
           aria-label="Volver a la cámara"
-          onClick={() => setView("camera")}
+          onClick={() => (editCtx ? clearEditSavedPage() : setView("camera"))}
           className="flex items-center gap-0.5 rounded-lg py-1 pr-2 text-white transition-opacity active:opacity-60"
         >
           <ChevronLeft className="h-[22px] w-[22px]" strokeWidth={2.5} />
@@ -494,7 +594,7 @@ export default function EditorView() {
           onPointerMove={onContainerPointerMove}
           onPointerUp={onContainerPointerUp}
           onPointerCancel={onContainerPointerUp}
-          className="flex h-full w-full items-center justify-center"
+          className="relative flex h-full w-full items-center justify-center"
         >
           {!page ? (
             <div className="flex flex-col items-center gap-3 text-[#8e8e93]">
@@ -555,7 +655,9 @@ export default function EditorView() {
                   />
                 </svg>
 
-                {/* Handles de punto medio (aristas) — arrastrables */}
+                {/* Handles de punto medio (aristas) — arrastrables.
+                    Pad táctil 44×44 (estándar del producto: EDITOR_TOUCH_PX=44)
+                    con punto visual pequeño — el dedo agarra bien sin tapar. */}
                 {edgeMode &&
                   displayQuad.map((p, i) => {
                     const q = displayQuad[(i + 1) % 4];
@@ -565,45 +667,53 @@ export default function EditorView() {
                         type="button"
                         aria-label={`Punto medio de la arista ${i + 1}`}
                         onPointerDown={(e) => onHandleDown(e, "mid", i)}
-                        className="absolute z-10 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full border-[1.5px] border-[#007aff] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.4)] outline-none transition-transform active:cursor-grabbing active:scale-125"
+                        className="absolute z-10 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none items-center justify-center rounded-full outline-none active:cursor-grabbing"
                         style={{
                           left: `${((p.x + q.x) / 2) * 100}%`,
                           top: `${((p.y + q.y) / 2) * 100}%`,
-                          width: 12,
-                          height: 12,
                         }}
-                      />
+                      >
+                        <span className="pointer-events-none block h-3 w-3 rounded-full border-[1.5px] border-[#007aff] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.4)] transition-transform active:scale-125" />
+                      </button>
                     );
                   })}
 
-                {/* Handles de esquina — arrastrables */}
+                {/* Handles de esquina — arrastrables. Pad táctil 44×44
+                    (EDITOR_TOUCH_PX=44 del producto) con el punto visual
+                    animado dentro. */}
                 {displayQuad.map((p, i) => (
                   <button
                     key={`corner-${i}`}
                     type="button"
                     aria-label={`Vértice ${i + 1} del marco`}
                     onPointerDown={(e) => onHandleDown(e, "corner", i)}
-                    className="absolute z-10 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full border-2 border-[#007aff] bg-white shadow-[0_2px_8px_rgba(0,0,0,0.4)] outline-none transition-[width,height] duration-200 active:cursor-grabbing"
+                    className="absolute z-10 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none items-center justify-center rounded-full outline-none active:cursor-grabbing"
                     style={{
                       left: `${p.x * 100}%`,
                       top: `${p.y * 100}%`,
-                      width: edgeMode ? 26 : 22,
-                      height: edgeMode ? 26 : 22,
                     }}
                   >
-                    {edgeMode && (
-                      <motion.span
-                        aria-hidden="true"
-                        className="absolute inset-0 rounded-full border-2 border-[#007aff]"
-                        initial={false}
-                        animate={{ scale: [1, 1.7], opacity: [0.55, 0] }}
-                        transition={{
-                          duration: 1.3,
-                          repeat: Infinity,
-                          ease: "easeOut",
-                        }}
-                      />
-                    )}
+                    <span
+                      className="pointer-events-none relative block rounded-full border-2 border-[#007aff] bg-white shadow-[0_2px_8px_rgba(0,0,0,0.4)] transition-[width,height] duration-200"
+                      style={{
+                        width: edgeMode ? 26 : 22,
+                        height: edgeMode ? 26 : 22,
+                      }}
+                    >
+                      {edgeMode && (
+                        <motion.span
+                          aria-hidden="true"
+                          className="absolute inset-0 rounded-full border-2 border-[#007aff]"
+                          initial={false}
+                          animate={{ scale: [1, 1.7], opacity: [0.55, 0] }}
+                          transition={{
+                            duration: 1.3,
+                            repeat: Infinity,
+                            ease: "easeOut",
+                          }}
+                        />
+                      )}
+                    </span>
                   </button>
                 ))}
 
@@ -631,6 +741,44 @@ export default function EditorView() {
               </motion.div>
             </motion.div>
           )}
+
+          {/* ── Lupa 3× durante el arrastre (puerto del AdjustEditor F4) ──
+              Círculo Ø168 en el lado opuesto al dedo; contenido = imagen
+              ORIGINAL ampliada 3× (los píxeles que se van a cortar, sin
+              rotar); crosshair amarillo = punto de corte real. */}
+          {loupe && page && natural && fit ? (() => {
+            const lw = innerW * LOUPE_SCALE;
+            const lh = innerH * LOUPE_SCALE;
+            return (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute z-30 overflow-hidden rounded-full bg-black shadow-[0_10px_28px_rgba(0,0,0,0.6)] ring-[3px] ring-white/90"
+                style={{
+                  left: loupe.x - LOUPE_RADIUS,
+                  top: loupe.y - LOUPE_RADIUS,
+                  width: LOUPE_RADIUS * 2,
+                  height: LOUPE_RADIUS * 2,
+                }}
+              >
+                <img
+                  src={page.original}
+                  alt=""
+                  draggable={false}
+                  className="absolute max-w-none select-none"
+                  style={{
+                    width: lw,
+                    height: lh,
+                    left: LOUPE_RADIUS - loupe.fx * lw,
+                    top: LOUPE_RADIUS - loupe.fy * lh,
+                    filter: CSS_FILTERS[page.filter] ?? "none",
+                  }}
+                />
+                {/* Crosshair: marca el punto de corte real (F4) */}
+                <span className="absolute left-1/2 top-0 h-full w-[1.5px] -translate-x-1/2 bg-[rgba(234,179,8,0.95)]" />
+                <span className="absolute left-0 top-1/2 h-[1.5px] w-full -translate-y-1/2 bg-[rgba(234,179,8,0.95)]" />
+              </div>
+            );
+          })() : null}
         </div>
 
         {/* Miniatura flotante "ORIGINAL" (80x80, bajo el botón Continuar) */}
@@ -735,14 +883,14 @@ export default function EditorView() {
             onClick={handleRepeat}
             className="rounded-lg px-2 py-1.5 text-[15px] font-medium text-[#ff3b30] transition-opacity active:opacity-60"
           >
-            Repetir
+            {editCtx ? "Cancelar" : "Repetir"}
           </button>
           <button
             type="button"
-            onClick={() => setView("camera")}
+            onClick={() => (editCtx ? clearEditSavedPage() : setView("camera"))}
             className="rounded-lg px-2 py-1.5 text-[15px] font-medium text-white transition-opacity active:opacity-60"
           >
-            Seguir escaneando
+            {editCtx ? "Volver al documento" : "Seguir escaneando"}
           </button>
           <motion.button
             type="button"

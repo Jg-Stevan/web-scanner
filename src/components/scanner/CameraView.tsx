@@ -61,6 +61,33 @@ import { SHUTTER_SCORE } from "@/lib/scanner/quality";
 
 type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
 
+/* ── Lecciones de compatibilidad del producto (ARQUITECTURA §4) ──────────
+ *  E3: presupuesto de píxeles — SOLO ancho ideal 3840, sin alto ni ratio
+ *      (el alto lo negocia el navegador; over-constraining = fallos).
+ *  E4: facingMode NO es confiable en iPhone (puede ganar la frontal o
+ *      ignorarse) → tras permiso se re-selecciona por LABEL + deviceId
+ *      exact, con facingMode como constrain inicial únicamente. */
+const IDEAL_CAPTURE_WIDTH = 3840;
+const BACK_CAMERA_RE = /back|rear|environment|trasera|posterior|arri[eè]re/i;
+const FRONT_CAMERA_RE = /front|delantera|anterior|face|facial|selfie/i;
+const LENS_GROUP_RE = /ultra|gran angular|wide|angular|tele|teleobjetivo/i;
+
+/** Elige la cámara trasera principal por label (puerto compacto de
+ *  chooseMainCamera del producto: enumerateDevices NO expone facingMode,
+ *  y en iOS todos los grupos dan el mismo track — gana el grupo SIMPLE). */
+function pickBackCamera(devices: MediaDeviceInfo[]): MediaDeviceInfo | null {
+  const cams = devices.filter((d) => d.kind === "videoinput" && d.deviceId);
+  if (cams.length === 0) return null;
+  const backs = cams.filter(
+    (d) => BACK_CAMERA_RE.test(d.label) && !FRONT_CAMERA_RE.test(d.label)
+  );
+  const pool = backs.length > 0 ? backs : cams;
+  const score = (d: MediaDeviceInfo) =>
+    (LENS_GROUP_RE.test(d.label) ? 100 : 0) +
+    d.label.split(/\s+/).filter(Boolean).length;
+  return [...pool].sort((a, b) => score(a) - score(b))[0] ?? null;
+}
+
 /** Telemetría reducida para el UI (throttle ~100 ms). */
 interface LiveUi {
   corners: Quad | null;
@@ -81,8 +108,10 @@ function jitteredQuad(): Quad {
   ];
 }
 
-/** Reduce imágenes enormes de galería para no reventar la memoria del store. */
-async function downscaleDataUrl(dataUrl: string, max = 1600): Promise<string> {
+/** Reduce imágenes enormes de galería para no reventar la memoria del store.
+ *  2560 (E3c): capta el takePhoto hi-res (4032px iPhone) dejando margen de
+ *  memoria para los data URLs en iOS; el demo (640) pasa intacto. */
+async function downscaleDataUrl(dataUrl: string, max = 2560): Promise<string> {
   try {
     const img = await loadImage(dataUrl);
     const big = Math.max(img.width, img.height);
@@ -191,24 +220,84 @@ export default function CameraView() {
     [addCapturePage]
   );
 
-  /** Toma un frame del <video> (stream real o sintético) a resolución del track. */
-  const captureVideoFrame = useCallback(() => {
+  /** Blob → data URL (para el takePhoto hi-res). */
+  const blobToDataUrl = useCallback(
+    (blob: Blob) =>
+      new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result ?? ""));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(blob);
+      }),
+    []
+  );
+
+  /** E3b — Captura a RESOLUCIÓN DEL SENSOR: ImageCapture.takePhoto() (foto
+   *  completa, p.ej. 4032×3024 en iPhone) en vez del frame del preview.
+   *  Carrera de 3 s (takePhoto puede colgarse en algunos dispositivos);
+   *  null → el llamador cae al frame del video. La orientación EXIF la
+   *  aplica el pipeline al decodificar (loadImage sobre el data URL). */
+  const takeHiResPhoto = useCallback(async (): Promise<string | null> => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || typeof ImageCapture === "undefined") return null;
+    try {
+      const capture = new ImageCapture(track);
+      const blob = await Promise.race([
+        capture.takePhoto(),
+        new Promise<never>((_, reject) =>
+          window.setTimeout(() => reject(new Error("takePhoto timeout")), 3000)
+        ),
+      ]);
+      if (!blob || blob.size === 0) return null;
+      return await blobToDataUrl(blob);
+    } catch {
+      return null;
+    }
+  }, [blobToDataUrl]);
+
+  /** Frame del <video> a resolución del track (fallback de takePhoto y
+   *  camino del stream sintético). E5: toBlob — más eficiente que
+   *  toDataURL en canvases grandes (Safari/iOS), con toDataURL de respaldo. */
+  const grabVideoFrame = useCallback(async (): Promise<string | null> => {
     const video = videoRef.current;
-    if (!video || video.readyState < 2 || !video.videoWidth) return;
-    // Cooldown post-captura del usuario (1500 ms anti doble-disparo).
-    loopRef.current?.notifyCaptured();
-    cooldownRef.current = Date.now() + 1500;
+    if (!video || video.readyState < 2 || !video.videoWidth) return null;
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (!ctx) return null;
     ctx.drawImage(video, 0, 0);
-    void handleCaptureDataUrl(canvas.toDataURL("image/jpeg", 0.92));
-  }, [handleCaptureDataUrl]);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((b) => resolve(b), "image/jpeg", 0.92)
+    );
+    if (blob && blob.size > 0) {
+      try {
+        return await blobToDataUrl(blob);
+      } catch {
+        /* cae al toDataURL de abajo */
+      }
+    }
+    return canvas.toDataURL("image/jpeg", 0.92);
+  }, [blobToDataUrl]);
 
-  const captureVideoFrameRef = useRef(captureVideoFrame);
-  captureVideoFrameRef.current = captureVideoFrame;
+  /** Captura inteligente (E3): takePhoto hi-res → frame del video. Aplica
+   *  cooldown anti doble-disparo (1500 ms) y avisa al frame loop. */
+  const captureSmart = useCallback(async () => {
+    if (processingRef.current) return;
+    if (cooldownRef.current > Date.now()) return;
+    loopRef.current?.notifyCaptured();
+    cooldownRef.current = Date.now() + 1500;
+    const hiRes = await takeHiResPhoto();
+    if (hiRes) {
+      void handleCaptureDataUrl(hiRes);
+      return;
+    }
+    const frame = await grabVideoFrame();
+    if (frame) void handleCaptureDataUrl(frame);
+  }, [takeHiResPhoto, grabVideoFrame, handleCaptureDataUrl]);
+
+  const captureSmartRef = useRef(captureSmart);
+  captureSmartRef.current = captureSmart;
 
   /** Página de demo (factura) para probar sin cámara ni stream. */
   const captureDemo = useCallback(() => {
@@ -222,17 +311,18 @@ export default function CameraView() {
     [status]
   );
 
-  /** Shutter: frame del stream si lo hay; demo si es escena estática; si no, cámara nativa. */
+  /** Shutter: takePhoto/frame del stream si lo hay; demo si es escena
+   *  estática; si no, cámara nativa. */
   const onShutter = useCallback(() => {
     if (processingRef.current) return;
     if (hasStream && videoRef.current && videoRef.current.readyState >= 2) {
-      captureVideoFrame();
+      void captureSmart();
     } else if (status === "simulated") {
       captureDemo();
     } else {
       captureInputRef.current?.click();
     }
-  }, [hasStream, status, captureVideoFrame, captureDemo]);
+  }, [hasStream, status, captureSmart, captureDemo]);
 
   const onFilePicked = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
@@ -269,31 +359,85 @@ export default function CameraView() {
       void startSynthetic();
       return;
     }
-    try {
-      media
-        .getUserMedia({ video: { facingMode: "environment" }, audio: false })
-        .then((stream) => {
-          if (cancelled) {
-            stream.getTracks().forEach((t) => t.stop());
-            return;
-          }
-          streamRef.current = stream;
-          setStatus("live");
-          // Linterna: solo si el track la soporta (teléfonos reales).
-          try {
-            const track = stream.getVideoTracks()[0];
-            const caps = track?.getCapabilities?.() as { torch?: boolean } | undefined;
-            if (caps?.torch) setTorchAvailable(true);
-          } catch {
-            /* sin capabilities */
-          }
-        })
-        .catch(() => {
-          if (!cancelled) void startSynthetic();
-        });
-    } catch {
-      void startSynthetic();
-    }
+
+    const applyStream = (stream: MediaStream) => {
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      streamRef.current = stream;
+      setStatus("live");
+      // Linterna: solo si el track la soporta (teléfonos reales).
+      try {
+        const track = stream.getVideoTracks()[0];
+        const caps = track?.getCapabilities?.() as { torch?: boolean } | undefined;
+        if (caps?.torch) setTorchAvailable(true);
+      } catch {
+        /* sin capabilities */
+      }
+    };
+
+    /** E3: cascada de apertura — presupuesto de píxeles (ancho ideal 3840,
+     *  SIN alto ni ratio) → facingMode solo → {video:true}. */
+    const openWithCascade = async (): Promise<MediaStream | null> => {
+      const attempts: MediaStreamConstraints[] = [
+        {
+          video: { facingMode: "environment", width: { ideal: IDEAL_CAPTURE_WIDTH } },
+          audio: false,
+        },
+        { video: { facingMode: "environment" }, audio: false },
+        { video: true, audio: false },
+      ];
+      for (const c of attempts) {
+        try {
+          return await media.getUserMedia(c);
+        } catch {
+          /* siguiente nivel */
+        }
+      }
+      return null;
+    };
+
+    /** E4: tras el permiso los labels ya existen — re-selecciona la cámara
+     *  TRASERA principal por label (facingMode no es confiable en iPhone) y
+     *  reabre con deviceId exact + presupuesto de píxeles. */
+    const upgradeToBackCamera = async (stream: MediaStream): Promise<MediaStream> => {
+      try {
+        const currentId = stream.getVideoTracks()[0]?.getSettings().deviceId;
+        if (typeof media.enumerateDevices !== "function") return stream;
+        const best = pickBackCamera(await media.enumerateDevices());
+        if (!best?.deviceId || best.deviceId === currentId) return stream;
+        const better = await media
+          .getUserMedia({
+            video: { deviceId: { exact: best.deviceId }, width: { ideal: IDEAL_CAPTURE_WIDTH } },
+            audio: false,
+          })
+          .catch(() => null);
+        if (better) {
+          stream.getTracks().forEach((t) => t.stop());
+          return better;
+        }
+      } catch {
+        /* conserva el stream actual */
+      }
+      return stream;
+    };
+
+    void (async () => {
+      let stream = await openWithCascade();
+      if (stream) {
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = await upgradeToBackCamera(stream);
+      }
+      if (!stream) {
+        if (!cancelled) void startSynthetic();
+        return;
+      }
+      applyStream(stream);
+    })();
 
     async function startSynthetic(): Promise<void> {
       const cam = new SyntheticCamera();
@@ -403,7 +547,7 @@ export default function CameraView() {
         if (!autoRef.current) return;
         if (processingRef.current) return;
         if (cooldownRef.current > Date.now()) return;
-        captureVideoFrameRef.current();
+        void captureSmartRef.current();
       },
       onNoDetectTimeout: () => {
         toast("No detecto el documento · acércalo más al encuadre", {
@@ -479,10 +623,10 @@ export default function CameraView() {
     const t = window.setTimeout(() => {
       cooldownRef.current = Date.now() + 7000;
       setStable(false);
-      captureVideoFrame();
+      void captureSmartRef.current();
     }, 1500);
     return () => window.clearTimeout(t);
-  }, [precisionLive, status, stable, settings.autoCapture, captureVideoFrame]);
+  }, [precisionLive, status, stable, settings.autoCapture]);
 
   // Cierra el menú ⋮ con Escape
   useEffect(() => {
