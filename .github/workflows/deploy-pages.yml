@@ -1,0 +1,61 @@
+name: Deploy to GitHub Pages
+
+# Construye la versión estática del escáner y la publica en Pages
+# en cada push a la rama principal (o manualmente desde la pestaña Actions).
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Activa el modo export estático de next.config.ts
+      BUILD_STATIC: "1"
+      # GitHub Pages sirve este repo bajo /web-scanner/
+      NEXT_PUBLIC_BASE_PATH: /web-scanner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Los route handlers (src/app/api) requieren servidor Node y son
+      # incompatibles con el export estático. Se excluyen SOLO del build
+      # de Pages (en local con `bun run dev` siguen disponibles).
+      - name: Remove server-only API routes
+        run: rm -rf src/app/api
+
+      - name: Build estático (salida en ./out)
+        run: bunx next build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
