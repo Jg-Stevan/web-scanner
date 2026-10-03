@@ -70,102 +70,128 @@ type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
  *  E4: facingMode NO es confiable en iPhone (puede ganar la frontal o
  *      ignorarse) → tras permiso se re-selecciona por LABEL + deviceId
  *      exact, con facingMode como constrain inicial únicamente.
- *  F-LENS v2 (bug reportado por el usuario: "las capturas salen con la GRAN
- *  ANGULAR"): la causa raíz era que el stream inicial ganaba todos los
- *  EMPATES de resolución (ultra angular también negocia 3840 px de video).
- *  Arreglo de raíz, 4 vías:
- *      1) ranking de labels que penaliza lentes secundarias (ultra/gran
- *         angular/macro/tele/profundidad) — cuando el label informa;
- *      2) con labels mudos (Android/Chrome "camera2 N") manda el TORCH: el
- *         LED del flash solo está en la lente PRINCIPAL — si un candidato
- *         lo soporta, ES la principal (bug v2: ganaba el índice numérico
- *         más bajo y en Samsung/Xiaomi camera2 0 ES la gran angular);
- *      3) desempate por RESOLUCIÓN REAL de capabilities.maxWidth (sensor:
- *         la principal casi siempre tiene más MP que la ultra angular),
- *         luego por ancho real del track;
- *      4) zoom >= 1 forzado al final: algunos móviles expresan la ultra
- *         angular como zoom < 1 en el MISMO track — se sube a 1 (FOV de la
- *         principal) para que el encuadre no mienta aunque caiga en la
- *         lente equivocada por limitación del navegador. */
+ *  F-LENS v4 (bug v3: "no cambia nada ni el flash" — y codigo-test SÍ
+ *  funciona en el MISMO teléfono): dos causas de raíz encontradas al
+ *  comparar con el CameraController de codigo-test:
+ *      A) v3 sondeaba las demás lentes CON el stream actual aún abierto →
+ *         en muchos Android abrir una 2ª cámara con otra activa lanza
+ *         NotReadableError → TODAS las sondas fallaban → nunca cambiaba
+ *         de lente ni encontraba el LED. codigo-test sondea SECUENCIAL-
+ *         MENTE cerrando cada cámara antes de abrir la siguiente y ANTES
+ *         de abrir la definitiva (puerto exacto de probeDevice +
+ *         chooseMainCamera: autofocus real → mayor resolución).
+ *      B) el botón flash se deshabilitaba salvo que getCapabilities()
+ *         reportara torch; hay Chrome que NO lo anuncian pero SÍ lo
+ *         aplican → ahora el botón está habilitado en cámara real y la
+ *         verdad se descubre APLICANDO y leyendo getSettings().torch. */
 const IDEAL_CAPTURE_WIDTH = 3840;
-/** Máximo de candidatos traseros a probar (no bloquea el arranque).
- *  8 (bug v3: con 4 podían quedarse sin probar la principal los móviles con
- *  5+ lentes traseras — p. ej. Samsung ultra: 0.6×, 1×, 3×, 10×, macro…). */
-const MAX_CAMERA_PROBES = 8;
 const BACK_CAMERA_RE = /back|rear|environment|trasera|posterior|arri[eè]re/i;
 const FRONT_CAMERA_RE = /front|delantera|anterior|face|facial|selfie/i;
-/** Lentes secundarias que NO queremos (gran angular, macro, tele, etc.). */
-const ULTRA_LENS_RE = /ultra|ultrawide|gran angular|super\s?wide|\b0[.,]5\s?x\b|\b0[.,]6\s?x\b/i;
-const TELE_LENS_RE = /tele|teleobjetivo|telephoto|\b2\s?x\b|\b5\s?x\b|\b10\s?x\b/i;
-const MACRO_LENS_RE = /macro|depth|truedepth|profundidad/i;
-/** "wide" a secas suele ser la principal en Android ("Back camera (wide)")
- *  — penalización leve, no dura. */
-const PLAIN_WIDE_RE = /\bwide\b/i;
 
-/** F-FLASH v2 — diagnóstico cuando el botón flash sale deshabilitado:
- *  casi siempre es el NAVEGADOR (no el teléfono). Chrome/Firefox de iPhone
- *  no exponen torch (motor WebKit limitado), los WebView in-app tampoco y
- *  Android necesita Chrome 70+. Safari iOS lo soporta desde 17.4. */
+/** F-FLASH v3 — diagnóstico del flash: cubre navegador sin soporte (iPhone:
+ *  Safari 17.4+, Chrome/Firefox de iOS no exponen torch; WebViews in-app
+ *  tampoco), cámara sin LED (gran angular/macro) y permisos WebView. */
 const TORCH_HINT =
-  "La linterna no está disponible aquí. Tu teléfono puede tener flash, " +
-  "pero este navegador no lo expone: en iPhone usa Safari (17.4 o " +
-  "posterior; Chrome/Firefox de iOS no lo permiten), en Android Chrome " +
-  "actualizado, y evita abrir la app dentro de otra app (Instagram, " +
-  "WhatsApp…). Si aun así no se enciende, la cámara abierta no es la " +
-  "principal: cierra el escáner y vuelve a abrirlo.";
+  "No se pudo controlar la linterna aquí. Causas típicas: navegador sin " +
+  "soporte (en iPhone usa Safari 17.4 o posterior; Chrome/Firefox de iOS " +
+  "no lo permiten), cámara abierta sin LED (gran angular o macro) o la " +
+  "app corre dentro de otra app (Instagram, WhatsApp…). Cierra el " +
+  "escáner y vuelve a abrirlo; si persiste, prueba en otro navegador.";
 
-/** Penalización de lente por label (menor = mejor). */
-function lensScore(label: string): number {
-  return (
-    (ULTRA_LENS_RE.test(label) ? 1000 : 0) +
-    (TELE_LENS_RE.test(label) ? 500 : 0) +
-    (MACRO_LENS_RE.test(label) ? 300 : 0) +
-    (PLAIN_WIDE_RE.test(label) && !ULTRA_LENS_RE.test(label) ? 50 : 0)
-  );
+/** Resultado de sondear UNA cámara (puerto de CameraProbe de codigo-test). */
+interface CameraProbeResult {
+  deviceId: string;
+  label: string;
+  focusModes: string[];
+  torch: boolean;
+  maxWidth: number;
+  maxHeight: number;
 }
 
-/** Índice numérico del label ("camera2 1, facing back" → 1): con labels
- *  mudos, la cámara principal es el índice MÁS BAJO del grupo trasero. */
-function cameraLabelIndex(label: string): number {
-  const nums = label.match(/\d+/g);
-  return nums && nums.length > 0 ? Number(nums[nums.length - 1]) : Number.MAX_SAFE_INTEGER;
+/** Modos de foco que cuentan como autofocus REAL (regla D3 de codigo-test). */
+const REAL_AF_MODES = new Set(["continuous", "single-shot"]);
+
+function hasRealAF(modes: string[]): boolean {
+  return modes.some((m) => REAL_AF_MODES.has(m.toLowerCase()));
 }
 
-/** Elige la cámara trasera principal por label (puerto compacto de
- *  chooseMainCamera del producto: enumerateDevices NO expone facingMode,
- *  y en iOS todos los grupos dan el mismo track — gana el grupo SIMPLE).
- *  Devuelve los candidatos ORDENADOS (mejor primero). */
-function rankBackCameras(devices: MediaDeviceInfo[]): MediaDeviceInfo[] {
-  const cams = devices.filter((d) => d.kind === "videoinput" && d.deviceId);
-  if (cams.length === 0) return [];
-  const backs = cams.filter(
-    (d) => BACK_CAMERA_RE.test(d.label) && !FRONT_CAMERA_RE.test(d.label)
-  );
-  const pool = backs.length > 0 ? backs : cams;
-  return [...pool].sort(
-    (a, b) =>
-      lensScore(a.label) - lensScore(b.label) ||
-      cameraLabelIndex(a.label) - cameraLabelIndex(b.label)
-  );
+function readCapsNum(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
-/** Métricas de un stream para elegir lente: ancho real + capabilities +
- *  torch (el LED de flash solo vive en la lente principal). */
-function streamMetrics(stream: MediaStream): { width: number; maxWidth: number; torch: boolean } {
-  let width = 0;
-  let maxWidth = 0;
-  let torch = false;
+/** Abre UNA cámara SOLO para leer sus capabilities y la CIERRA (puerto de
+ *  probeDevice de codigo-test). SIN constraints de resolución en la sonda:
+ *  medir el sensor real requiere abrir la cámara "pelada". Devuelve null
+ *  si la cámara no se pudo abrir (queda descartada). El `finally` CIERRA
+ *  el stream SIEMPRE — nunca hay dos cámaras abiertas a la vez (era la
+ *  causa del bug v3: sondas con el stream vivo → NotReadableError). */
+async function probeCamera(
+  media: MediaDevices,
+  deviceId: string,
+  label: string
+): Promise<CameraProbeResult | null> {
+  let stream: MediaStream | null = null;
   try {
+    stream = await media.getUserMedia({
+      video: { deviceId: { exact: deviceId } },
+      audio: false,
+    });
     const track = stream.getVideoTracks()[0];
-    const settings = track?.getSettings() as { width?: number } | undefined;
-    const caps = track?.getCapabilities?.() as { maxWidth?: number; torch?: boolean } | undefined;
-    width = settings?.width ?? 0;
-    maxWidth = caps?.maxWidth ?? 0;
-    torch = caps?.torch === true;
+    if (!track) return null;
+    const caps = (track.getCapabilities?.() ?? {}) as {
+      focusMode?: string[];
+      torch?: boolean;
+      width?: { max?: number };
+      height?: { max?: number };
+    };
+    return {
+      deviceId,
+      label: label || track.label,
+      focusModes: Array.isArray(caps.focusMode) ? caps.focusMode : [],
+      torch: caps.torch === true,
+      maxWidth: readCapsNum(caps.width?.max),
+      maxHeight: readCapsNum(caps.height?.max),
+    };
   } catch {
-    /* sin capabilities */
+    return null; // cámara ocupada/no accesible → descartada
+  } finally {
+    stream?.getTracks().forEach((t) => t.stop()); // CIERRA antes de la siguiente
   }
-  return { width, maxWidth, torch };
+}
+
+/** Elige la cámara principal (puerto de chooseMainCamera de codigo-test):
+ *  · Entre traseras con AUTOFOCUS REAL gana la de MAYOR resolución de
+ *    sensor (maxWidth×maxHeight) — la principal es siempre el sensor
+ *    grande; el torch desempata resoluciones idénticas.
+ *  · Sin AF en ninguna (típico iOS, regla D6): grupo de label más SIMPLE
+ *    (sin palabras de lente), luego menos palabras, luego más resolución. */
+function chooseMainProbe(probes: CameraProbeResult[]): CameraProbeResult | null {
+  if (probes.length === 0) return null;
+  const backs = probes.filter(
+    (p) => BACK_CAMERA_RE.test(p.label) && !FRONT_CAMERA_RE.test(p.label)
+  );
+  const pool = backs.length > 0 ? backs : probes;
+  const byRes = (a: CameraProbeResult, b: CameraProbeResult): number =>
+    b.maxWidth * b.maxHeight - a.maxWidth * a.maxHeight;
+  const withAf = pool.filter((p) => hasRealAF(p.focusModes));
+  if (withAf.length > 0) {
+    return [...withAf].sort(
+      (a, b) => byRes(a, b) || (a.torch !== b.torch ? (a.torch ? -1 : 1) : 0)
+    )[0];
+  }
+  const lensWords = /ultra|gran angular|wide|angular|tele|teleobjetivo/i;
+  const wordCount = (label: string): number =>
+    label.split(/\s+/).filter((w) => w.length > 0).length;
+  const simples = pool.filter((p) => !lensWords.test(p.label));
+  const ranked =
+    simples.length > 0
+      ? [...simples].sort(
+          (a, b) => wordCount(a.label) - wordCount(b.label) || byRes(a, b)
+        )
+      : [...pool].sort(
+          (a, b) => a.label.length - b.label.length || byRes(a, b)
+        );
+  return ranked[0];
 }
 
 /** Telemetría reducida para el UI (throttle ~100 ms). */
@@ -364,7 +390,7 @@ export default function CameraView() {
   const autoRef = useRef(settings.autoCapture);
   /** F-FLASH: preferencia persistida (re-aplicada al abrir cada stream). */
   const flashRef = useRef(settings.flash);
-  /** F-FLASH v2: espejo de torchOn legible desde listeners sin re-render. */
+  /** F-FLASH v3: espejo de torchOn legible desde listeners sin re-render. */
   const torchOnRef = useRef(false);
   const lastTelemetryAt = useRef(0);
 
@@ -395,38 +421,59 @@ export default function CameraView() {
   const hasStream = status === "live" || status === "synthetic";
   const precisionLive = hasStream && precisionReady;
 
-  /* ── Linterna — F-FLASH v2 ───────────────────────────────────────── */
+    /* ── Linterna — F-FLASH v3 ───────────────────────────────────── */
 
-  /** Aplica el torch al track activo CON REINTENTOS (0 / 250 / 700 ms):
-   *  varios Android (y Chrome con resoluciones altas) rechazan
-   *  applyConstraints justo tras getUserMedia y solo lo aceptan cuando el
-   *  video ya está en reproducción — bug v3: el flash quedaba muerto en el
-   *  arranque aunque la lente sí tuviera LED. Idempotente y con guardas de
-   *  stream vivo (si el track cambió entre intentos, se aborta). */
-  const applyTorchWithRetry = useCallback((on: boolean) => {
-    for (const ms of [0, 250, 700]) {
-      window.setTimeout(() => {
-        const track = streamRef.current?.getVideoTracks()[0];
-        if (!track) return;
-        const caps = track.getCapabilities?.() as { torch?: boolean } | undefined;
-        if (!caps?.torch) return; // esta lente/navegador no expone torch
-        setTorchAvailable(true);
-        if (!on) return;
-        track
-          .applyConstraints({ advanced: [{ torch: true }] } as MediaTrackConstraints & {
+  /** Enciende/apaga el torch y VERIFICA el resultado real. La verdad se
+   *  descubre APLICANDO y leyendo getSettings().torch — NO confiando en
+   *  getCapabilities(): hay Chrome (el caso del usuario) que NO anuncian
+   *  torch en caps pero SÍ lo aplican (por eso codigo-test funcionaba y
+   *  esta app no). Nota clave: con `advanced`, un constraint no soportado
+   *  NO rechaza la promesa (best-effort per spec) → sin verificación el
+   *  UI mentiría "encendido". Devuelve true si el LED quedó controlado. */
+  const setTorchState = useCallback(async (on: boolean): Promise<boolean> => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return false;
+    try {
+      const caps = track.getCapabilities?.() as { torch?: boolean } | undefined;
+      if (caps?.torch) setTorchAvailable(true);
+      await track.applyConstraints({
+        advanced: [{ torch: on }],
+      } as MediaTrackConstraints & { advanced: unknown[] });
+      const st = track.getSettings() as { torch?: boolean };
+      const wasOn = torchOnRef.current;
+      const applied = caps?.torch === true || st.torch === true || (!on && wasOn);
+      if (applied) {
+        torchOnRef.current = on;
+        setTorchOn(on);
+      }
+      if (caps?.torch || applied) setTorchAvailable(true);
+      if (!applied && on) {
+        // Aceptado en silencio pero sin señal verificable: deshaz para no
+        // dejar un LED encendido "fantasma".
+        await track
+          .applyConstraints({ advanced: [{ torch: false }] } as MediaTrackConstraints & {
             advanced: unknown[];
           })
-          .then(() => {
-            // Solo confirma si el track sigue siendo el actual.
-            if (streamRef.current?.getVideoTracks()[0] === track) {
-              torchOnRef.current = true;
-              setTorchOn(true);
-            }
-          })
-          .catch(() => undefined); // lo reintenta el siguiente timer
-      }, ms);
+          .catch(() => undefined);
+      }
+      return applied;
+    } catch {
+      return false;
     }
   }, []);
+
+  /** Re-aplica la preferencia persistida CON REINTENTOS (0/250/700/1500 ms):
+   *  varios Android rechazan applyConstraints justo tras getUserMedia y
+   *  solo lo aceptan cuando el video ya reproduce. Idempotente: si un
+   *  intento verifica el encendido, los siguientes se saltan solos. */
+  const applySavedTorchWithRetry = useCallback(() => {
+    for (const ms of [0, 250, 700, 1500]) {
+      window.setTimeout(() => {
+        if (!flashRef.current || torchOnRef.current) return;
+        void setTorchState(true);
+      }, ms);
+    }
+  }, [setTorchState]);
 
   /* ── Captura ─────────────────────────────────────────────────────── */
 
@@ -756,10 +803,12 @@ export default function CameraView() {
           duration: 6000,
         });
       }
-      // Linterna — F-FLASH v2: re-aplica la preferencia persistida con
-      // reintentos (algunos Android solo la aceptan cuando el video ya
-      // reproduce); la disponibilidad se marca solo si caps.torch existe.
-      applyTorchWithRetry(flashRef.current);
+      // Linterna — F-FLASH v3: cámara real → el botón se habilita SIEMPRE
+      // (la verdad del torch se verifica al pulsar, aplicando y leyendo
+      // getSettings); si el usuario dejó el flash ON, se re-aplica con
+      // reintentos hasta que el track lo acepte.
+      setTorchAvailable(true);
+      if (flashRef.current) applySavedTorchWithRetry();
     };
 
     /** E3: cascada de apertura — presupuesto de píxeles (ancho ideal 3840,
@@ -792,175 +841,124 @@ export default function CameraView() {
       return null;
     };
 
-    /** F-LENS v3 — garantiza la cámara trasera PRINCIPAL (nunca la gran
-     *  angular). El bug v2: con labels mudos ("camera2 0/1/2, facing back")
-     *  todas las lentes puntuaban igual y ganaba el índice MÁS BAJO — pero
-     *  en muchos Android (Samsung, Xiaomi…) camera2 0 ES la gran angular
-     *  → capturas deformadas Y linterna muerta (esa lente no tiene flash).
-     *  Jerarquía "mejor candidato gana" (v3-bugfix: TORCH PRIMERO):
-     *  · 1) TORCH — el LED del flash vive SOLO en la lente principal: quien
-     *    lo soporta ES la principal aunque su label puntúe peor (bug v3:
-     *  con labels informativos el score elegía la gran angular, que NO
-     *  tiene LED → flash muerto; señal física > heurística de texto);
-     *  · 2) label — penaliza ultra/tele/macro/profundidad (cuando informa);
-     *  · 3) capabilities.maxWidth (sensor mayor = principal);
-     *  · 4) ancho real negociado del track;
-     *  · 5) posición del ranking (último recurso).
-     *  El stream perdedor se cierra; solo se conserva el ganador. */
-    const upgradeToMainBackCamera = async (stream: MediaStream): Promise<MediaStream> => {
-      type Candidate = {
-        deviceId: string;
-        label: string;
-        score: number;
-        rank: number;
-        width: number;
-        maxWidth: number;
-        torch: boolean;
-        stream: MediaStream | null;
-      };
-      const toCandidate = (
-        deviceId: string,
-        label: string,
-        rank: number,
-        s: MediaStream | null
-      ): Candidate => {
-        const m = s ? streamMetrics(s) : { width: 0, maxWidth: 0, torch: false };
-        return {
-          deviceId,
-          label,
-          score: lensScore(label),
-          rank,
-          width: m.width,
-          maxWidth: m.maxWidth,
-          torch: m.torch,
-          stream: s,
-        };
-      };
-      /** true si `a` es estrictamente mejor lente principal que `b`.
-       *  v3-bugfix: el TORCH decide ANTES que el label — el LED del flash
-       *  solo existe en la lente principal, así que la lente que lo soporta
-       *  ES la principal aunque su label puntúe mejor (con el torch detrás
-       *  del score se colaba la gran angular: flash muerto, tu reporte). */
-      const betterLens = (a: Candidate, b: Candidate): boolean => {
-        if (a.torch !== b.torch) return a.torch;
-        if (a.score !== b.score) return a.score < b.score;
-        if (a.maxWidth !== b.maxWidth) return a.maxWidth > b.maxWidth;
-        if (a.width !== b.width) return a.width > b.width;
-        return a.rank < b.rank;
-      };
-
+    /** F-LENS v4 — arranque estilo codigo-test (donde el flash SÍ funciona):
+     *  1) desbloquea labels con un stream genérico que se cierra al instante;
+     *  2) sondea TODAS las cámaras UNA POR UNA cerrando cada una antes de
+     *     abrir la siguiente (v3 las sondeaba con el stream vivo → en muchos
+     *     Android la 2ª apertura lanza NotReadableError y NADA cambiaba);
+     *  3) elige la principal con la regla D3/D6 (autofocus real → mayor
+     *     resolución; torch desempata; sin AF → label más simple);
+     *  4) abre SOLO la ganadora con presupuesto de píxeles (3840 ideal).
+     *  Devuelve el stream de la principal o null (→ cascade/sintética). */
+    const openMainCamera = async (): Promise<MediaStream | null> => {
+      // 1) Desbloqueo de etiquetas (F1-a de codigo-test): sin permiso previo
+      //    los labels/deviceIds llegan vacíos en enumerateDevices.
       try {
-        if (typeof media.enumerateDevices !== "function") return stream;
-        const ranked = rankBackCameras(await media.enumerateDevices());
-        if (ranked.length === 0) return stream;
-        const currentTrack = stream.getVideoTracks()[0];
-        const currentId = currentTrack?.getSettings().deviceId ?? "";
-        const currentLabel = currentTrack?.label ?? "";
-        const currentRank = Math.max(
-          0,
-          ranked.findIndex((d) => d.deviceId === currentId)
-        );
-
-        const probe = async (deviceId: string): Promise<MediaStream | null> =>
-          media
-            .getUserMedia({
-              video: { deviceId: { exact: deviceId }, width: { ideal: IDEAL_CAPTURE_WIDTH } },
-              audio: false,
-            })
-            .catch(() => null);
-
-        let best = toCandidate(currentId, currentLabel, currentRank, stream);
-        let probes = 0;
-        for (const cand of ranked) {
-          if (probes >= MAX_CAMERA_PROBES) break;
-          if (cand.deviceId === currentId) continue;
-          probes += 1;
-          const s = await probe(cand.deviceId);
-          if (!s) continue;
-          const candidate = toCandidate(
-            cand.deviceId,
-            cand.label,
-            ranked.indexOf(cand),
-            s
-          );
-          if (betterLens(candidate, best)) {
-            // El nuevo stream gana → cierra el anterior y conserva este.
-            best.stream?.getTracks().forEach((t) => t.stop());
-            best = candidate;
-          } else {
-            s.getTracks().forEach((t) => t.stop());
-          }
-          // Salida temprana: ya hay principal perfecta (label limpio + LED)
-          // — nada puede mejorarla, dejar de sondear.
-          if (best.score === 0 && best.torch) break;
-        }
-
-        const winner = best.stream ?? stream;
-
-        // Vía 4: zoom >= 1 — si el navegador abrió la lente equivalente a la
-        // 0,5× (zoom < 1 del MISMO track), súbelo a 1 (FOV de la principal).
-        try {
-          const track = winner.getVideoTracks()[0];
-          const caps = track?.getCapabilities?.() as
-            | { zoom?: { min?: number; max?: number } }
-            | undefined;
-          const settings = track?.getSettings?.() as { zoom?: number } | undefined;
-          if (
-            caps?.zoom &&
-            typeof caps.zoom.min === "number" &&
-            caps.zoom.min < 1 &&
-            typeof settings?.zoom === "number" &&
-            settings.zoom < 1
-          ) {
-            await track
-              ?.applyConstraints({
-                advanced: [{ zoom: 1 }],
-              } as MediaTrackConstraints & { advanced: unknown[] })
-              .catch(() => undefined);
-          }
-        } catch {
-          /* sin soporte de zoom */
-        }
-
-        // Telemetría de QA (window.__cameraChoice): qué lente quedó abierta.
-        try {
-          const track = winner.getVideoTracks()[0];
-          const st = track?.getSettings?.() as {
-            width?: number;
-            height?: number;
-            deviceId?: string;
-          } | undefined;
-          (window as unknown as { __cameraChoice?: unknown }).__cameraChoice = {
-            label: track?.label ?? "",
-            width: st?.width ?? 0,
-            height: st?.height ?? 0,
-            maxWidth: best.maxWidth,
-            torch: best.torch,
-            switched: winner !== stream,
-            hadChoice: ranked.length > 1,
-          };
-        } catch {
-          /* solo telemetría */
-        }
-
-        return winner;
+        const unlock = await media.getUserMedia({ video: true, audio: false });
+        unlock.getTracks().forEach((t) => t.stop());
       } catch {
-        /* conserva el stream actual */
-        return stream;
+        /* sin permiso: los probes fallarán y se cae al cascade */
       }
+      // 2) Sondeo secuencial: cada cámara se ABRE, se MIDE y se CIERRA.
+      let devices: MediaDeviceInfo[] = [];
+      try {
+        devices = (await media.enumerateDevices()).filter(
+          (d) => d.kind === "videoinput" && d.deviceId
+        );
+      } catch {
+        devices = [];
+      }
+      const probes: CameraProbeResult[] = [];
+      for (const d of devices) {
+        const p = await probeCamera(media, d.deviceId, d.label);
+        if (p) probes.push(p);
+      }
+      // 3) Elección de la principal (D3: AF real → mayor resolución).
+      const main = chooseMainProbe(probes);
+      // 4) Apertura SOLO de la ganadora (con fallbacks en cascada).
+      const attempts: MediaStreamConstraints[] = main
+        ? [
+            {
+              video: {
+                deviceId: { exact: main.deviceId },
+                width: { ideal: IDEAL_CAPTURE_WIDTH },
+              },
+              audio: false,
+            },
+            { video: { deviceId: { exact: main.deviceId } }, audio: false },
+          ]
+        : [];
+      attempts.push({ video: true, audio: false }); // último recurso
+      for (const c of attempts) {
+        try {
+          const stream = await media.getUserMedia(c);
+          // Vía zoom: si el track abrió con zoom < 1 (equivalente 0.5× del
+          // MISMO track), súbelo a 1 para el FOV de la principal.
+          try {
+            const track = stream.getVideoTracks()[0];
+            const zcaps = track?.getCapabilities?.() as
+              | { zoom?: { min?: number; max?: number } }
+              | undefined;
+            const zst = track?.getSettings?.() as { zoom?: number } | undefined;
+            if (
+              zcaps?.zoom &&
+              typeof zcaps.zoom.min === "number" &&
+              zcaps.zoom.min < 1 &&
+              typeof zst?.zoom === "number" &&
+              zst.zoom < 1
+            ) {
+              await track
+                ?.applyConstraints({
+                  advanced: [{ zoom: 1 }],
+                } as MediaTrackConstraints & { advanced: unknown[] })
+                .catch(() => undefined);
+            }
+          } catch {
+            /* sin soporte de zoom */
+          }
+          // Telemetría de QA (window.__cameraChoice): qué lente quedó abierta
+          // y qué se midió en las sondas — útil para depurar remotamente.
+          try {
+            const track = stream.getVideoTracks()[0];
+            const st = track?.getSettings?.() as {
+              width?: number;
+              height?: number;
+            } | undefined;
+            (window as unknown as { __cameraChoice?: unknown }).__cameraChoice = {
+              elegida: main?.label ?? track?.label ?? "",
+              torch: main?.torch ?? false,
+              focusModes: main?.focusModes ?? [],
+              width: st?.width ?? 0,
+              height: st?.height ?? 0,
+              sondas: probes.map((p) => ({
+                label: p.label,
+                torch: p.torch,
+                af: p.focusModes,
+                max: `${p.maxWidth}x${p.maxHeight}`,
+              })),
+            };
+          } catch {
+            /* solo telemetría */
+          }
+          return stream;
+        } catch {
+          /* siguiente nivel */
+        }
+      }
+      return null;
     };
 
     void (async () => {
-      let stream = await openWithCascade();
-      if (stream) {
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        stream = await upgradeToMainBackCamera(stream);
-      }
+      // F-LENS v4: primero el camino de codigo-test (sondas secuenciales +
+      // principal por resolución/AF); cascade facingMode como red de seguridad.
+      let stream = await openMainCamera();
+      if (!stream) stream = await openWithCascade();
       if (!stream) {
         if (!cancelled) void startSynthetic();
+        return;
+      }
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop());
         return;
       }
       applyStream(stream);
@@ -986,7 +984,7 @@ export default function CameraView() {
       syntheticRef.current?.stop();
       syntheticRef.current = null;
     };
-  }, [applyTorchWithRetry]);
+  }, [applySavedTorchWithRetry]);
 
   // Asigna el stream al <video> (real o sintético)
   useEffect(() => {
@@ -996,15 +994,15 @@ export default function CameraView() {
     if (!video || !stream) return;
     video.srcObject = stream;
     void video.play().catch(() => undefined);
-    // F-FLASH v2: reintento por evento — algunos Android no aceptan el
+    // F-FLASH v3: reintento por evento — algunos Android no aceptan el
     // torch hasta que el video REALMENTE reproduce. Si al disparar
     // "playing" la preferencia sigue pendiente, se vuelve a aplicar.
     const onPlaying = () => {
-      if (flashRef.current && !torchOnRef.current) applyTorchWithRetry(true);
+      if (flashRef.current && !torchOnRef.current) applySavedTorchWithRetry();
     };
     video.addEventListener("playing", onPlaying);
     return () => video.removeEventListener("playing", onPlaying);
-  }, [hasStream, status, applyTorchWithRetry]);
+  }, [hasStream, status, applySavedTorchWithRetry]);
 
   // Dimensiones del video (para el mapeo object-cover del overlay)
   const onVideoMeta = useCallback(() => {
@@ -1096,33 +1094,25 @@ export default function CameraView() {
     };
   }, [precisionLive]);
 
-  // Linterna (solo cámara real con soporte) — F-FLASH: botón manual en la
-  // toolbar inferior (junto al disparador); el estado se persiste en
-  // settings.flash para la próxima sesión. F-LENS v3: al quedarse en la
-  // lente PRINCIPAL (la única con LED de flash), el botón ya está activo.
+  // Linterna — F-FLASH v3: botón SIEMPRE activo con cámara real; la verdad
+  // se descubre al pulsar (aplicar + verificar getSettings.torch). Estado
+  // persistido en settings.flash para la próxima sesión.
   const toggleTorch = useCallback(async () => {
-    const track = streamRef.current?.getVideoTracks()[0];
-    if (!track) {
-      toast.error("La cámara aún no está lista");
+    if (status !== "live") {
+      toast(TORCH_HINT, { icon: "🔦", duration: 8000 });
       return;
     }
     const next = !torchOn;
-    try {
-      await track.applyConstraints({
-        advanced: [{ torch: next }],
-      } as MediaTrackConstraints & { advanced: unknown[] });
-      torchOnRef.current = next;
-      setTorchOn(next);
+    const applied = await setTorchState(next);
+    if (applied) {
       updateSettings({ flash: next });
-      if (next) {
-        toast.success("Flash encendido", { duration: 1200 });
-      }
-    } catch {
-      // Sincroniza el estado real: si falló, nada cambió físicamente.
+      if (next) toast.success("Flash encendido", { duration: 1200 });
+    } else {
+      // Verificación falló: nada cambió físicamente; sincroniza y explica.
       setTorchOn((v) => v);
-      toast.error("No se pudo controlar la linterna de este dispositivo");
+      toast(TORCH_HINT, { icon: "🔦", duration: 8000 });
     }
-  }, [torchOn, updateSettings]);
+  }, [torchOn, status, updateSettings, setTorchState]);
 
   /* ── Fallback simulado (sin worker): estabilidad + jitter ─────────── */
 
