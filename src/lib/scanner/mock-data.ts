@@ -102,7 +102,7 @@ function page(
     original: img,
     processed: img,
     thumbnail: img,
-    filter: "auto" as const,
+    filter: "text" as const,
     quad: [
       { x: 0.05, y: 0.06 },
       { x: 0.95, y: 0.05 },

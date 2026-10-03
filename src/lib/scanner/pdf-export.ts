@@ -80,10 +80,15 @@ export async function toJpegAt(
  * Convierte cualquier data URL (svg/jpeg/png…) en JPEG sobre canvas,
  * aplanando transparencias. Sirve para el OCR (payload normalizado)
  * y para el PDF (jsPDF solo acepta raster).
+ *
+ * maxSide 2400 (subido desde 1400 — F-OCR): el modelo de visión necesita
+ * píxeles reales para el texto pequeño; a 1400 px las líneas finas se
+ * derretían y el OCR salía borroso. 2400 px ≈ 300 DPI en carta y sigue
+ * muy por debajo del límite de payload (10 MB).
  */
 export async function toJpeg(
   src: string,
-  maxSide = 1400
+  maxSide = 2400
 ): Promise<{ dataUrl: string; width: number; height: number }> {
   const img = await loadImage(src);
   const scale = Math.min(1, maxSide / Math.max(img.width, img.height));

@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, FileText, Layers, ScanText, Star, Tags, Trash2, HardDrive } from "lucide-react";
+import { Check, Copy, Download, FileText, Layers, Loader2, ScanText, Star, Tags, Trash2, HardDrive } from "lucide-react";
 import { toast } from "sonner";
 
 import { useScannerStore } from "@/lib/scanner/store";
@@ -39,6 +39,13 @@ import {
 
 /** Switch iOS: 51×31, thumb 25px, azul #007AFF cuando está activo. */
 const SWITCH_IOS =  "h-[31px] w-[51px] data-[state=checked]:bg-[#007aff] data-[state=unchecked]:bg-[#e9e9ea] [&_[data-slot=switch-thumb]]:size-[25px]";
+
+/** Snapshot del repositorio — nombre estable servido desde /downloads
+ *  (archivo estático en public/, funciona en CUALQUIER despliegue) y vía
+ *  /api/download (ruta de servidor, siempre la versión más fresca). */
+const PROJECT_ZIP_NAME = "web-scanner-repo.zip";
+const PROJECT_ZIP_STATIC = `/downloads/${PROJECT_ZIP_NAME}`;
+const PROJECT_ZIP_API = `/api/download?file=${encodeURIComponent(PROJECT_ZIP_NAME)}`;
 
 /** Atajos de teclado de escritorio (mostrados en Acerca de). */
 const SHORTCUTS: { action: string; keys: string[]; hint?: string }[] = [
@@ -405,6 +412,11 @@ export default function SettingsView() {
             <p className="text-[15px] text-[#8e8e93]">Hecho con precisión</p>
           </div>
         </SettingsGroup>
+
+        {/* Snapshot del repositorio — para actualizar el repo git externo */}
+        <SettingsGroup label="Proyecto" delay={0.22}>
+          <ProjectDownloadRow />
+        </SettingsGroup>
       </div>
 
       {/* AlertDialog: borrar todos los documentos */}
@@ -437,6 +449,182 @@ export default function SettingsView() {
 /* ------------------------------------------------------------------ */
 /* Piezas de los grupos estilo iOS                                     */
 /* ------------------------------------------------------------------ */
+
+/** Fila de descarga del snapshot del repositorio (grupo Proyecto).
+ *
+ *  ⚠️ LECCIONES DEL ENTORNO REAL (panel de vista previa = iframe):
+ *  · fetch con method HEAD puede BLOQUEARSE antes de salir del iframe
+ *    (las sondas del usuario nunca llegaron al servidor) → la sonda de
+ *    tamaño usa GET + AbortController (se cancela al llegar cabeceras)
+ *    y su fallo es SILENCIOSO: la fila se muestra SIEMPRE.
+ *  · La descarga nativa de un iframe puede descartarse en silencio.
+ *  → Al tocar, 3 capas: fetch→blob→<a download> → window.open (pestaña
+ *    nueva) → fila «Copiar enlace» siempre visible como plan C. */
+function ProjectDownloadRow() {
+  const [busy, setBusy] = useState(false);
+  const [framed, setFramed] = useState(false);
+  const [sizeLabel, setSizeLabel] = useState("");
+
+  useEffect(() => {
+    // Iframe tras el montaje (server renderiza false → hidratación OK).
+    try {
+      setFramed(window.self !== window.top);
+    } catch {
+      setFramed(true); // acceso cross-origin bloqueado = está embebido
+    }
+
+    // Sonda de tamaño OPCIONAL: GET + abort justo tras las cabeceras
+    // (HEAD puede estar bloqueado por el proxy del iframe). Si falla,
+    // simplemente no se muestra el tamaño — la fila sigue activa.
+    let stop = false;
+    void (async () => {
+      for (const url of [PROJECT_ZIP_API, PROJECT_ZIP_STATIC]) {
+        try {
+          const ctl = new AbortController();
+          const r = await fetch(url, { signal: ctl.signal, cache: "no-store" });
+          const bytes = Number(r.headers.get("Content-Length"));
+          try {
+            ctl.abort(); // ya tenemos las cabeceras — cancelar el cuerpo
+          } catch {
+            /* abort ya lanzado */
+          }
+          if (Number.isFinite(bytes) && bytes > 0) {
+            if (!stop) setSizeLabel(` · ${formatBytes(bytes)}`);
+            return;
+          }
+          if (!r.ok) continue; // probar la siguiente fuente
+        } catch {
+          /* sonda silenciosa — siguiente fuente */
+        }
+      }
+    })();
+
+    return () => {
+      stop = true;
+    };
+  }, []);
+
+  /** Descarga por código: 3 capas (blob → pestaña nueva → copiar enlace). */
+  const onDownload = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    try {
+      // Capa 1 — fetch → blob → <a download> programático (API → estático).
+      let blob: Blob | null = null;
+      for (const url of [PROJECT_ZIP_API, PROJECT_ZIP_STATIC]) {
+        try {
+          const r = await fetch(url, { cache: "no-store" });
+          if (r.ok) {
+            const b = await r.blob();
+            if (b.size > 0) {
+              blob = b;
+              break;
+            }
+          }
+        } catch {
+          /* fetch bloqueado o ruta inexistente → siguiente fuente */
+        }
+      }
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = PROJECT_ZIP_NAME;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 8000);
+        toast.success(
+          framed
+            ? "Descarga iniciada — si no ves el archivo, usa Copiar enlace"
+            : `Descarga iniciada · ${formatBytes(blob.size)}`
+        );
+        return;
+      }
+
+      // Capa 2 — fetch bloqueado por el entorno: abrir en pestaña nueva
+      // (el navegador gestiona la descarga de forma nativa ahí).
+      const win = window.open(PROJECT_ZIP_STATIC, "_blank", "noopener,noreferrer");
+      if (win) {
+        toast("Se abrió una pestaña nueva con la descarga");
+      } else {
+        toast.error("Tu entorno bloquea la descarga — usa «Copiar enlace»");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Plan C para entornos restrictivos: copiar el enlace directo. */
+  const onCopyLink = async () => {
+    const href = `${window.location.origin}${PROJECT_ZIP_STATIC}`;
+    try {
+      await navigator.clipboard.writeText(href);
+      toast.success("Enlace copiado — ábrelo en una pestaña nueva");
+    } catch {
+      // Fallback sin Clipboard API (iframes restrictivos).
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = href;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        toast.success("Enlace copiado — ábrelo en una pestaña nueva");
+      } catch {
+        toast.error(href, { duration: 12000 });
+      }
+    }
+  };
+
+  return (
+    <div>
+      <a
+        href={PROJECT_ZIP_STATIC}
+        download={PROJECT_ZIP_NAME}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Descargar el código fuente del proyecto en ZIP"
+        onClick={onDownload}
+        className="flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] px-4 py-3 text-left transition-colors active:bg-[#f7f7f9]"
+      >
+        <div className="min-w-0">
+          <p className="text-[15px] leading-snug font-medium text-[#007aff]">
+            Descargar código fuente
+          </p>
+          <p className="mt-0.5 text-[12px] leading-snug text-[#8e8e93]">
+            Repositorio completo en ZIP{sizeLabel}
+            {framed ? " · si no inicia, usa Copiar enlace" : ""}
+          </p>
+        </div>
+        <span
+          className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[#007aff]/10"
+          aria-hidden="true"
+        >
+          {busy ? (
+            <Loader2 className="size-[18px] animate-spin text-[#007aff]" strokeWidth={2.2} />
+          ) : (
+            <Download className="size-[18px] text-[#007aff]" strokeWidth={2.2} />
+          )}
+        </span>
+      </a>
+      <button
+        type="button"
+        onClick={onCopyLink}
+        className="flex min-h-[44px] w-full items-center gap-2.5 border-t border-[#f2f2f7] px-4 py-3 text-left transition-colors active:bg-[#f7f7f9]"
+        aria-label="Copiar enlace de descarga"
+      >
+        <Copy className="size-4 shrink-0 text-[#8e8e93]" strokeWidth={2.2} aria-hidden="true" />
+        <span className="text-[13px] font-medium text-[#3c3c43]">Copiar enlace de descarga</span>
+        <span className="ml-auto text-[12px] text-[#c7c7cc]">para pestaña nueva</span>
+      </button>
+    </div>
+  );
+}
 
 /** Badge vivo del motor de precisión (worker + OpenCV) en Ajustes. */
 function EngineBadge() {

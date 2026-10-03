@@ -40,6 +40,10 @@ export default function RootLayout({
     <html lang="es" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#e9e9ee] text-foreground`}
+        // suppressHydrationWarning: extensiones de navegador (Grammarly,
+        // asistentes de formularios, etc.) inyectan atributos en <body> antes
+        // de que React hidrate — mismo patrón defensivo que usa <html>.
+        suppressHydrationWarning
       >
         {children}
         <Toaster />

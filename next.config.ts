@@ -1,4 +1,13 @@
 import type { NextConfig } from "next";
+import path from "node:path";
+
+// ⚠ CRÍTICO PARA DESPLEGAR: fijamos el workspace root de Turbopack de forma
+// explícita. Sin esto, si el proyecto se construye junto a OTRO lockfile (p.ej.
+// en un pipeline de despliegue que lo envuelve), Next 16 infiere un root
+// equivocado y genera un .next/standalone CORRUPTO (sin server.js) → el
+// servidor de producción no arranca → "problem deploying the code".
+// Ver: https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory
+const workspaceRoot = path.resolve(__dirname);
 
 /**
  * Configuración DUAL para poder desplegar en GitHub Pages:
@@ -16,6 +25,8 @@ const isStatic = process.env.BUILD_STATIC === "1";
 const basePath = isStatic ? "/web-scanner" : undefined;
 
 const nextConfig: NextConfig = {
+  // Raíz de workspace explícita — ver comentario del import path.
+  turbopack: { root: workspaceRoot },
   ...(isStatic
     ? {
         output: "export" as const,
@@ -23,6 +34,9 @@ const nextConfig: NextConfig = {
         basePath,
       }
     : { output: "standalone" as const }),
+  // Preview del sandbox: el gateway sirve la app bajo un dominio distinto al
+  // interno — sin esto, Next 16 bloquea/warnear las peticiones de _next/*.
+  allowedDevOrigins: ["*.space-z.ai", "localhost"],
   // Sin optimización de imágenes (los <img> del escáner son dataURLs/canvas).
   images: { unoptimized: true },
   typescript: {

@@ -15,7 +15,7 @@ import type {
   ScannerSettings,
   ScannerView,
 } from "./types";
-import { DEFAULT_SETTINGS } from "./types";
+import { DEFAULT_SETTINGS, capturePageKey } from "./types";
 import { initialDocuments } from "./mock-data";
 import { processImage } from "./image-processor";
 import {
@@ -45,19 +45,20 @@ interface ScannerState {
   /** Índice de página en edición dentro del editor */
   editingIndex: number;
 
-  /** Edición MANUAL de una página YA GUARDADA: mientras esté activo, el editor
-   *  trabaja sobre esa página del documento (write-back) en vez de crear un
-   *  documento nuevo. E2c: "la edición manual" también existe post-guardado. */
-  editSavedPageCtx: { docId: string; pageId: string } | null;
-  /** Abre el editor de bordes sobre una página guardada (carga la página como
-   *  sesión de edición y recuerda el destino del write-back). */
-  beginEditSavedPage: (docId: string, pageId: string) => void;
-  /** Cancela la edición de página guardada (vuelve al detalle, sin cambios). */
-  clearEditSavedPage: () => void;
-  /** Procesa la página editada y la escribe de vuelta en su documento
-   *  (respeta quadManual → warp SIN refine y SIN shrink). Devuelve el docId
-   *  o null si no hay contexto. */
-  saveEditedPageToDocument: () => Promise<string | null>;
+  /** MODO REVISIÓN DE DOCUMENTO (F-NOVIEW): la 3ª interfaz (Digitalización)
+   *  desaparece — la biblioteca abre el documento AQUÍ, en el Editor, igual
+   *  que Adobe Scan. Mientras esté activo, la sesión de captura contiene las
+   *  páginas del documento (con sus ids originales) y los cambios se
+   *  fusionan de vuelta al salir (exitReviewToLibrary / X de la cámara). */
+  reviewDocId: string | null;
+  /** Abre un documento guardado en el editor (carga sus páginas como sesión). */
+  beginReviewDocument: (docId: string) => void;
+  /** Fusiona la sesión con su documento (por id: actualiza, añade, quita) y
+   *  vuelve a la biblioteca. Solo reprocesa las páginas realmente cambiadas.
+   *  Devuelve el docId o null. */
+  saveSessionToDocument: () => Promise<string | null>;
+  /** Sale del modo revisión fusionando cambios (auto-guardado, patrón Adobe). */
+  exitReviewToLibrary: () => Promise<void>;
 
   /** Modo lote: nº de documentos guardados en cadena durante la sesión de
    *  cámara actual (sin volver a la biblioteca). 0 = lote inactivo. */
@@ -67,6 +68,7 @@ interface ScannerState {
   hydrated: boolean;
 
   setView: (view: ScannerView) => void;
+  /** Abre un documento GUARDADO en el Editor (modo revisión, F-NOVIEW). */
   openDocument: (id: string) => void;
 
   /** Consulta que la biblioteca “presta” al detalle para abrir el buscador
@@ -120,21 +122,23 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   activeDocumentId: null,
   capturePages: [],
   editingIndex: 0,
-  editSavedPageCtx: null,
+  reviewDocId: null,
   batchSavedCount: 0,
   settings: DEFAULT_SETTINGS,
   hydrated: false,
   setView: (view) =>
     set((s) => ({
       view,
-      // El lote termina al salir del ciclo cámara→editor (biblioteca, detalle o ajustes).
+      // El lote termina al salir del ciclo cámara→editor (biblioteca o ajustes).
       batchSavedCount:
-        view === "library" || view === "document" || view === "settings"
-          ? 0
-          : s.batchSavedCount,
+        view === "library" || view === "settings" ? 0 : s.batchSavedCount,
     })),
-  openDocument: (id) =>
-    set((s) => ({ activeDocumentId: id, view: "document", batchSavedCount: 0 })),
+  openDocument: (id) => {
+    const doc = get().documents.find((d) => d.id === id);
+    if (!doc) return;
+    set({ activeDocumentId: id, batchSavedCount: 0 });
+    get().beginReviewDocument(id);
+  },
 
   pendingFindQuery: null,
   setPendingFindQuery: (q) => set({ pendingFindQuery: q }),
@@ -197,13 +201,15 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       capturePages: s.capturePages.map((p) => (p.id === id ? { ...p, ...patch } : p)),
     })),
   setEditingIndex: (i) => set({ editingIndex: i }),
-  clearCaptureSession: () => set({ capturePages: [], editingIndex: 0, editSavedPageCtx: null }),
+  clearCaptureSession: () =>
+    set({ capturePages: [], editingIndex: 0, reviewDocId: null }),
 
   startBatchDocument: () =>
     set((s) => ({
       batchSavedCount: s.batchSavedCount + 1,
       capturePages: [],
       editingIndex: 0,
+      reviewDocId: null,
       view: "camera",
     })),
   endBatch: () => set({ batchSavedCount: 0 }),
@@ -253,8 +259,8 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
         rotation: p.rotation,
         quality: p.quality,
         precision,
-        ocrText: undefined,
-        ocrDone: false,
+        ocrText: p.ocrText,
+        ocrDone: p.ocrDone === true,
         createdAt: now,
       });
     }
@@ -278,92 +284,119 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     return doc;
   },
 
-  // ── Edición manual de página guardada (E2c) ──────────────────────────
-  beginEditSavedPage: (docId, pageId) => {
+  // ── Modo revisión de documento (F-NOVIEW) ─────────────────────────────
+  beginReviewDocument: (docId) => {
     const doc = get().documents.find((d) => d.id === docId);
-    const page = doc?.pages.find((p) => p.id === pageId);
-    if (!doc || !page) return;
+    if (!doc || doc.pages.length === 0) return;
     set({
-      capturePages: [
-        {
-          id: page.id,
-          original: page.original,
-          quad: page.quad,
-          quadManual: page.quadManual,
-          filter: page.filter,
-          rotation: page.rotation,
-          quality: page.quality,
-        },
-      ],
+      // Las páginas conservan su id → el merge posterior sabe cuáles
+      // existen (actualizar) y cuáles son nuevas (añadir). `processed` viaja
+      // en la sesión con su `processedKey` (estado exacto con el que se
+      // generó) → preview inmediato SOLO mientras la página no cambie.
+      capturePages: doc.pages.map((p) => ({
+        id: p.id,
+        original: p.original,
+        quad: p.quad,
+        quadManual: p.quadManual,
+        filter: p.filter,
+        rotation: p.rotation,
+        quality: p.quality,
+        processed: p.processed,
+        processedKey: capturePageKey(p),
+        ocrText: p.ocrText,
+        ocrDone: p.ocrDone,
+      })),
       editingIndex: 0,
-      editSavedPageCtx: { docId, pageId },
+      reviewDocId: docId,
       view: "editor",
       batchSavedCount: 0,
     });
   },
 
-  clearEditSavedPage: () => {
-    const ctx = get().editSavedPageCtx;
-    set({ capturePages: [], editingIndex: 0, editSavedPageCtx: null });
-    if (ctx) set({ activeDocumentId: ctx.docId, view: "document" });
-  },
-
-  saveEditedPageToDocument: async () => {
-    const { editSavedPageCtx, capturePages, settings } = get();
-    if (!editSavedPageCtx || capturePages.length === 0) return null;
-    const p = capturePages[0]!;
-    const { docId, pageId } = editSavedPageCtx;
-    let processed = p.original;
-    let thumbnail = p.original;
-    let precision: ScanPage["precision"];
-    try {
-      const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
-        manual: p.quadManual === true,
-        unsharpOriginal: settings.unsharpOriginal,
-      });
-      processed = res.processed;
-      thumbnail = res.thumbnail;
-      precision = res.precision;
-    } catch {
-      /* conserva la imagen actual */
+  saveSessionToDocument: async () => {
+    const { reviewDocId, capturePages, settings } = get();
+    if (!reviewDocId) return null;
+    const doc = get().documents.find((d) => d.id === reviewDocId);
+    if (!doc) {
+      set({ capturePages: [], editingIndex: 0, reviewDocId: null });
+      return null;
     }
+    // Sesión vacía = el usuario eliminó la última página → elimina el doc.
+    if (capturePages.length === 0) {
+      get().deleteDocument(reviewDocId);
+      set({ activeDocumentId: null });
+      return null;
+    }
+    const now = Date.now();
+    const byId = new Map(doc.pages.map((p) => [p.id, p] as const));
+    const pages: ScanPage[] = [];
+    for (const p of capturePages) {
+      const prev = byId.get(p.id);
+      // "Sin cambios" = mismos valores geometricos/foto → conserva la
+      // procesada persistida (cero reprocesos innecesarios al salir).
+      const unchanged =
+        prev !== undefined &&
+        prev.original === p.original &&
+        prev.filter === p.filter &&
+        prev.rotation === p.rotation &&
+        prev.quadManual === p.quadManual &&
+        prev.quad.every((q, i) => q.x === p.quad[i].x && q.y === p.quad[i].y);
+      if (unchanged && prev) {
+        pages.push({ ...prev, ocrText: p.ocrText ?? prev.ocrText, ocrDone: p.ocrDone ?? prev.ocrDone });
+        continue;
+      }
+      let processed = p.processed ?? p.original;
+      let thumbnail = p.original;
+      let precision: ScanPage["precision"];
+      try {
+        const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
+          manual: p.quadManual === true,
+          unsharpOriginal: settings.unsharpOriginal,
+        });
+        processed = res.processed;
+        thumbnail = res.thumbnail;
+        precision = res.precision;
+      } catch {
+        /* conserva la procesada anterior si la hay */
+        if (prev) processed = prev.processed;
+      }
+      pages.push({
+        id: p.id,
+        original: p.original,
+        processed,
+        thumbnail,
+        filter: p.filter,
+        quad: p.quad,
+        quadManual: p.quadManual,
+        rotation: p.rotation,
+        quality: p.quality,
+        precision,
+        // El OCR previo puede quedar desalineado tras re-recortar: se marca
+        // como pendiente (no se borra el texto viejo — decide el usuario).
+        ocrText: p.ocrText ?? prev?.ocrText,
+        ocrDone: p.ocrDone ?? false,
+        createdAt: prev?.createdAt ?? now,
+      });
+    }
+    const updated: ScanDocument = { ...doc, pages, updatedAt: now };
     set((s) => ({
-      documents: s.documents.map((d) =>
-        d.id === docId
-          ? {
-              ...d,
-              updatedAt: Date.now(),
-              pages: d.pages.map((pg) =>
-                pg.id === pageId
-                  ? {
-                      ...pg,
-                      original: p.original,
-                      quad: p.quad,
-                      quadManual: p.quadManual,
-                      filter: p.filter,
-                      rotation: p.rotation,
-                      processed,
-                      thumbnail,
-                      precision,
-                      // El OCR previo puede quedar desalineado tras re-recortar:
-                      // se re-marca como pendiente (no se borra el texto viejo
-                      // — el usuario decide si re-reconocer).
-                      ocrDone: false,
-                    }
-                  : pg
-              ),
-            }
-          : d
-      ),
+      documents: s.documents.map((d) => (d.id === reviewDocId ? updated : d)),
       capturePages: [],
       editingIndex: 0,
-      editSavedPageCtx: null,
-      activeDocumentId: docId,
-      view: "document",
+      reviewDocId: null,
     }));
-    const after = get().documents.find((d) => d.id === docId);
-    if (after) void persistDocument(after);
-    return docId;
+    void persistDocument(updated);
+    return reviewDocId;
+  },
+
+  exitReviewToLibrary: async () => {
+    const { reviewDocId } = get();
+    if (!reviewDocId) {
+      set({ view: "library" });
+      return;
+    }
+    await get().saveSessionToDocument();
+    set({ view: "library" });
   },
 
   deleteDocument: (id) => {

@@ -4,7 +4,9 @@
  * Shell principal del escáner de documentos (estilo iOS).
  * Renderiza la vista activa del store dentro de un marco tipo teléfono
  * centrado en desktop. La barra inferior de navegación solo aparece en
- * Biblioteca y Ajustes (Cámara/Editor/Digitalización usan sus propias barras).
+ * Biblioteca y Ajustes (Cámara/Editor usan sus propias barras).
+ * F-NOVIEW: la 3ª interfaz (Digitalización) desapareció — los documentos
+ * guardados se abren en el propio Editor (modo revisión, como Adobe Scan).
  * Transición entre vistas: deslizamiento direccional sutil (push/pop de iOS).
  */
 
@@ -16,7 +18,6 @@ import { warmUpScannerWorker } from "@/lib/scanner/image-processor";
 import LibraryView from "@/components/scanner/LibraryView";
 import CameraView from "@/components/scanner/CameraView";
 import EditorView from "@/components/scanner/EditorView";
-import DocumentDetailView from "@/components/scanner/DocumentDetailView";
 import SettingsView from "@/components/scanner/SettingsView";
 import BottomNav from "@/components/scanner/BottomNav";
 
@@ -26,7 +27,6 @@ const VIEW_RANK: Record<ScannerView, number> = {
   settings: 1,
   camera: 2,
   editor: 3,
-  document: 4,
 };
 
 export default function Home() {
@@ -70,9 +70,15 @@ export default function Home() {
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (document.querySelector('[role="dialog"], [role="menu"], [data-radix-popper-content-wrapper]')) return;
       const s = useScannerStore.getState();
-      if (s.view === "settings" || s.view === "camera" || s.view === "editor" || s.view === "document") {
+      if (s.view === "settings" || s.view === "camera") {
         e.preventDefault();
-        s.setView(s.view === "editor" ? "camera" : "library");
+        s.setView("library");
+      } else if (s.view === "editor") {
+        e.preventDefault();
+        // F-NOVIEW: en modo revisión de documento el Escape fusiona y sale
+        // a la biblioteca (auto-guardado); en sesión de captura vuelve a la cámara.
+        if (s.reviewDocId) void s.exitReviewToLibrary();
+        else s.setView("camera");
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -86,9 +92,17 @@ export default function Home() {
   const fullBleed = view === "camera" || view === "editor";
 
   return (
-    <div className="flex min-h-screen w-full items-stretch justify-center bg-[#e9e9ee] sm:items-center sm:py-6">
+    // suppressHydrationWarning en los contenedores del marco: las extensiones
+    // de navegador inyectan atributos data-* antes de que React hidrate
+    // (p.ej. data-protocompass-form de asistentes de formularios) → mismatch
+    // SSR/cliente cosmético que disparaba el overlay de hidratación.
+    <div
+      className="flex min-h-screen w-full items-stretch justify-center bg-[#e9e9ee] sm:items-center sm:py-6"
+      suppressHydrationWarning
+    >
       <div
         id="app-phone"
+        suppressHydrationWarning
         className={[
           "relative flex w-full flex-col overflow-hidden bg-[#f2f2f7]",
           "h-[100svh] sm:h-[min(880px,94svh)] sm:max-w-[420px]",
@@ -109,7 +123,6 @@ export default function Home() {
               {view === "library" && <LibraryView />}
               {view === "camera" && <CameraView />}
               {view === "editor" && <EditorView />}
-              {view === "document" && <DocumentDetailView />}
               {view === "settings" && <SettingsView />}
             </motion.div>
           </AnimatePresence>

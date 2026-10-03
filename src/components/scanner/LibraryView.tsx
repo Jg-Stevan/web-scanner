@@ -31,6 +31,7 @@ import {
   ScanText,
   Search,
   Settings,
+  Share2,
   Star,
   Tag,
   Trash2,
@@ -42,7 +43,7 @@ import { toast } from "sonner";
 import { useScannerStore } from "@/lib/scanner/store";
 import type { ScanDocument } from "@/lib/scanner/types";
 import { formatBytes, relativeTime } from "@/lib/scanner/format";
-import { buildLibraryPdf, sanitizeFileName, toJpeg } from "@/lib/scanner/pdf-export";
+import { buildDocPdf, buildLibraryPdf, downloadBlob, sanitizeFileName, toJpeg } from "@/lib/scanner/pdf-export";
 import { ocrTextIsValid, requestOcr } from "@/lib/scanner/ocr";
 import { countTagUsage, docTags, normalizeTag, tagColor } from "@/lib/scanner/tags";
 import { MiniTagRow, TagsDialog } from "@/components/scanner/TagsDialog";
@@ -269,7 +270,6 @@ export default function LibraryView() {
   const documents = useScannerStore((s) => s.documents);
   const setView = useScannerStore((s) => s.setView);
   const openDocument = useScannerStore((s) => s.openDocument);
-  const setPendingFindQuery = useScannerStore((s) => s.setPendingFindQuery);
   const renameDocument = useScannerStore((s) => s.renameDocument);
   const deleteDocument = useScannerStore((s) => s.deleteDocument);
   const toggleFavorite = useScannerStore((s) => s.toggleFavorite);
@@ -400,16 +400,15 @@ export default function LibraryView() {
     }
   };
 
-  /** Abre el documento; si la búsqueda activa tiene coincidencias OCR en él,
-   *  "presta" la consulta al detalle para abrir el buscador ya relleno. */
+  /** Abre el documento en el EDITOR (F-NOVIEW: la 3ª interfaz desapareció —
+   *  la biblioteca lleva directo a la revisión de sus páginas, como Adobe
+   *  Scan). La búsqueda de OCR solo filtra aquí; el texto se ve/copia con el
+   *  botón "Texto" del editor. */
   const openDocSmart = useCallback(
     (doc: ScanDocument) => {
-      const q = query.trim();
-      if (q && ocrMatches.has(doc.id)) setPendingFindQuery(q);
-      else setPendingFindQuery(null);
       openDocument(doc.id);
     },
-    [ocrMatches, openDocument, query, setPendingFindQuery]
+    [openDocument]
   );
 
   /** Secciones de la vista de lista (A-Z → inicial, Recientes/Favoritos →
@@ -595,7 +594,7 @@ export default function LibraryView() {
       } else {
         toast.error("No se reconoció texto en las páginas", {
           id: progressId,
-          description: "Prueba con un filtro de mayor contraste (Documento o B/N) y vuelve a intentarlo.",
+          description: "Prueba con un filtro de mayor contraste (Texto claro o B/N) y vuelve a intentarlo.",
         });
       }
     } finally {
@@ -770,7 +769,11 @@ export default function LibraryView() {
   }
 
   return (
-    <div className="relative flex h-full w-full flex-col bg-[#f2f2f7]">
+    // suppressHydrationWarning: las extensiones de navegador (p.ej. asistentes
+    // de formularios como Protocompass) inyectan atributos data-* en el
+    // contenedor del buscador ANTES de que React hidrate → desajuste SSR/cliente
+    // puramente cosmético. Se tolera en este elemento (no afecta a los hijos).
+    <div className="relative flex h-full w-full flex-col bg-[#f2f2f7]" suppressHydrationWarning>
       {/* Header */}
       <header className="shrink-0 px-5 pb-3 pt-safe">
         {selecting ? (
@@ -1756,7 +1759,9 @@ function ListRow({
 }
 
 /** Menú contextual (···): etiquetar / seleccionar / renombrar / favorito /
- *  duplicar / eliminar. */
+ *  duplicar / EXPORTAR PDF / COMPARTIR / eliminar.
+ *  F-NOVIEW: exportar y compartir vivían en la 3ª interfaz (Digitalización)
+ *  — ahora cuelgan de aquí y del propio editor. */
 function DocMenu({
   doc,
   onRename,
@@ -1774,6 +1779,53 @@ function DocMenu({
 }) {
   const toggleFavorite = useScannerStore((s) => s.toggleFavorite);
   const duplicateDocument = useScannerStore((s) => s.duplicateDocument);
+  const exportQuality = useScannerStore((s) => s.settings.exportQuality);
+  const [pdfBusy, setPdfBusy] = useState<"export" | "share" | null>(null);
+
+  /** Exporta (descarga) el PDF adaptativo §8 del documento. */
+  const exportPdf = async () => {
+    if (pdfBusy || doc.pages.length === 0) return;
+    setPdfBusy("export");
+    try {
+      const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
+      pdf.save(`${sanitizeFileName(doc.title)}.pdf`);
+      toast.success(
+        `PDF exportado · ${doc.pages.length} ${doc.pages.length === 1 ? "página" : "páginas"} · ${formatBytes(bytes)}`
+      );
+    } catch {
+      toast.error("No se pudo exportar el PDF");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  /** Comparte el PDF con la hoja nativa (Web Share API nivel 2, archivos);
+   *  fallback honesto: descarga directa cuando no se puede compartir. */
+  const sharePdf = async () => {
+    if (pdfBusy || doc.pages.length === 0) return;
+    setPdfBusy("share");
+    try {
+      const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
+      const fileName = `${sanitizeFileName(doc.title)}.pdf`;
+      const blob = pdf.output("blob");
+      const file = new File([blob], fileName, { type: "application/pdf" });
+      const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
+      if (typeof nav.share === "function" && nav.canShare?.({ files: [file] })) {
+        await nav.share({ files: [file], title: doc.title });
+        toast.success(`Documento compartido · ${formatBytes(bytes)}`);
+      } else {
+        downloadBlob(blob, fileName);
+        toast.success("Compartir no está disponible aquí", {
+          description: `El PDF (${formatBytes(bytes)}) se ha descargado en su lugar.`,
+        });
+      }
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") return; // el usuario canceló
+      toast.error("No se pudo compartir el documento");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
 
   return (
     <DropdownMenu>
@@ -1803,6 +1855,30 @@ function DocMenu({
         <DropdownMenuItem onSelect={onSelect} className="gap-2.5 text-[14px]">
           <Check className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
           Seleccionar
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => void exportPdf()}
+          disabled={pdfBusy !== null || doc.pages.length === 0}
+          className="gap-2.5 text-[14px]"
+        >
+          {pdfBusy === "export" ? (
+            <Loader2 className="h-4 w-4 animate-spin text-[#8e8e93]" strokeWidth={2} />
+          ) : (
+            <FileDown className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
+          )}
+          Exportar PDF
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => void sharePdf()}
+          disabled={pdfBusy !== null || doc.pages.length === 0}
+          className="gap-2.5 text-[14px]"
+        >
+          {pdfBusy === "share" ? (
+            <Loader2 className="h-4 w-4 animate-spin text-[#8e8e93]" strokeWidth={2} />
+          ) : (
+            <Share2 className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
+          )}
+          Compartir
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onRename()} className="gap-2.5 text-[14px]">
           <Pencil className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />

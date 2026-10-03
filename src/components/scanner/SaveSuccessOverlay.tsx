@@ -6,14 +6,16 @@
  * datos de la digitalización. Se auto-descarta tras `duration` ms y entonces
  * llama a onFinished (la navegación la decide el padre).
  *
- * Modo lote: cuando el padre pasa `onScanAnother`, aparecen dos acciones
- * — «Escanear otro» (encadena un documento nuevo sin salir de la cámara) y
- * «Ver documento» — y el auto-cierre se alarga para dar tiempo a elegir.
+ * F-NOVIEW: con `onScanAnother`/`onDownloadPdf` aparecen las acciones del
+ * flujo Adobe Scan — «Escanear otro documento» (encadena sin salir de la
+ * cámara), «Guardar PDF» (DESCARGA el archivo — la 3ª interfaz con su botón
+ * de exportar ya no existe) — y el auto-cierre se alarga para dar tiempo a
+ * elegir. El auto-cierre lleva a la BIBLIOTECA.
  */
 
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { ScanLine, FileText } from "lucide-react";
+import { Download, ScanLine } from "lucide-react";
 
 const IOS_EASE = [0.32, 0.72, 0, 1] as const;
 
@@ -22,6 +24,7 @@ export function SaveSuccessOverlay({
   engine,
   onFinished,
   onScanAnother,
+  onDownloadPdf,
   batchCount = 0,
   duration,
 }: {
@@ -30,11 +33,14 @@ export function SaveSuccessOverlay({
   onFinished: () => void;
   /** Modo lote: encadena otro documento tras este (opcional). */
   onScanAnother?: () => void;
+  /** F-NOVIEW: descarga el PDF del documento recién guardado (opcional). */
+  onDownloadPdf?: () => void;
   /** Documentos ya guardados en el lote (incluye este). */
   batchCount?: number;
   duration?: number;
 }) {
-  const hasActions = typeof onScanAnother === "function";
+  const hasActions =
+    typeof onScanAnother === "function" || typeof onDownloadPdf === "function";
   const autoCloseMs = duration ?? (hasActions ? 3400 : 1750);
   const finishedRef = useRef(false);
 
@@ -114,31 +120,36 @@ export function SaveSuccessOverlay({
       </div>
 
       {hasActions ? (
-        /* Acciones del modo lote: encadenar otro documento o ver el guardado */
+        /* Acciones del flujo Adobe Scan: encadenar otro documento o
+           descargar el PDF guardado (auto-cierre → biblioteca). */
         <motion.div
           initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.32, delay: 0.55, ease: IOS_EASE }}
           className="mt-1 flex w-full max-w-[300px] flex-col gap-2.5"
         >
-          <motion.button
-            type="button"
-            whileTap={{ scale: 0.96 }}
-            onClick={() => run(onScanAnother!)}
-            className="flex h-[50px] w-full items-center justify-center gap-2 rounded-xl bg-[#007aff] text-[16px] font-semibold text-white shadow-[0_6px_20px_rgba(0,122,255,0.4)] transition-colors active:bg-[#0062d6]"
-          >
-            <ScanLine className="h-[19px] w-[19px]" strokeWidth={2.2} />
-            Escanear otro documento
-          </motion.button>
-          <motion.button
-            type="button"
-            whileTap={{ scale: 0.96 }}
-            onClick={() => run(onFinished)}
-            className="flex h-[50px] w-full items-center justify-center gap-2 rounded-xl bg-white/10 text-[16px] font-semibold text-white/90 ring-1 ring-inset ring-white/15 backdrop-blur-sm transition-colors active:bg-white/15"
-          >
-            <FileText className="h-[19px] w-[19px]" strokeWidth={2} />
-            Ver documento
-          </motion.button>
+          {onScanAnother ? (
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.96 }}
+              onClick={() => run(onScanAnother)}
+              className="flex h-[50px] w-full items-center justify-center gap-2 rounded-xl bg-[#007aff] text-[16px] font-semibold text-white shadow-[0_6px_20px_rgba(0,122,255,0.4)] transition-colors active:bg-[#0062d6]"
+            >
+              <ScanLine className="h-[19px] w-[19px]" strokeWidth={2.2} />
+              Escanear otro documento
+            </motion.button>
+          ) : null}
+          {onDownloadPdf ? (
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.96 }}
+              onClick={() => run(onDownloadPdf)}
+              className="flex h-[50px] w-full items-center justify-center gap-2 rounded-xl bg-white/10 text-[16px] font-semibold text-white/90 ring-1 ring-inset ring-white/15 backdrop-blur-sm transition-colors active:bg-white/15"
+            >
+              <Download className="h-[19px] w-[19px]" strokeWidth={2} />
+              Guardar PDF
+            </motion.button>
+          ) : null}
         </motion.div>
       ) : (
         /* Barra de progreso sutil del auto-cierre */

@@ -4,22 +4,14 @@
  * estas interfaces deben mantenerse estables.
  */
 
-export type ScannerView =
-  | "library"
-  | "camera"
-  | "editor"
-  | "document"
-  | "settings";
+export type ScannerView = "library" | "camera" | "editor" | "settings";
 
-export type PageFilter =
-  | "original"
-  | "auto"
-  | "color"
-  | "grayscale"
-  | "blackwhite"
-  | "whiteboard"
-  | "document"
-  | "natural";
+/**
+ * Filtros de página — EXACTAMENTE 3 (§8 del SPEC-MAESTRO, error #13):
+ * los 3 modos reales del motor. Los 8 presets legacy (auto/color/grayscale/
+ * blackwhite/whiteboard/document/natural) se migran vía normalizePageFilter.
+ */
+export type PageFilter = "original" | "text" | "bw";
 
 export interface FilterPreset {
   id: PageFilter;
@@ -29,23 +21,42 @@ export interface FilterPreset {
 
 export const FILTER_PRESETS: FilterPreset[] = [
   { id: "original", label: "Original", description: "Sin cambios" },
-  { id: "auto", label: "Auto", description: "Ajuste automático" },
-  { id: "natural", label: "Natural", description: "Blanco realzado suave" },
-  { id: "color", label: "Color", description: "Colores vivos" },
-  { id: "grayscale", label: "Escala de grises", description: "Blanco y negro suave" },
-  { id: "blackwhite", label: "Blanco y negro", description: "Contraste máximo" },
-  { id: "whiteboard", label: "Pizarra", description: "Fondo blanco limpio" },
-  { id: "document", label: "Documento", description: "Nítido para texto" },
+  { id: "text", label: "Texto claro", description: "Papel blanco, tinta marcada" },
+  { id: "bw", label: "B/N adaptativo", description: "Blanco y negro puro, inmune a sombras" },
 ];
 
+/**
+ * Migración de datos legacy (§8.4 — obligatoria al hidratar IndexedDB):
+ * los usuarios viejos tienen los 8 presets persistidos.
+ */
+export function normalizePageFilter(legacy: string): PageFilter {
+  switch (legacy) {
+    case "original":
+      return "original";
+    case "text":
+    case "bw":
+      return legacy;
+    case "auto":
+    case "document":
+    case "whiteboard":
+      return "text"; // mismo modo motor → look idéntico
+    case "blackwhite":
+      return "bw";
+    case "natural":
+    case "color":
+    case "grayscale":
+      return "original";
+    default:
+      return "text"; // default del producto
+  }
+}
+
 /** Filtros cuyo modo de enhance se codifica como PNG sin pérdida
- *  (mime por modo §8 del usuario: raw|text|bw → PNG; el resto JPEG). */
+ *  (mime por modo §8 del usuario: raw|text|bw → PNG — R-10). */
 export const PNG_FILTERS: ReadonlySet<PageFilter> = new Set<PageFilter>([
   "original", // raw
-  "auto", // text
-  "document", // text
-  "whiteboard", // text
-  "blackwhite", // bw
+  "text", // text
+  "bw", // bw
 ]);
 
 /** Punto (normalizado 0-1) del marco de perspectiva. */
@@ -126,6 +137,28 @@ export interface CapturePage {
   filter: PageFilter;
   rotation: number;
   quality: PageQuality;
+  /** Procesada persistida (solo modo revisión de documento: preview inmediato). */
+  processed?: string;
+  /** Clave de estado (id|quad|filtro|rotación) con la que se generó
+   *  `processed` — el preview solo la usa si el estado NO ha cambiado
+   *  (rotar/filtrar/recortar invalida la procesada guardada). */
+  processedKey?: string;
+  /** OCR (editor): texto reconocido en la página en edición. */
+  ocrText?: string;
+  ocrDone?: boolean;
+}
+
+/** Clave de cache/estado de una página en sesión (id|quad|filtro|rotación).
+ *  ÚNICA fuente del formato — la comparten EditorView (cache de previews) y
+ *  beginReviewDocument (processedKey) para que nunca diverjan. */
+export function capturePageKey(p: {
+  id: string;
+  quad: Quad;
+  filter: PageFilter;
+  rotation: number;
+}): string {
+  const quadKey = p.quad.map((q) => `${q.x.toFixed(4)},${q.y.toFixed(4)}`).join(";");
+  return `${p.id}|${quadKey}|${p.filter}|${p.rotation}`;
 }
 
 /** Perfil de documento para los priores de detección (selectQuad del usuario):\n *  preferencia de aspecto, NUNCA rechazo — un documento fuera de perfil sigue
@@ -164,7 +197,9 @@ export const DEFAULT_SETTINGS: ScannerSettings = {
   flash: false,
   enhance: true,
   ocrEnabled: true,
-  exportQuality: "alta",
+  /** "máxima" por defecto (F-OCR): el usuario exige la mayor calidad de
+   *  imagen posible para extraer bien el texto. */
+  exportQuality: "máxima",
   docProfile: "auto",
   unsharpOriginal: false,
 };

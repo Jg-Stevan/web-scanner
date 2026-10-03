@@ -84,6 +84,10 @@ export function PresentationView({
       }
   >(null);
   const downAt = useRef<{ x: number; y: number; t: number } | null>(null);
+  /** F-NAV: true cuando el pointerdown cayó sobre un botón hijo (flechas /
+   * miniaturas) — su click no debe contar como tap del stage (no alterna
+   * el chrome ni dispara swipe). */
+  const downOnChild = useRef(false);
   const lastTap = useRef(0);
   /** Toque simple diferido: espera 300 ms por si llega un doble toque. */
   const tapTimer = useRef<number | null>(null);
@@ -188,15 +192,21 @@ export function PresentationView({
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
-    // La captura mantiene los move/up llegando al stage aunque el puntero
-    // salga del elemento. Con punteros sintéticos/inactivos lanza → try/catch.
-    try {
-      stageRef.current?.setPointerCapture?.(e.pointerId);
-    } catch {
-      /* los listeners del stage siguen recibiendo los eventos */
+    // F-NAV: la captura mantiene los move/up llegando al stage aunque el
+    // puntero salga del elemento — pero SOLO cuando el down es directamente
+    // sobre el stage: si es sobre un botón hijo (flechas de página), la
+    // captura robaría el click y la navegación no funcionaría.
+    // Con punteros sintéticos/inactivos lanza → try/catch.
+    if (e.target === e.currentTarget) {
+      try {
+        stageRef.current?.setPointerCapture?.(e.pointerId);
+      } catch {
+        /* los listeners del stage siguen recibiendo los eventos */
+      }
     }
     const p = relToCenter(e.clientX, e.clientY);
     pointers.current.set(e.pointerId, p);
+    downOnChild.current = e.target !== e.currentTarget;
     downAt.current = { x: p.x, y: p.y, t: Date.now() };
 
     // Comparación: solo con un dedo a escala 1× (pinza/pan la cancelan).
@@ -311,7 +321,7 @@ export function PresentationView({
 
       const d = downAt.current;
       downAt.current = null;
-      if (!d || wasPinch || wasComparing) return;
+      if (!d || wasPinch || wasComparing || downOnChild.current) return;
 
       const p = relToCenter(e.clientX, e.clientY);
       const moved = Math.hypot(p.x - d.x, p.y - d.y);
@@ -483,28 +493,32 @@ export function PresentationView({
           )}
         </AnimatePresence>
 
-        {/* Flechas de escritorio */}
+        {/* Flechas de navegación — F-NAV: SIEMPRE visibles (también en
+            móvil); antes solo aparecían en escritorio y navegar en el teléfono
+            era incómodo (había que hacer swipe impreciso). Touch target 44px. */}
         {totalPages > 1 && (
           <>
             <button
               type="button"
               aria-label="Página anterior"
               onClick={() => goTo(index - 1)}
-              className={`absolute left-2 top-1/2 z-10 hidden h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-md transition-opacity active:opacity-60 sm:flex ${
+              disabled={!showPrev}
+              className={`absolute left-1.5 top-1/2 z-10 flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-md transition-all active:scale-90 active:bg-black/70 ${
                 showPrev ? "opacity-100" : "pointer-events-none opacity-0"
               }`}
             >
-              <ChevronLeft className="size-5" />
+              <ChevronLeft className="size-6" strokeWidth={2.6} />
             </button>
             <button
               type="button"
               aria-label="Página siguiente"
               onClick={() => goTo(index + 1)}
-              className={`absolute right-2 top-1/2 z-10 hidden h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-md transition-opacity active:opacity-60 sm:flex ${
+              disabled={!showNext}
+              className={`absolute right-1.5 top-1/2 z-10 flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-md transition-all active:scale-90 active:bg-black/70 ${
                 showNext ? "opacity-100" : "pointer-events-none opacity-0"
               }`}
             >
-              <ChevronRight className="size-5" />
+              <ChevronRight className="size-6" strokeWidth={2.6} />
             </button>
           </>
         )}
@@ -517,9 +531,9 @@ export function PresentationView({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ delay: 0.6 }}
-              className="pointer-events-none absolute bottom-6 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/45 px-3.5 py-1.5 text-[11px] font-medium text-white/85 backdrop-blur-md"
+              className="pointer-events-none absolute bottom-[86px] left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/45 px-3.5 py-1.5 text-[11px] font-medium text-white/85 backdrop-blur-md"
             >
-              Pellizca para ampliar · desliza para cambiar de página
+              Pellizca para ampliar · desliza o usa las flechas para cambiar de página
             </motion.p>
           )}
         </AnimatePresence>
@@ -558,7 +572,8 @@ export function PresentationView({
         )}
       </AnimatePresence>
 
-      {/* ── Chrome inferior: puntos de página (auto-ocultable) ─────────── */}
+      {/* ── Chrome inferior: MINIATURAS de páginas (F-NAV — antes solo puntos,
+          saltar a una página concreta era imposible en móvil) ──────────── */}
       <AnimatePresence>
         {chrome && (
           <motion.footer
@@ -566,22 +581,41 @@ export function PresentationView({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 14 }}
             transition={{ duration: 0.22, ease: IOS_EASE }}
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center bg-gradient-to-t from-black/70 to-transparent px-4 pb-safe pt-10"
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/80 to-transparent px-3 pb-safe pt-10"
           >
-            <div className="pointer-events-auto flex items-center gap-1.5 pb-3">
+            <div
+              className="pointer-events-auto no-scrollbar mx-auto flex max-w-full items-center gap-2 overflow-x-auto pb-3"
+              role="tablist"
+              aria-label="Páginas del documento"
+            >
               {pages.map((p, i) => (
                 <button
                   key={p.id}
                   type="button"
+                  role="tab"
+                  aria-selected={i === index}
                   aria-label={`Ir a la página ${i + 1}`}
-                  aria-current={i === index}
                   onClick={() => goTo(i)}
-                  className={`h-1.5 rounded-full transition-all duration-200 ${
+                  className={`relative h-[52px] w-[40px] shrink-0 overflow-hidden rounded-md border-2 transition-all duration-200 active:scale-95 ${
                     i === index
-                      ? "w-5 bg-white"
-                      : "w-1.5 bg-white/40 hover:bg-white/70 active:bg-white/70"
+                      ? "border-[#0a84ff] shadow-[0_0_0_2px_rgba(10,132,255,0.35)]"
+                      : "border-white/20 opacity-60 hover:opacity-90"
                   }`}
-                />
+                >
+                  <img
+                    src={p.thumbnail || p.processed}
+                    alt=""
+                    draggable={false}
+                    className="h-full w-full object-cover"
+                  />
+                  <span
+                    className={`absolute bottom-0 right-0 flex h-[15px] min-w-[15px] items-center justify-center rounded-tl-[4px] px-[3px] text-[9px] font-bold tabular-nums ${
+                      i === index ? "bg-[#0a84ff] text-white" : "bg-black/65 text-white/85"
+                    }`}
+                  >
+                    {i + 1}
+                  </span>
+                </button>
               ))}
             </div>
           </motion.footer>

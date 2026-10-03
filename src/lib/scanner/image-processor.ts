@@ -15,6 +15,8 @@
  */
 
 import type { PageFilter, PagePrecision, PageQuality, Point, Quad } from "./types";
+import { normalizePageFilter } from "./types";
+import { enhanceToRgba, unsharpRgba, type EnhanceMode as SharedEnhanceMode } from "./image-modes";
 import {
   getScannerWorker,
   type EnhanceMode,
@@ -34,7 +36,7 @@ export interface ProcessResult {
 export interface ProcessOptions {
   /** Quad colocado por el humano → sin refine, sin shrink (F5-MANUAL). */
   manual?: boolean;
-  /** Lado mayor máximo del resultado procesado (default 2000 px). */
+  /** Lado mayor máximo del resultado procesado (default PROCESSED_MAX_LONG_SIDE). */
   maxLongSide?: number;
   /** true = aplica unsharp (0.5/1.5) al filtro Original (que por fidelidad
    *  al sensor F5-RAW se guarda puro). No afecta a los demás filtros:
@@ -42,28 +44,34 @@ export interface ProcessOptions {
   unsharpOriginal?: boolean;
 }
 
-/** Lado mayor tope del resultado. 2560 = mismo cap que la captura original:
- *  salida a resolución de fuente (~300 DPI en carta) sin reescalado extra.
- *  IndexedDB guarda Blobs → sin problema de cuota de localStorage. */
-const PROCESSED_MAX_LONG_SIDE = 2560;
+/** Lado mayor tope del resultado. 3200 (subido desde 2560 — F-OCR):
+ *  conserva la resolución del sensor tras el recorte para que el OCR
+ *  reciba píxeles reales y el texto no se vea borroso. 3200×2400 ≈ 7.7 MP,
+ *  muy por debajo del límite de canvas de iOS (~16.7 MP); IndexedDB guarda
+ *  Blobs → sin problema de cuota. */
+const PROCESSED_MAX_LONG_SIDE = 3200;
 
-/** Mapea los presets de la app a los modos reales del worker. */
+/** Mapea los 3 filtros del producto (§8) a los modos reales del worker. */
 export function filterToEnhanceMode(filter: PageFilter): EnhanceMode {
-  switch (filter) {
+  switch (normalizePageFilter(filter)) {
     case "original":
       return "raw";
-    case "auto":
-    case "document":
-    case "whiteboard":
-      return "text"; // "Texto claro" — el default del producto
-    case "natural":
-      return "natural"; // estirado suave p97→255 + unsharp (JPEG q90)
-    case "grayscale":
-      return "gray"; // percentil 97 → 255
-    case "blackwhite":
+    case "bw":
       return "bw"; // Bradley-Roth adaptativo + despeckle
-    case "color":
-      return "color"; // CLAHE sobre canal L (modo legado soportado)
+    default:
+      return "text"; // "Texto claro" — el default del producto
+  }
+}
+
+/** Modo compartido (image-modes) — el fallback usa ESTE y solo ESTE. */
+function filterToSharedMode(filter: PageFilter): SharedEnhanceMode {
+  switch (normalizePageFilter(filter)) {
+    case "original":
+      return "raw";
+    case "bw":
+      return "bw";
+    default:
+      return "text";
   }
 }
 
@@ -392,12 +400,178 @@ function clamp01(v: number) {
 
 // ─── Filtros canvas (fallback del enhance real) ─────────────────────────────
 
-/** Recorta la imagen por el cuadrilátero (aprox rectificado) y rota. */
+/**
+ * Resuelve la homografía (DLT 4 puntos, eliminación gaussiana con pivoteo)
+ * que mapea el rect DESTINO → quad FUENTE. Devuelve h[9] (h[8]=1) o null
+ * si el sistema es degenerado (quad con 3 puntos colineales, p. ej.).
+ */
+function solveHomographyDstToSrc(
+  dst: ReadonlyArray<readonly [number, number]>,
+  src: ReadonlyArray<readonly [number, number]>
+): number[] | null {
+  const n = 8;
+  const M: number[][] = [];
+  for (let i = 0; i < 4; i++) {
+    const [X, Y] = dst[i]!;
+    const [u, v] = src[i]!;
+    M.push([X, Y, 1, 0, 0, 0, -X * u, -Y * u, u]);
+    M.push([0, 0, 0, X, Y, 1, -X * v, -Y * v, v]);
+  }
+  for (let col = 0; col < n; col++) {
+    let piv = col;
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(M[r]![col]!) > Math.abs(M[piv]![col]!)) piv = r;
+    }
+    if (Math.abs(M[piv]![col]!) < 1e-12) return null;
+    const tmp = M[col]!;
+    M[col] = M[piv]!;
+    M[piv] = tmp;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = M[r]![col]! / M[col]![col]!;
+      if (f === 0) continue;
+      for (let c = col; c <= n; c++) M[r]![c]! -= f * M[col]![c]!;
+    }
+  }
+  const h = new Array<number>(9).fill(0);
+  for (let i = 0; i < n; i++) h[i] = M[i]![n]! / M[i]![i]!;
+  h[8] = 1;
+  return h;
+}
+
+/**
+ * Rectifica el quad por homografía + muestreo BILINEAL (fallback canvas
+ * del warpPerspective INTER_CUBIC del worker — F6-WARP).
+ *
+ * Dimensiones de salida con aspecto MEDIDO (§7.5):
+ *   w0 = max(|TL->TR|, |BL->BR|);  h0 = max(|TR->BR|, |TL->BL|)
+ *   escala uniforme SOLO si max(w0,h0) > maxSize — PROHIBIDO upscalar (R-02).
+ *
+ * Devuelve null si la homografía no se puede resolver → el llamador cae al
+ * recorte bbox (último recurso). El quad manual se respeta al píxel (R-09):
+ * sin refine, sin shrink — aquí no hay refinado de ninguna clase.
+ */
+function warpQuadToCanvas(
+  img: HTMLImageElement,
+  quad: Quad,
+  maxSize: number
+): HTMLCanvasElement | null {
+  const sw = img.naturalWidth;
+  const sh = img.naturalHeight;
+  if (!(sw > 0) || !(sh > 0)) return null;
+
+  // Quad en píxeles de la fuente (orden TL, TR, BR, BL).
+  const pts = quad.map((p) => ({ x: p.x * sw, y: p.y * sh })) as [
+    { x: number; y: number },
+    { x: number; y: number },
+    { x: number; y: number },
+    { x: number; y: number },
+  ];
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot(a.x - b.x, a.y - b.y);
+  const w0 = Math.max(dist(pts[0]!, pts[1]!), dist(pts[3]!, pts[2]!));
+  const h0 = Math.max(dist(pts[1]!, pts[2]!), dist(pts[0]!, pts[3]!));
+  if (!(w0 > 1) || !(h0 > 1)) return null;
+
+  const scale = Math.min(1, maxSize / Math.max(w0, h0)); // nunca upscalar
+  const w = Math.max(16, Math.round(w0 * scale));
+  const h = Math.max(16, Math.round(h0 * scale));
+
+  // H mapea (X,Y) del rect destino → (u,v) en la fuente.
+  const H = solveHomographyDstToSrc(
+    [
+      [0, 0],
+      [w, 0],
+      [w, h],
+      [0, h],
+    ],
+    [
+      [pts[0]!.x, pts[0]!.y],
+      [pts[1]!.x, pts[1]!.y],
+      [pts[2]!.x, pts[2]!.y],
+      [pts[3]!.x, pts[3]!.y],
+    ]
+  );
+  if (!H) return null;
+  const h0c = H[0]!;
+  const h1c = H[1]!;
+  const h2c = H[2]!;
+  const h3c = H[3]!;
+  const h4c = H[4]!;
+  const h5c = H[5]!;
+  const h6c = H[6]!;
+  const h7c = H[7]!;
+
+  // Píxeles de la fuente a resolución completa (R-02: la foto es la fuente).
+  const srcCanvas = document.createElement("canvas");
+  srcCanvas.width = sw;
+  srcCanvas.height = sh;
+  const sctx = srcCanvas.getContext("2d", { willReadFrequently: true });
+  if (!sctx) return null;
+  sctx.drawImage(img, 0, 0);
+  const srcData = sctx.getImageData(0, 0, sw, sh).data;
+
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = w;
+  outCanvas.height = h;
+  const octx = outCanvas.getContext("2d", { willReadFrequently: true });
+  if (!octx) return null;
+  const outImage = octx.createImageData(w, h);
+  const out = outImage.data;
+
+  const maxX = sw - 1;
+  const maxY = sh - 1;
+  for (let y = 0; y < h; y++) {
+    // Centros de píxel — muestreo simétrico con el warp del worker.
+    const Y = y + 0.5;
+    for (let x = 0; x < w; x++) {
+      const X = x + 0.5;
+      const den = h6c * X + h7c * Y + 1;
+      if (den === 0) continue;
+      let u = (h0c * X + h1c * Y + h2c) / den;
+      let v = (h3c * X + h4c * Y + h5c) / den;
+      // Edge-replicate (el quad puede rozar el borde de la foto).
+      if (u < 0) u = 0;
+      else if (u > maxX) u = maxX;
+      if (v < 0) v = 0;
+      else if (v > maxY) v = maxY;
+      // Bilinear
+      const x0 = u | 0;
+      const y0 = v | 0;
+      const x1 = x0 < maxX ? x0 + 1 : x0;
+      const y1 = y0 < maxY ? y0 + 1 : y0;
+      const fx = u - x0;
+      const fy = v - y0;
+      const i00 = (y0 * sw + x0) * 4;
+      const i10 = (y0 * sw + x1) * 4;
+      const i01 = (y1 * sw + x0) * 4;
+      const i11 = (y1 * sw + x1) * 4;
+      const w00 = (1 - fx) * (1 - fy);
+      const w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy;
+      const w11 = fx * fy;
+      const o = (y * w + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        out[o + c] =
+          srcData[i00 + c]! * w00 +
+          srcData[i10 + c]! * w10 +
+          srcData[i01 + c]! * w01 +
+          srcData[i11 + c]! * w11;
+      }
+      out[o + 3] = 255;
+    }
+  }
+  octx.putImageData(outImage, 0, 0);
+  return outCanvas;
+}
+
+/** ÚLTIMO recurso del fallback: recorte bbox del quad + rotación (sin
+ *  homografía). Solo si warpQuadToCanvas no pudo resolver el sistema. */
 async function cropQuad(
   img: HTMLImageElement,
   quad: Quad,
   rotation: number,
-  maxSize = 2000
+  maxSize: number
 ): Promise<HTMLCanvasElement> {
   const xs = quad.map((p) => p.x * img.width);
   const ys = quad.map((p) => p.y * img.height);
@@ -429,113 +603,29 @@ async function cropQuad(
 }
 
 /**
- * Aplica el filtro a una imagen ya recortada (implementación canvas local —
- * fallback cuando el worker real no está disponible).
+ * Aplica el filtro a una imagen ya rectificada — fallback canvas con la
+ * MISMA matemática del motor (contrato §4.2: funciones puras COMPARTIDAS de
+ * image-modes.ts; PROHIBIDO Otsu global u otra matemática — error #7).
+ * Unsharp (0.5/1.5/k7) ANTES del filtro en todo modo ≠ raw (§8).
  */
 export function applyFilterToCanvas(
   canvas: HTMLCanvasElement,
   filter: PageFilter
 ): HTMLCanvasElement {
-  if (filter === "original") return canvas;
   const ctx = canvas.getContext("2d");
   if (!ctx) return canvas;
   const { width: W, height: H } = canvas;
+  if (W < 1 || H < 1) return canvas;
+  const mode = filterToSharedMode(filter);
   const image = ctx.getImageData(0, 0, W, H);
-  const d = image.data;
-
-  switch (filter) {
-    case "auto":
-    case "document": {
-      let min = 255;
-      let max = 0;
-      for (let i = 0; i < d.length; i += 4) {
-        const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        if (l < min) min = l;
-        if (l > max) max = l;
-      }
-      const range = Math.max(1, max - min);
-      for (let i = 0; i < d.length; i += 4) {
-        for (let c = 0; c < 3; c++) {
-          const v = ((d[i + c] - min) / range) * 255;
-          const n = v / 255;
-          const s = n < 0.5 ? 2 * n * n : 1 - 2 * (1 - n) * (1 - n);
-          d[i + c] = Math.round(filter === "document" ? s * 255 : v);
-        }
-      }
-      break;
-    }
-    case "color": {
-      for (let i = 0; i < d.length; i += 4) {
-        const r = d[i];
-        const g = d[i + 1];
-        const b = d[i + 2];
-        const l = 0.299 * r + 0.587 * g + 0.114 * b;
-        for (let c = 0; c < 3; c++) {
-          const v = l + (d[i + c] - l) * 1.35;
-          d[i + c] = Math.min(255, Math.max(0, Math.round(v * 1.03)));
-        }
-      }
-      break;
-    }
-    case "grayscale": {
-      for (let i = 0; i < d.length; i += 4) {
-        const l = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
-        d[i] = d[i + 1] = d[i + 2] = l;
-      }
-      break;
-    }
-    case "blackwhite": {
-      const hist = new Array(256).fill(0);
-      const grayArr = new Uint8Array(d.length / 4);
-      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        const l = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
-        grayArr[j] = l;
-        hist[l]++;
-      }
-      const total = grayArr.length;
-      let sum = 0;
-      for (let t = 0; t < 256; t++) sum += t * hist[t];
-      let sumB = 0;
-      let wB = 0;
-      let best = 0;
-      let thr = 128;
-      for (let t = 0; t < 256; t++) {
-        wB += hist[t];
-        if (wB === 0) continue;
-        const wF = total - wB;
-        if (wF === 0) break;
-        sumB += t * hist[t];
-        const mB = sumB / wB;
-        const mF = (sum - sumB) / wF;
-        const between = wB * wF * (mB - mF) * (mB - mF);
-        if (between > best) {
-          best = between;
-          thr = t;
-        }
-      }
-      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        const v = grayArr[j] > thr ? 255 : 0;
-        d[i] = d[i + 1] = d[i + 2] = v;
-      }
-      break;
-    }
-    case "whiteboard": {
-      let maxL = 0;
-      for (let i = 0; i < d.length; i += 4) {
-        const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        if (l > maxL) maxL = l;
-      }
-      const norm = Math.max(1, maxL);
-      for (let i = 0; i < d.length; i += 4) {
-        for (let c = 0; c < 3; c++) {
-          const v = (d[i + c] / norm) * 255;
-          d[i + c] = Math.min(255, Math.round(v));
-        }
-      }
-      break;
-    }
+  let d: Uint8ClampedArray = image.data;
+  if (mode !== "raw") {
+    d = unsharpRgba(d, W, H); // §8: unsharp ANTES del filtro, mode ≠ raw
   }
-  ctx.putImageData(image, 0, 0);
+  const out = enhanceToRgba(d, W, H, mode);
+  const dest = ctx.createImageData(W, H);
+  dest.data.set(out);
+  ctx.putImageData(dest, 0, 0);
   return canvas;
 }
 
@@ -632,13 +722,15 @@ async function processImagePrecise(
       };
     }
 
-    // 4) Enhance no disponible → warp real + filtro canvas local.
+    // 4) Enhance no disponible → warp real + filtro canvas local (misma
+    //    matemática de image-modes). Los 3 filtros salen PNG (R-10).
     const filtered = applyFilterToCanvas(rotated, filter);
     if (filter === "original" && opts?.unsharpOriginal === true) {
       applyUnsharpToCanvas(filtered);
     }
+    const processed = await canvasToDataURL(filtered, "image/png");
     return {
-      processed: filtered.toDataURL("image/jpeg", 0.92),
+      processed,
       thumbnail: thumbnailFromCanvas(filtered),
       precision: {
         engine: "worker",
@@ -667,7 +759,41 @@ function thumbnailFromCanvas(canvas: HTMLCanvasElement): string {
   return tCanvas.toDataURL("image/jpeg", 0.8);
 }
 
-/** Pipeline canvas local (fallback). */
+/** Encode de canvas grande vía toBlob (error #22: toDataURL sobre canvas
+ *  grande revienta memoria en Safari/iOS). Caída a toDataURL si falla. */
+function canvasToDataURL(
+  canvas: HTMLCanvasElement,
+  mime: string,
+  quality?: number
+): Promise<string> {
+  return new Promise<string>((resolve) => {
+    try {
+      canvas.toBlob(
+        (b) => {
+          if (!b || b.size === 0) {
+            resolve(canvas.toDataURL(mime, quality));
+            return;
+          }
+          blobToDataURL(b)
+            .then(resolve)
+            .catch(() => resolve(canvas.toDataURL(mime, quality)));
+        },
+        mime,
+        quality
+      );
+    } catch {
+      resolve(canvas.toDataURL(mime, quality));
+    }
+  });
+}
+
+/**
+ * Pipeline canvas local (fallback) — F6-WARP/F6-FILTER:
+ *  1. Warp de perspectiva real (homografía + bilinear, aspecto medido §7.5,
+ *     cap PROCESSED_MAX_LONG_SIDE, nunca upscala) — no el recorte bbox.
+ *  2. Rotación post-warp (90/180/270) de alta calidad.
+ *  3. Filtro con la MISMA matemática del motor (image-modes) + PNG (R-10).
+ */
 async function processImageCanvas(
   src: string,
   quad: Quad,
@@ -676,12 +802,18 @@ async function processImageCanvas(
   opts?: ProcessOptions
 ): Promise<ProcessResult> {
   const img = await loadImage(src);
-  const cropped = await cropQuad(img, quad, rotation);
-  const filtered = applyFilterToCanvas(cropped, filter);
+  const maxLongSide = opts?.maxLongSide ?? PROCESSED_MAX_LONG_SIDE;
+  const warped = warpQuadToCanvas(img, quad, maxLongSide);
+  const base =
+    warped !== null
+      ? bitmapToRotatedCanvas(warped, rotation)
+      : await cropQuad(img, quad, rotation, maxLongSide); // último recurso bbox
+  const filtered = applyFilterToCanvas(base, filter);
   if (filter === "original" && opts?.unsharpOriginal === true) {
     applyUnsharpToCanvas(filtered);
   }
-  const processed = filtered.toDataURL("image/jpeg", 0.92);
+  // Los 3 filtros del producto salen PNG (R-10) — sin ringing sobre tinta.
+  const processed = await canvasToDataURL(filtered, "image/png");
   return {
     processed,
     thumbnail: thumbnailFromCanvas(filtered),

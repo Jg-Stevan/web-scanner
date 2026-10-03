@@ -11,7 +11,7 @@
  */
 
 import type { ScanDocument, ScanPage, ScannerSettings } from "./types";
-import { DEFAULT_SETTINGS } from "./types";
+import { DEFAULT_SETTINGS, normalizePageFilter } from "./types";
 
 const DB_NAME = "escaner-ios";
 const DB_VERSION = 2;
@@ -20,6 +20,10 @@ const STORE_META = "meta";
 const META_KEY = "initialized";
 const META_KEY_ORDER = "manualOrder";
 const SETTINGS_KEY = "escaner-settings-v1";
+/** Marca de migración one-time: sube exportQuality a "máxima" para
+ *  instalaciones creadas antes del cambio de calidad por defecto (F-OCR).
+ *  Si el usuario elige otro valor DESPUÉS de migrar, se respeta siempre. */
+const SETTINGS_MIGRATION_KEY = "escaner-settings-v2-maxq";
 
 /** Registro persistido: igual que ScanPage pero con las imágenes como Blob. */
 interface StoredPage extends Omit<ScanPage, "original" | "processed" | "thumbnail"> {
@@ -225,6 +229,9 @@ export async function loadAllDocuments(): Promise<ScanDocument[] | null> {
         try {
           pages.push({
             ...sp,
+            // §8.4 — migración legacy: los usuarios viejos tienen los 8
+            // presets persistidos; al hidratar se normaliza al de hoy.
+            filter: normalizePageFilter(sp.filter),
             original: await blobToDataUrl(sp.original),
             processed: await blobToDataUrl(sp.processed),
             thumbnail: await blobToDataUrl(sp.thumbnail),
@@ -275,7 +282,15 @@ export function loadSettings(): ScannerSettings {
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<ScannerSettings>;
     // Merge defensivo: defaults para claves nuevas/ausentes.
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const merged = { ...DEFAULT_SETTINGS, ...parsed };
+    // Migración one-time: instalaciones previas guardaron "alta" como
+    // default — se eleva a "máxima" una sola vez (después de esto el
+    // valor persistido vuelve a ser sagrado).
+    if (!localStorage.getItem(SETTINGS_MIGRATION_KEY)) {
+      if (parsed.exportQuality === "alta") merged.exportQuality = "máxima";
+      localStorage.setItem(SETTINGS_MIGRATION_KEY, "1");
+    }
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }
