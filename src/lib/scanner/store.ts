@@ -15,7 +15,7 @@ import type {
   ScannerSettings,
   ScannerView,
 } from "./types";
-import { DEFAULT_SETTINGS, capturePageKey } from "./types";
+import { DEFAULT_SETTINGS, TRASH_RETENTION_DAYS, capturePageKey, isTrashed } from "./types";
 import { initialDocuments } from "./mock-data";
 import { processImage } from "./image-processor";
 import {
@@ -34,6 +34,9 @@ export function nextId(prefix: string): string {
   uid += 1;
   return `${prefix}-${Date.now().toString(36)}-${uid}`;
 }
+
+/** localStorage: marca «onboarding completado» (primera ejecución). */
+export const ONBOARDING_STORAGE_KEY = "escaner-onboarding-v1";
 
 interface ScannerState {
   view: ScannerView;
@@ -67,6 +70,13 @@ interface ScannerState {
   settings: ScannerSettings;
   hydrated: boolean;
 
+  /** Onboarding de 4 pasos (primera ejecución). Arranca SIEMPRE false
+   *  (server + primer render del cliente — evita mismatch de hidratación);
+   *  page.tsx lo activa tras montar leyendo ONBOARDING_STORAGE_KEY. */
+  onboardingDone: boolean;
+  /** Marca el onboarding como completado y persiste la marca. */
+  completeOnboarding: () => void;
+
   setView: (view: ScannerView) => void;
   /** Abre un documento GUARDADO en el Editor (modo revisión, F-NOVIEW). */
   openDocument: (id: string) => void;
@@ -93,10 +103,16 @@ interface ScannerState {
   /** Lote: termina la cadena (vuelve a biblioteca, contador a 0). */
   endBatch: () => void;
 
-  reprocessPage: (id: string) => Promise<void>;
-
   saveSessionAsDocument: (title: string) => Promise<ScanDocument | null>;
+  /** Borrado SUAVE: mueve el documento a «Eliminados» (deletedAt=ahora,
+   *  recuperable TRASH_RETENTION_DAYS días). Sigue persistido. */
   deleteDocument: (id: string) => void;
+  /** Saca el documento de «Eliminados» y lo devuelve a la biblioteca. */
+  restoreDocument: (id: string) => void;
+  /** Borrado DEFINITIVO de un documento ya en papelera (IndexedDB incluida). */
+  purgeDocument: (id: string) => void;
+  /** Vacía la papelera completa (borrado definitivo de todos los eliminados). */
+  emptyTrash: () => void;
   renameDocument: (id: string, title: string) => void;
   toggleFavorite: (id: string) => void;
   addPageToDocument: (docId: string, page: CapturePage) => Promise<void>;
@@ -126,6 +142,17 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   batchSavedCount: 0,
   settings: DEFAULT_SETTINGS,
   hydrated: false,
+  onboardingDone: false,
+  completeOnboarding: () => {
+    set({ onboardingDone: true });
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "1");
+      }
+    } catch {
+      /* sin localStorage (SSR/privada): queda solo en memoria esta sesión */
+    }
+  },
   setView: (view) =>
     set((s) => ({
       view,
@@ -135,7 +162,9 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     })),
   openDocument: (id) => {
     const doc = get().documents.find((d) => d.id === id);
-    if (!doc) return;
+    // Un documento de la papelera nunca se abre en el editor desde la UI;
+    // este guard evita carreras (p. ej. clic residual tras vaciarla).
+    if (!doc || isTrashed(doc)) return;
     set({ activeDocumentId: id, batchSavedCount: 0 });
     get().beginReviewDocument(id);
   },
@@ -214,19 +243,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     })),
   endBatch: () => set({ batchSavedCount: 0 }),
 
-  reprocessPage: async (id) => {
-    const { capturePages, settings } = get();
-    const page = capturePages.find((p) => p.id === id);
-    if (!page) return;
-    try {
-      await processImage(page.original, page.quad, page.filter, page.rotation, {
-        manual: page.quadManual === true,
-      });
-    } catch {
-      /* noop */
-    }
-  },
-
   saveSessionAsDocument: async (title) => {
     const { capturePages, settings } = get();
     if (capturePages.length === 0) return null;
@@ -239,7 +255,8 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
-          });
+          unsharpOriginal: settings.unsharpOriginal,
+        });
         processed = res.processed;
         thumbnail = res.thumbnail;
         precision = res.precision;
@@ -349,7 +366,8 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
-          });
+          unsharpOriginal: settings.unsharpOriginal,
+        });
         processed = res.processed;
         thumbnail = res.thumbnail;
         precision = res.precision;
@@ -397,12 +415,53 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   },
 
   deleteDocument: (id) => {
+    // F-TRASH: borrado suave — el documento se marca con deletedAt y se
+    // conserva en IndexedDB. La purga real solo ocurre a los 30 días (hydrate)
+    // o desde la papelera (purgeDocument/emptyTrash).
+    set((s) => ({
+      documents: s.documents.map((d) =>
+        d.id === id && !isTrashed(d) ? { ...d, deletedAt: Date.now() } : d
+      ),
+      view: s.activeDocumentId === id ? "library" : s.view,
+      activeDocumentId: s.activeDocumentId === id ? null : s.activeDocumentId,
+    }));
+    const doc = get().documents.find((d) => d.id === id);
+    if (doc) void persistDocument(doc);
+  },
+
+  restoreDocument: (id) => {
+    set((s) => ({
+      documents: s.documents.map((d) => {
+        if (d.id !== id || !isTrashed(d)) return d;
+        const { deletedAt: _gone, ...rest } = d;
+        return { ...rest, updatedAt: Date.now() };
+      }),
+    }));
+    const doc = get().documents.find((d) => d.id === id);
+    if (doc) void persistDocument(doc);
+  },
+
+  purgeDocument: (id) => {
     set((s) => ({
       documents: s.documents.filter((d) => d.id !== id),
       view: s.activeDocumentId === id ? "library" : s.view,
       activeDocumentId: s.activeDocumentId === id ? null : s.activeDocumentId,
     }));
     void idbRemove(id);
+    // Purga el id del orden manual persistido: sin esto los ids muertos se
+    // acumulan en meta.manualOrder indefinidamente (solo wipeLibrary los
+    // limpiaba) y cualquier lógica futura basada en el orden se confundiría.
+    void saveManualOrder(get().documents.map((d) => d.id));
+  },
+
+  emptyTrash: () => {
+    const trashedIds = get()
+      .documents.filter((d) => isTrashed(d))
+      .map((d) => d.id);
+    if (trashedIds.length === 0) return;
+    set((s) => ({ documents: s.documents.filter((d) => !isTrashed(d)) }));
+    for (const id of trashedIds) void idbRemove(id);
+    void saveManualOrder(get().documents.map((d) => d.id));
   },
 
   renameDocument: (id, title) => {
@@ -431,6 +490,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       const res = await processImage(page.original, page.quad, page.filter, page.rotation, {
         manual: page.quadManual === true,
+        unsharpOriginal: settings.unsharpOriginal,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;
@@ -507,8 +567,9 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     const doc = get().documents.find((d) => d.id === docId);
     if (!doc) return;
     const now = Date.now();
+    const { deletedAt: _trashed, ...live } = doc; // la copia nace viva
     const copy: ScanDocument = {
-      ...doc,
+      ...live,
       id: nextId("doc"),
       title: `${doc.title} (copia)`.slice(0, 60),
       favorite: false,
@@ -556,6 +617,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       const res = await processImage(page.original, page.quad, filter, page.rotation, {
         manual: page.quadManual === true,
+        unsharpOriginal: settings.unsharpOriginal,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;
@@ -619,10 +681,26 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     if (get().hydrated) return;
     const settings = loadSettings();
     const docs = await loadAllDocuments();
+    // F-TRASH: purga automática de la papelera caducada (>30 días) al arrancar.
+    // Se hace en memoria + IndexedDB (best-effort) — patrón «Eliminados
+    // recientemente» de iOS Files.
+    const now = Date.now();
+    const live = (docs ?? get().documents).map((d) =>
+      isTrashed(d) && now - (d.deletedAt ?? 0) > TRASH_RETENTION_DAYS * 86400000 ? null : d
+    );
+    const expired = live.filter((d): d is ScanDocument => d === null).length;
+    const kept = live.filter((d): d is ScanDocument => d !== null);
+    if (expired > 0) {
+      for (const d of docs ?? []) {
+        if (isTrashed(d) && now - (d.deletedAt ?? 0) > TRASH_RETENTION_DAYS * 86400000) {
+          void idbRemove(d.id);
+        }
+      }
+    }
     set((s) => ({
       hydrated: true,
       settings: { ...s.settings, ...settings },
-      documents: docs === null ? s.documents : docs,
+      documents: docs === null ? s.documents : kept,
     }));
   },
 }));

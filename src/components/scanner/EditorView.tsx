@@ -51,9 +51,12 @@ import {
   Maximize2,
   RotateCw,
   ScanText,
+  Search,
+  Share2,
   SlidersHorizontal,
   Sparkles,
   Trash2,
+  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -68,12 +71,14 @@ import {
 } from "@/lib/scanner/image-processor";
 import {
   FILTER_PRESETS,
+  TRASH_RETENTION_DAYS,
   capturePageKey,
   defaultQuad,
 } from "@/lib/scanner/types";
 import type { CapturePage, PageFilter, Point, Quad, ScanPage } from "@/lib/scanner/types";
 import { ocrTextIsValid, requestOcr } from "@/lib/scanner/ocr";
-import { buildDocPdf, sanitizeFileName } from "@/lib/scanner/pdf-export";
+import { buildDocPdf, downloadBlob, sanitizeFileName } from "@/lib/scanner/pdf-export";
+import { ocrTextOfPages } from "@/lib/scanner/text-export";
 import { formatBytes } from "@/lib/scanner/format";
 import { cn } from "@/lib/utils";
 import { SaveSuccessOverlay } from "@/components/scanner/SaveSuccessOverlay";
@@ -95,6 +100,10 @@ const ZOOM_MAX = 6;
 const ZOOM_DOUBLE_TAP = 2.5;
 /** Umbral de movimiento (px) para distinguir arrastre de toque. */
 const TAP_SLOP = 8;
+/** F-SWIPE: distancia mínima (px) para navegar páginas al soltar. */
+const SWIPE_MIN_PX = 56;
+/** F-SWIPE: desplazamiento máximo de la goma elástica (px). */
+const SWIPE_RUBBER = 72;
 
 /** Lupa 3× durante el arrastre de un handle (puerto fiel del AdjustEditor del
  *  producto: EDITOR_LOUPE_SCALE=3 + EDITOR_LOUPE_RADIUS=84 — F4 validación
@@ -106,12 +115,6 @@ const LOUPE_GAP = 14;
 
 /** Mantener pulsado el preview (ms) antes de mostrar el original. */
 const COMPARE_HOLD_MS = 350;
-
-/** F-SWIPE — navegación de páginas deslizando el preview (a 1×):
- *  desplazamiento horizontal mínimo (px) para cambiar de página y
- *  desplazamiento visual máximo de la goma elástica. */
-const SWIPE_MIN_PX = 56;
-const SWIPE_RUBBER = 72;
 
 /** Preview procesado de la página en edición (modo review). */
 interface PreviewEntry {
@@ -156,6 +159,45 @@ function prettyDate(ts: number): string {
   }
 }
 
+/** F-FIND — texto OCR con las coincidencias de la búsqueda resaltadas
+ *  (marca amarilla #ffd60a estilo iOS, case-insensitive). Sin consulta
+ *  activa se renderiza el texto plano. */
+function OcrHighlightedText({
+  text,
+  query,
+}: {
+  text: string;
+  query: string | null;
+}) {
+  const q = query?.trim();
+  if (!q) {
+    return (
+      <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/90">
+        {text}
+      </p>
+    );
+  }
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
+  const needle = q.toLowerCase();
+  return (
+    <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/90">
+      {parts.map((part, i) =>
+        part.toLowerCase() === needle ? (
+          <mark
+            key={i}
+            className="rounded-[3px] bg-[#ffd60a] px-0.5 font-semibold text-black"
+          >
+            {part}
+          </mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </p>
+  );
+}
+
 export default function EditorView() {
   // ── Store ────────────────────────────────────────────────────────────────
   const capturePages = useScannerStore((s) => s.capturePages);
@@ -165,10 +207,13 @@ export default function EditorView() {
   const removeCapturePage = useScannerStore((s) => s.removeCapturePage);
   const addCapturePage = useScannerStore((s) => s.addCapturePage);
   const setView = useScannerStore((s) => s.setView);
-  const documentsCount = useScannerStore((s) => s.documents.length);
+  const documentsCount = useScannerStore(
+    (s) => s.documents.filter((d) => d.deletedAt === undefined).length
+  );
   const saveSessionAsDocument = useScannerStore((s) => s.saveSessionAsDocument);
   const startBatchDocument = useScannerStore((s) => s.startBatchDocument);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
+  const unsharpOriginal = useScannerStore((s) => s.settings.unsharpOriginal);
   /** F-NOVIEW — modo revisión de documento: el editor trabaja sobre las
    *  páginas de un documento guardado (cargadas como sesión con sus ids). */
   const reviewDocId = useScannerStore((s) => s.reviewDocId);
@@ -177,21 +222,19 @@ export default function EditorView() {
   );
   const saveSessionToDocument = useScannerStore((s) => s.saveSessionToDocument);
   const exitReviewToLibrary = useScannerStore((s) => s.exitReviewToLibrary);
+  /** F-OCR-AUTO: «Reconocimiento OCR» (Ajustes › Procesamiento) — en sesiones
+   *  de captura nuevas extrae el texto de cada página en segundo plano. */
+  const ocrEnabled = useScannerStore((s) => s.settings.ocrEnabled);
+  const exportQuality = useScannerStore((s) => s.settings.exportQuality);
+  /** F-FIND: consulta prestada por la biblioteca (búsqueda que matcheó por
+   *  texto OCR) — abre el sheet de texto y salta a la 1ª página con
+   *  coincidencias, resaltándolas. */
+  const pendingFindQuery = useScannerStore((s) => s.pendingFindQuery);
+  const setPendingFindQuery = useScannerStore((s) => s.setPendingFindQuery);
 
   const page: CapturePage | undefined =
     capturePages[editingIndex] ?? capturePages[capturePages.length - 1];
   const activeIdx = page ? capturePages.indexOf(page) : -1;
-  const totalPages = capturePages.length;
-
-  /** Navegación de páginas (pill + carrusel + swipe F-SWIPE). Definida
-   *  PRONTO porque los gestos del stage la referencian en sus deps. */
-  const goToPage = useCallback(
-    (i: number) => {
-      if (i < 0 || i >= capturePages.length || i === activeIdx) return;
-      setEditingIndex(i);
-    },
-    [capturePages.length, activeIdx, setEditingIndex]
-  );
 
   // ── Modo review/crop + preview procesado (F-FLOW) ───────────────────────
   const [mode, setMode] = useState<"review" | "crop">("review");
@@ -226,11 +269,16 @@ export default function EditorView() {
   >(null);
   const zoomDownAt = useRef<{ x: number; y: number; t: number } | null>(null);
   const zoomLastTap = useRef(0);
+  /** F-SWIPE: eje decidido del gesto actual (null = aún sin decidir). */
+  const swipeAxisRef = useRef<null | "x" | "y">(null);
 
   // ── OCR (F-OCR · sheet "Texto") ─────────────────────────────────────────
   const [ocrOpen, setOcrOpen] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
   const [ocrProgress, setOcrProgress] = useState<{ i: number; n: number } | null>(null);
+  /** F-FIND: término activo de búsqueda dentro del texto OCR (las
+   *  coincidencias se resaltan mientras el sheet está abierto). */
+  const [findQuery, setFindQuery] = useState<string | null>(null);
 
   /** Hint de zoom: visible ~6 s al montar (didáctico, luego se va solo). */
   const [zoomHintVisible, setZoomHintVisible] = useState(true);
@@ -241,12 +289,6 @@ export default function EditorView() {
 
   // ── Presentación a pantalla completa (desde el header) ───────────────────
   const [presentationOpen, setPresentationOpen] = useState(false);
-
-  // ── F-THUMBS — desplegable de miniaturas del carrusel ────────────────────
-  const [thumbsOpen, setThumbsOpen] = useState(true);
-
-  // ── F-SWIPE — eje del gesto en curso sobre el preview (a 1×) ─────────────
-  const swipeAxisRef = useRef<null | "x" | "y">(null);
 
   // ── Estado local ─────────────────────────────────────────────────────────
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
@@ -281,10 +323,21 @@ export default function EditorView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const carouselRef = useRef<HTMLDivElement>(null);
+  /** F-THUMBS: carrusel de miniaturas visible (desplegable). */
+  const [thumbsOpen, setThumbsOpen] = useState(true);
   const displayRef = useRef<Quad>(displayQuad);
   const draggingRef = useRef(false);
   const dragRef = useRef<{ kind: "corner" | "mid"; index: number } | null>(null);
   const pageIdRef = useRef<string | null>(null);
+  // Snapshot del quad al ENTRAR en modo recorte (por página): Cancelar/Escape
+  // restauran este estado — el quad persistido en el store ya habrá sido
+  // sobreescrito por el arrastre (onContainerPointerUp), así que sin este
+  // snapshot "Cancelar" ≡ "Aplicar".
+  const cropEntryRef = useRef<{
+    pid: string;
+    quad: Quad;
+    manual: boolean;
+  } | null>(null);
   const autoIds = useRef<Set<string>>(new Set());
   const manualIds = useRef<Set<string>>(new Set());
   const badgeTimer = useRef<number>(0);
@@ -348,6 +401,17 @@ export default function EditorView() {
   // documento final, no el original con marco (eso queda para "Recortar").
   const cacheKey = page ? capturePageKey(page) : "";
 
+  /** Inserta en la cache de previews con recorte LRU unificado (12 entradas,
+   *  data URLs PNG grandes: sin tope, sesiones largas con runOcrAll podían
+   *  acumular decenas de entradas → riesgo de jetsam en iOS). */
+  const cachePreviewEntry = useCallback((key: string, entry: PreviewEntry) => {
+    previewCache.current.set(key, entry);
+    if (previewCache.current.size > 12) {
+      const oldest = previewCache.current.keys().next().value;
+      if (oldest) previewCache.current.delete(oldest);
+    }
+  }, []);
+
   useEffect(() => {
     if (mode !== "review" || !page) return;
     // F-NOVIEW: las páginas de un documento guardado llegan con su
@@ -373,6 +437,11 @@ export default function EditorView() {
       return;
     }
     let cancelled = false;
+    // Cache-miss: limpiar el preview ANTERIOR — sin esto, durante el
+    // reproceso (segundos en 12 MP) el preview sigue siendo el de la página
+    // previa y el OCR podría capturarlo y persistir texto en la página
+    // equivocada.
+    setPreview(null);
     setPreviewLoading(true);
     void (async () => {
       try {
@@ -381,7 +450,10 @@ export default function EditorView() {
           page.quad,
           page.filter,
           page.rotation,
-          { manual: page.quadManual === true }
+          {
+            manual: page.quadManual === true,
+            unsharpOriginal,
+          }
         );
         if (cancelled) return;
         const entry: PreviewEntry = {
@@ -390,12 +462,7 @@ export default function EditorView() {
           h: res.precision?.height ?? 0,
           engine: res.precision?.engine === "worker" ? "worker" : "canvas",
         };
-        previewCache.current.set(cacheKey, entry);
-        // LRU tosco: 12 entradas como máximo (data URLs grandes).
-        if (previewCache.current.size > 12) {
-          const oldest = previewCache.current.keys().next().value;
-          if (oldest) previewCache.current.delete(oldest);
-        }
+        cachePreviewEntry(cacheKey, entry);
         setPreview(entry);
       } catch {
         if (!cancelled) setPreview({ url: page.original, w: 0, h: 0, engine: "canvas" });
@@ -407,7 +474,7 @@ export default function EditorView() {
       cancelled = true;
     };
      
-  }, [mode, cacheKey, page?.original]);
+  }, [mode, cacheKey, page?.original, unsharpOriginal, cachePreviewEntry]);
 
   // ── Comparación antes/después (mantener pulsado el preview a 1×) ──────────
   const startCompareTimer = useCallback(() => {
@@ -467,6 +534,18 @@ export default function EditorView() {
   useEffect(() => {
     resetZoom();
   }, [page?.id, mode, resetZoom]);
+
+  /** Navegación de páginas (pill + carrusel + swipe F-SWIPE). Definida
+   *  ANTES de los gestos del stage: los handlers la usan y la TS la exige. */
+  const goToPage = useCallback(
+    (i: number) => {
+      if (i < 0 || i >= capturePages.length || i === activeIdx) return;
+      setEditingIndex(i);
+    },
+    [capturePages.length, activeIdx, setEditingIndex]
+  );
+
+  const totalPages = capturePages.length;
 
   /** Coordenadas del puntero relativas al CENTRO del stage (ancla de zoom). */
   const zoomRelToCenter = useCallback((cx: number, cy: number) => {
@@ -528,7 +607,6 @@ export default function EditorView() {
           midY: mid.y,
         };
       } else if (zoomPointers.current.size === 1) {
-        swipeAxisRef.current = null;
         zoomDownAt.current = { x: e.clientX, y: e.clientY, t: performance.now() };
         zoomGesture.current = {
           type: "pan",
@@ -661,7 +739,7 @@ export default function EditorView() {
         zoomDownAt.current = a ? { x: a.x, y: a.y, t: performance.now() } : null;
       }
     },
-    [clampZoomPan, endCompare, zoomRelToCenter, zoomAtPoint, resetZoom, zoomScale, zoomX, zoomY, activeIdx, capturePages.length, goToPage]
+    [clampZoomPan, endCompare, zoomRelToCenter, zoomAtPoint, resetZoom, zoomScale, zoomX, zoomY, goToPage, activeIdx, capturePages.length]
   );
 
   /** Rueda del ratón (escritorio): zoom anclado al cursor. */
@@ -930,6 +1008,11 @@ export default function EditorView() {
   /** Recortar: entra al modo de ajuste manual de bordes. */
   const handleEnterCrop = () => {
     if (!page) return;
+    cropEntryRef.current = {
+      pid: page.id,
+      quad: page.quad,
+      manual: page.quadManual === true,
+    };
     setMode("crop");
   };
 
@@ -938,14 +1021,27 @@ export default function EditorView() {
     setMode("review");
   };
 
-  /** Cancelar el recorte: restaura el quad persistido y vuelve a review. */
-  const handleCancelCrop = () => {
-    if (page) {
+  /** Cancelar el recorte: restaura el quad de ENTRADA (snapshot) y vuelve a
+   *  review. Restaurar "page.quad" no sirve: onContainerPointerUp ya
+   *  persistió el quad arrastrado en el store, así que page.quad ES el quad
+   *  nuevo — cancelar lo dejaría aplicado. */
+  const handleCancelCrop = useCallback(() => {
+    const entry = cropEntryRef.current;
+    if (page && entry && entry.pid === page.id) {
+      displayRef.current = entry.quad;
+      setDisplayQuad(entry.quad);
+      updateCapturePage(page.id, {
+        quad: entry.quad,
+        quadManual: entry.manual,
+      });
+      if (entry.manual) manualIds.current.add(page.id);
+      else manualIds.current.delete(page.id);
+    } else if (page) {
       displayRef.current = page.quad;
       setDisplayQuad(page.quad);
     }
     setMode("review");
-  };
+  }, [page, updateCapturePage]);
 
   /** Escape en modo crop: cancela el recorte (antes de navegar atrás). */
   useEffect(() => {
@@ -958,8 +1054,7 @@ export default function EditorView() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-     
-  }, [mode, page?.id]);
+  }, [mode, handleCancelCrop]);
 
   const handleDetect = useCallback(async () => {
     if (!page || detecting) return;
@@ -1002,8 +1097,8 @@ export default function EditorView() {
       if (reviewDocId) {
         setView("library");
         void saveSessionToDocument();
-        toast("Documento eliminado", {
-          description: "Era su única página.",
+        toast("Documento movido a Eliminados", {
+          description: `Era su única página · ${TRASH_RETENTION_DAYS} días para recuperarlo.`,
           icon: "🗑️",
         });
       } else {
@@ -1049,17 +1144,22 @@ export default function EditorView() {
     try {
       if (s.reviewDocId) {
         const docId = await s.saveSessionToDocument();
-        setSaving(false);
         if (docId) {
           if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
             navigator.vibrate([28, 60, 28]);
           }
+          // El botón sigue deshabilitado (saving) DURANTE la descarga: antes
+          // se reseteaba antes del await y un doble tap caía en "No hay
+          // páginas" → setView("camera") sorpresivo con el store ya fusionado.
           await downloadDocPdf(docId);
         }
+        setSaving(false);
         setView("library");
         return;
       }
-      const n = s.documents.length + 1;
+      // Solo cuenta los documentos VIVOS (los de la papelera no ocupa nº de
+      // título — evita «Digitalización 5» cuando el 4 está en Eliminados).
+      const n = s.documents.filter((d) => d.deletedAt === undefined).length + 1;
       const doc = await s.saveSessionAsDocument(`Digitalización ${n}`);
       if (doc) {
         const engine = doc.pages.some((p) => p.precision?.engine === "worker")
@@ -1076,6 +1176,11 @@ export default function EditorView() {
     } catch {
       toast.error("No se pudo guardar el documento");
       setSaving(false);
+    } finally {
+      // Seguro de vida: si el overlay de éxito NO está activo (errores, o un
+      // futuro refactor que mantenga montado el editor), liberar el botón —
+      // antes el camino de éxito lo dejaba saving=true para siempre.
+      if (!savedInfoRef.current) setSaving(false);
     }
   }, [saving, savedInfo, downloadDocPdf]);
 
@@ -1115,6 +1220,15 @@ export default function EditorView() {
    *  sesión y viaja al documento al guardar/fusionar. */
   const runOcrCurrent = useCallback(async () => {
     if (!page || ocrRunning) return;
+    // Reproceso en vuelo: el preview (y la página) están en transición — el
+    // OCR de un preview stale haría texto de la página ANTERIOR.
+    if (previewLoading) {
+      toast.info("Preparando la página…", {
+        description: "Espera un instante a que termine el procesado",
+        duration: 2500,
+      });
+      return;
+    }
     // Preview actual (estado fresco) → procesada guardada si sigue vigente →
     // original como último recurso.
     const image =
@@ -1139,7 +1253,7 @@ export default function EditorView() {
     } finally {
       setOcrRunning(false);
     }
-  }, [page, preview?.url, cacheKey, ocrRunning, updateCapturePage]);
+  }, [page, preview?.url, cacheKey, ocrRunning, previewLoading, updateCapturePage]);
 
   /** OCR secuencial de TODAS las páginas de la sesión (con progreso). */
   const runOcrAll = useCallback(async () => {
@@ -1164,9 +1278,10 @@ export default function EditorView() {
           // Procesa al vuelo (sesión de captura: aún no hay procesada).
           const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
             manual: p.quadManual === true,
+            unsharpOriginal: s.settings.unsharpOriginal,
           });
           image = res.processed;
-          previewCache.current.set(capturePageKey(p), {
+          cachePreviewEntry(capturePageKey(p), {
             url: res.processed,
             w: 0,
             h: 0,
@@ -1199,6 +1314,129 @@ export default function EditorView() {
       toast.error("No se pudo copiar el texto");
     }
   }, [page?.ocrText]);
+
+  /** F-SHARE — comparte el PDF del documento en revisión (Web Share API
+   *  nivel 2, archivos) con fallback honesto a descarga directa. */
+  const [sharing, setSharing] = useState(false);
+  const shareDocPdf = useCallback(async () => {
+    const doc = reviewDoc;
+    if (!doc || sharing || doc.pages.length === 0) return;
+    setSharing(true);
+    try {
+      const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
+      const fileName = `${sanitizeFileName(doc.title)}.pdf`;
+      const blob = pdf.output("blob");
+      const file = new File([blob], fileName, { type: "application/pdf" });
+      const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
+      if (typeof nav.share === "function" && nav.canShare?.({ files: [file] })) {
+        await nav.share({ files: [file], title: doc.title });
+        toast.success(`Documento compartido · ${formatBytes(bytes)}`);
+      } else {
+        downloadBlob(blob, fileName);
+        toast.success("Compartir no está disponible aquí", {
+          description: `El PDF (${formatBytes(bytes)}) se ha descargado en su lugar.`,
+        });
+      }
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") return; // el usuario canceló
+      toast.error("No se pudo compartir el documento");
+    } finally {
+      setSharing(false);
+    }
+  }, [reviewDoc, sharing, exportQuality]);
+
+  /** F-TXT: texto OCR de TODAS las páginas de la sesión (para «Copiar todo»). */
+  const allDocOcrText = useMemo(() => ocrTextOfPages(capturePages), [capturePages]);
+  const copyAllOcr = useCallback(async () => {
+    if (!allDocOcrText) return;
+    try {
+      await navigator.clipboard.writeText(allDocOcrText);
+      toast.success("Texto de todas las páginas copiado");
+    } catch {
+      toast.error("No se pudo copiar el texto");
+    }
+  }, [allDocOcrText]);
+
+  /* ── F-OCR-AUTO — OCR de fondo tras cada captura ────────────────────────
+   *  «Reconocimiento OCR» activo (Ajustes › Procesamiento) + página NUEVA
+   *  (sin processedKey: recién capturada, tanto en sesión nueva como añadida
+   *  a un documento en revisión) + preview listo → extrae el texto UNA vez
+   *  por página, en silencio y sin bloquear la edición. Las páginas ya
+   *  guardadas (cargadas con processedKey) nunca se re-procesan solas. El
+   *  botón «Texto» sigue disponible para re-ejecutar o ver el resultado.
+   *  Mientras vuela, un pill flotante informa del progreso (la extracción
+   *  tarda segundos y la red no es invisible). */
+  const autoOcrTried = useRef<Set<string>>(new Set());
+  const [autoOcrBusy, setAutoOcrBusy] = useState(false);
+  useEffect(() => {
+    // Concurrency gate: máximo UN OCR en vuelo (auto o manual) — al terminar,
+    // el efecto re-ejecuta con el estado fresco y procesa la página activa.
+    if (!ocrEnabled || !page || ocrRunning || previewLoading || autoOcrBusy) return;
+    if (page.ocrDone === true || page.processedKey !== undefined) return;
+    if (autoOcrTried.current.has(page.id)) return;
+    const image =
+      preview?.url ??
+      (page.processed && page.processedKey === cacheKey ? page.processed : undefined);
+    if (!image) return;
+    autoOcrTried.current.add(page.id);
+    setAutoOcrBusy(true);
+    void (async () => {
+      try {
+        const text = await requestOcr(image);
+        if (ocrTextIsValid(text)) {
+          updateCapturePage(page.id, { ocrText: text, ocrDone: true });
+        }
+      } catch {
+        /* silencioso en modo automático: el usuario puede reintentar a mano */
+      } finally {
+        setAutoOcrBusy(false);
+      }
+    })();
+  }, [
+    ocrEnabled,
+    page,
+    ocrRunning,
+    previewLoading,
+    autoOcrBusy,
+    preview?.url,
+    cacheKey,
+    updateCapturePage,
+  ]);
+
+  /* ── F-FIND — llegada desde la biblioteca con una búsqueda que matcheó ──
+   *  por texto OCR: salta a la primera página con coincidencias, abre el
+   *  sheet de texto y resalta el término (hasta que se cierre el sheet). */
+  useEffect(() => {
+    const q = pendingFindQuery?.trim();
+    if (!q || !capturePages.length) return;
+    setPendingFindQuery(null);
+    const needle = q.toLowerCase();
+    const idx = capturePages.findIndex((p) =>
+      (p.ocrText ?? "").toLowerCase().includes(needle)
+    );
+    if (idx < 0) return;
+    setFindQuery(q);
+    setOcrOpen(true);
+    if (idx !== editingIndex) setEditingIndex(idx);
+  }, [pendingFindQuery, capturePages, editingIndex, setEditingIndex, setPendingFindQuery]);
+
+  /** Contadores del sheet de texto (palabras · caracteres · coincidencias). */
+  const ocrStats = useMemo(() => {
+    const text = page?.ocrText ?? "";
+    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+    let matches = 0;
+    const q = findQuery?.trim().toLowerCase();
+    if (q) {
+      const hay = text.toLowerCase();
+      let pos = 0;
+      while ((pos = hay.indexOf(q, pos)) !== -1) {
+        matches += 1;
+        pos += q.length;
+      }
+    }
+    return { words, chars: text.length, matches };
+  }, [page?.ocrText, findQuery]);
+
 
   /** Páginas de la sesión proyectadas a ScanPage para la presentación
    *  (usa la procesada de la cache — la misma que se ve en el preview). */
@@ -1257,6 +1495,22 @@ export default function EditorView() {
             </span>
             <span className="text-[11px] leading-tight text-white/50">{headerDate}</span>
           </div>
+          {/* Compartir el documento en revisión (F-SHARE, como Adobe Scan) */}
+          {reviewDoc && (
+            <button
+              type="button"
+              aria-label="Compartir documento"
+              onClick={() => void shareDocPdf()}
+              disabled={sharing || totalPages === 0}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/85 transition-all active:scale-90 active:bg-white/10 disabled:opacity-30"
+            >
+              {sharing ? (
+                <Loader2 className="h-[19px] w-[19px] animate-spin" />
+              ) : (
+                <Share2 className="h-[19px] w-[19px]" strokeWidth={2.2} />
+              )}
+            </button>
+          )}
           {/* Presentación a pantalla completa (antes vivía en el detalle) */}
           <button
             type="button"
@@ -1412,7 +1666,7 @@ export default function EditorView() {
             {!zoomed && totalPages > 0 && !previewLoading && zoomHintVisible && (
               <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-6">
                 <span className="rounded-full bg-black/45 px-3 py-1 text-[10.5px] font-medium text-white/70 backdrop-blur-md">
-                  Pellizca para ampliar · desliza para cambiar de página · mantén pulsado para ver el original
+                  Pellizca para ampliar · mantén pulsado para ver el original
                 </span>
               </div>
             )}
@@ -1498,38 +1752,38 @@ export default function EditorView() {
                 transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
                 className="shrink-0 overflow-hidden"
               >
-                <div
-                  ref={carouselRef}
-                  className="no-scrollbar flex gap-2.5 overflow-x-auto px-5 pb-2 pt-1"
-                  aria-label="Páginas de la sesión"
+            <div
+              ref={carouselRef}
+              className="no-scrollbar flex gap-2.5 overflow-x-auto px-5 pb-2 pt-1"
+              aria-label="Páginas de la sesión"
+            >
+              {capturePages.map((p, i) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  data-idx={i}
+                  aria-label={`Ir a la página ${i + 1}`}
+                  aria-current={i === activeIdx ? "true" : undefined}
+                  onClick={() => goToPage(i)}
+                  className={cn(
+                    "relative h-16 w-12 shrink-0 overflow-hidden rounded-lg border-2 transition-transform active:scale-95",
+                    i === activeIdx
+                      ? "border-[#007aff] shadow-[0_0_0_3px_rgba(0,122,255,0.25)]"
+                      : "border-white/15 opacity-70"
+                  )}
                 >
-                  {capturePages.map((p, i) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      data-idx={i}
-                      aria-label={`Ir a la página ${i + 1}`}
-                      aria-current={i === activeIdx ? "true" : undefined}
-                      onClick={() => goToPage(i)}
-                      className={cn(
-                        "relative h-16 w-12 shrink-0 overflow-hidden rounded-lg border-2 transition-transform active:scale-95",
-                        i === activeIdx
-                          ? "border-[#007aff] shadow-[0_0_0_3px_rgba(0,122,255,0.25)]"
-                          : "border-white/15 opacity-70"
-                      )}
-                    >
-                      <img
-                        src={p.original}
-                        alt=""
-                        draggable={false}
-                        style={{ filter: CSS_FILTERS[p.filter] ?? "none" }}
-                        className="h-full w-full object-cover"
-                      />
-                      <span className="absolute bottom-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-[9px] font-bold text-white">
-                        {i + 1}
-                      </span>
-                    </button>
-                  ))}
+                  <img
+                    src={p.original}
+                    alt=""
+                    draggable={false}
+                    style={{ filter: CSS_FILTERS[p.filter] ?? "none" }}
+                    className="h-full w-full object-cover"
+                  />
+                  <span className="absolute bottom-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-[9px] font-bold text-white">
+                    {i + 1}
+                  </span>
+                </button>
+              ))}
                 </div>
               </motion.div>
             )}
@@ -1748,6 +2002,27 @@ export default function EditorView() {
         </>
       )}
 
+      {/* ── F-OCR-AUTO: pill flotante mientras el OCR de fondo vuela ──────── */}
+      <AnimatePresence>
+        {autoOcrBusy && mode === "review" && !ocrOpen && (
+          <motion.div
+            key="auto-ocr-pill"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="pointer-events-none absolute inset-x-0 bottom-[128px] z-30 flex justify-center px-6"
+          >
+            <div className="flex items-center gap-2 rounded-full bg-[#1c1c1e]/92 px-4 py-2 shadow-[0_4px_16px_rgba(0,0,0,0.35)] ring-1 ring-inset ring-white/10 backdrop-blur-xl">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[#007aff]" />
+              <span className="text-[12.5px] font-medium text-white/85">
+                Reconociendo texto…
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {mode === "review" && (
         /* ── Bottom bar de REVIEW: toolbar + acciones principales ─────────── */
         <div className="relative z-10 shrink-0 bg-black pb-safe">
@@ -1864,7 +2139,14 @@ export default function EditorView() {
 
       {/* ── Sheet de OCR "Texto" (F-OCR · vaul, confinado al teléfono) ────── */}
       {portalEl && page && (
-        <DrawerPrimitive.Root open={ocrOpen} onOpenChange={setOcrOpen}>
+        <DrawerPrimitive.Root
+          open={ocrOpen}
+          onOpenChange={(open) => {
+            setOcrOpen(open);
+            // F-FIND: al cerrar el sheet se limpia el resaltado.
+            if (!open) setFindQuery(null);
+          }}
+        >
           <DrawerPrimitive.Portal container={portalEl}>
             <DrawerPrimitive.Overlay className="absolute inset-0 z-40 bg-black/50" />
             <DrawerPrimitive.Content
@@ -1891,10 +2173,37 @@ export default function EditorView() {
                   </div>
                 ) : page.ocrText ? (
                   <>
+                    {/* F-FIND: barra de coincidencias activa (amarillo iOS) */}
+                    {findQuery && (
+                      <div className="mb-2 flex items-center justify-between gap-2 rounded-xl bg-[#ffd60a]/12 px-3 py-2 ring-1 ring-inset ring-[#ffd60a]/30">
+                        <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] font-medium text-[#ffd60a]">
+                          <Search className="size-3.5 shrink-0" strokeWidth={2.4} />
+                          <span className="truncate">
+                            {ocrStats.matches}{' '}
+                            {ocrStats.matches === 1 ? 'coincidencia' : 'coincidencias'} de “{findQuery}”
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="Quitar resaltado"
+                          onClick={() => setFindQuery(null)}
+                          className="shrink-0 rounded-full p-1 text-[#ffd60a]/80 transition-colors active:bg-white/10"
+                        >
+                          <X className="size-4" strokeWidth={2.4} />
+                        </button>
+                      </div>
+                    )}
                     <div className="no-scrollbar max-h-[38vh] overflow-y-auto rounded-xl bg-black/40 p-3.5 ring-1 ring-inset ring-white/10">
-                      <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/90">
-                        {page.ocrText}
-                      </p>
+                      <OcrHighlightedText text={page.ocrText} query={findQuery} />
+                    </div>
+                    {/* Contadores informativos (estilo chips iOS) */}
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 px-0.5">
+                      <span className="rounded-full bg-white/8 px-2.5 py-1 text-[11.5px] font-medium tabular-nums text-white/60">
+                        {ocrStats.words} {ocrStats.words === 1 ? "palabra" : "palabras"}
+                      </span>
+                      <span className="rounded-full bg-white/8 px-2.5 py-1 text-[11.5px] font-medium tabular-nums text-white/60">
+                        {ocrStats.chars} {ocrStats.chars === 1 ? "carácter" : "caracteres"}
+                      </span>
                     </div>
                     <div className="mt-3 flex gap-2.5">
                       <button
@@ -1933,6 +2242,18 @@ export default function EditorView() {
                       Reconocer texto
                     </motion.button>
                   </div>
+                )}
+
+                {/* Copiar el texto de TODAS las páginas (F-TXT) */}
+                {totalPages > 1 && allDocOcrText && !ocrRunning && (
+                  <button
+                    type="button"
+                    onClick={() => void copyAllOcr()}
+                    className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-full bg-white/8 py-2.5 text-[13.5px] font-medium text-white/75 ring-1 ring-inset ring-white/10 transition-all active:scale-[0.98]"
+                  >
+                    <Copy className="size-4" strokeWidth={2.2} />
+                    Copiar texto de las {totalPages} páginas
+                  </button>
                 )}
 
                 {/* OCR de todo el documento (secuencial con progreso) */}
@@ -2003,7 +2324,8 @@ export default function EditorView() {
   );
 }
 
-/** Item del toolbar de review (icono 24px + label 11px). */
+/** Item del toolbar de review (icono 24px + label 11px). Activo = halo azul
+ *  suave + glow del icono (feedback inmediato, estilo iOS/Adobe Scan). */
 function ToolItem({
   icon: Icon,
   label,
@@ -2022,23 +2344,36 @@ function ToolItem({
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className="flex flex-col items-center gap-1 rounded-xl px-1 py-1.5 transition-opacity active:opacity-60"
+      className="group flex flex-col items-center gap-1 rounded-xl px-1 py-1.5 transition-all duration-200 active:opacity-60"
     >
-      <Icon
-        className={cn(
-          "h-6 w-6",
-          danger ? "text-[#ff3b30]" : active ? "text-[#007aff]" : "text-[#8e8e93]"
-        )}
-        strokeWidth={active ? 2.2 : 1.8}
-      />
       <span
         className={cn(
-          "text-[11px]",
+          "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-all duration-200",
+          active
+            ? "bg-[#007aff]/14 shadow-[inset_0_0_0_1px_rgba(0,122,255,0.35)]"
+            : "group-active:bg-white/8"
+        )}
+      >
+        <Icon
+          className={cn(
+            "h-6 w-6 transition-all duration-200",
+            danger
+              ? "text-[#ff3b30]"
+              : active
+                ? "text-[#007aff] drop-shadow-[0_0_7px_rgba(0,122,255,0.55)]"
+                : "text-[#8e8e93] group-hover:text-white/90"
+          )}
+          strokeWidth={active ? 2.2 : 1.8}
+        />
+      </span>
+      <span
+        className={cn(
+          "text-[11px] transition-colors duration-200",
           danger
             ? "text-[#ff3b30]/80"
             : active
               ? "font-medium text-[#007aff]"
-              : "text-[#8e8e93]"
+              : "text-[#8e8e93] group-hover:text-white/80"
         )}
       >
         {label}

@@ -41,8 +41,10 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { nextId, useScannerStore } from "@/lib/scanner/store";
 import {
+  DOC_PROFILES,
   defaultQuad,
   type CapturePage,
+  type DocProfileId,
   type Quad,
 } from "@/lib/scanner/types";
 import {
@@ -217,23 +219,27 @@ function jitteredQuad(): Quad {
  *  iPhone de 4032px, añadiendo un re-encode JPEG extra — codigo-test guarda
  *  la foto full-res con una sola compresión). Con el tope en la resolución
  *  completa del sensor ya no hay downscale en el flujo normal de captura;
- *  4032×3024 ≈ 12.2 MP, aún lejos del límite de canvas de iOS. */
-async function downscaleDataUrl(dataUrl: string, max = 4032): Promise<string> {
+ *  4032×3024 ≈ 12.2 MP, aún lejos del límite de canvas de iOS.
+ *  Recibe el elemento YA decodificado (decode único de la captura) y devuelve
+ *  null si no hace falta re-escalar. */
+function downscaleImage(
+  img: HTMLImageElement,
+  max = 4032
+): string | null {
+  const big = Math.max(img.naturalWidth || 0, img.naturalHeight || 0);
+  if (big <= max || !big) return null;
+  const scale = max / big;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   try {
-    const img = await loadImage(dataUrl);
-    const big = Math.max(img.width, img.height);
-    if (big <= max) return dataUrl;
-    const scale = max / big;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(img.width * scale);
-    canvas.height = Math.round(img.height * scale);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return dataUrl;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.95);
   } catch {
-    return dataUrl;
+    return null;
   }
 }
 
@@ -371,6 +377,8 @@ export default function CameraView() {
   const setView = useScannerStore((s) => s.setView);
   const capturePages = useScannerStore((s) => s.capturePages);
   const addCapturePage = useScannerStore((s) => s.addCapturePage);
+  const settings = useScannerStore((s) => s.settings);
+  const updateSettings = useScannerStore((s) => s.updateSettings);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
 
   // ── Refs y estado ──
@@ -383,13 +391,9 @@ export default function CameraView() {
   const loopRef = useRef<CameraFrameLoop | null>(null);
   const processingRef = useRef(false);
   const cooldownRef = useRef(0);
-  /** F-CLEAN: la auto-captura ya no vive en Ajustes — control local de la
-   *  cámara (botón de la toolbar), activada por defecto en cada sesión. */
-  const [autoCapture, setAutoCapture] = useState(true);
-  const autoRef = useRef(true);
-  /** F-FLASH: la linterna arranca APAGADA en cada sesión (el ajuste
-   *  "Flash" se eliminó); el usuario la enciende con el botón. */
-  const flashRef = useRef(false);
+  const autoRef = useRef(settings.autoCapture);
+  /** F-FLASH: preferencia persistida (re-aplicada al abrir cada stream). */
+  const flashRef = useRef(settings.flash);
   /** F-FLASH v3: espejo de torchOn legible desde listeners sin re-render. */
   const torchOnRef = useRef(false);
   const lastTelemetryAt = useRef(0);
@@ -413,7 +417,8 @@ export default function CameraView() {
   /** Toast único por sesión de aviso calidad en iPhone (auto-captura = frames). */
   const iosQualityToastShownRef = useRef(false);
 
-  autoRef.current = autoCapture;
+  autoRef.current = settings.autoCapture;
+  flashRef.current = settings.flash;
   torchOnRef.current = torchOn;
 
   const pageCount = capturePages.length;
@@ -439,8 +444,12 @@ export default function CameraView() {
         advanced: [{ torch: on }],
       } as MediaTrackConstraints & { advanced: unknown[] });
       const st = track.getSettings() as { torch?: boolean };
-      const wasOn = torchOnRef.current;
-      const applied = caps?.torch === true || st.torch === true || (!on && wasOn);
+      const applied = on ? st.torch === true : st.torch !== true;
+      // Encender exige verificación REAL (getSettings().torch === true):
+      // `advanced` es best-effort per spec — con solo caps.torch === true
+      // había "flash fantasma" (toast "encendido" con LED apagado en Android
+      // que acepta en silencio). Apagar: si settings ya no reporta torch,
+      // el estado deseado se cumple.
       if (applied) {
         torchOnRef.current = on;
         setTorchOn(on);
@@ -494,16 +503,28 @@ export default function CameraView() {
         navigator.vibrate(30);
       }
       try {
-        const dataUrl = await downscaleDataUrl(rawDataUrl);
+        // Decode ÚNICO de la captura (antes: downscale + detect + quality
+        // decodificaban la misma foto de 12 MP tres veces). El elemento se
+        // reutiliza en las tres etapas; solo se re-decodifica si hubo que
+        // re-escalar una imagen de galería más grande que el sensor.
+        const decoded = await loadImage(rawDataUrl);
+        const scaledUrl = downscaleImage(decoded);
+        const dataUrl = scaledUrl ?? rawDataUrl;
+        const source: HTMLImageElement | HTMLCanvasElement = scaledUrl
+          ? await loadImage(scaledUrl)
+          : decoded;
         const [detectedQuad, quality] = await Promise.all([
-          detectDocumentEdges(dataUrl),
-          evaluateQuality(dataUrl),
+          detectDocumentEdges(source),
+          evaluateQuality(source),
         ]);
         const page: CapturePage = {
           id: nextId("page"),
           original: dataUrl,
           quad: detectedQuad,
-          filter: "text", // default del producto: Texto claro (§8)
+          // F-ENHANCE: «Mejora automática» (Ajustes › Procesamiento) decide el
+          // filtro por defecto de cada captura — ON = Texto claro (§8), OFF =
+          // Original puro. El usuario puede cambiarlo en el editor.
+          filter: useScannerStore.getState().settings.enhance ? "text" : "original",
           rotation: 0,
           quality,
         };
@@ -1048,6 +1069,12 @@ export default function CameraView() {
     };
   }, []);
 
+  // Perfil de documento en caliente → priores de selectQuad (R4-B2)
+  useEffect(() => {
+    const c = getScannerWorker();
+    if (c) c.setDocProfile(settings.docProfile);
+  }, [settings.docProfile, precisionReady]);
+
   /* ── FRAME LOOP REAL: detección en vivo + k-de-n ─────────────────── */
 
   useEffect(() => {
@@ -1088,8 +1115,8 @@ export default function CameraView() {
   }, [precisionLive]);
 
   // Linterna — F-FLASH v3: botón SIEMPRE activo con cámara real; la verdad
-  // se descubre al pulsar (aplicar + verificar getSettings.torch). Sin
-  // ajuste persistido: cada sesión empieza con la linterna apagada.
+  // se descubre al pulsar (aplicar + verificar getSettings.torch). Estado
+  // persistido en settings.flash para la próxima sesión.
   const toggleTorch = useCallback(async () => {
     if (status !== "live") {
       toast(TORCH_HINT, { icon: "🔦", duration: 8000 });
@@ -1098,13 +1125,14 @@ export default function CameraView() {
     const next = !torchOn;
     const applied = await setTorchState(next);
     if (applied) {
+      updateSettings({ flash: next });
       if (next) toast.success("Flash encendido", { duration: 1200 });
     } else {
       // Verificación falló: nada cambió físicamente; sincroniza y explica.
       setTorchOn((v) => v);
       toast(TORCH_HINT, { icon: "🔦", duration: 8000 });
     }
-  }, [torchOn, status, setTorchState]);
+  }, [torchOn, status, updateSettings, setTorchState]);
 
   /* ── Fallback simulado (sin worker): estabilidad + jitter ─────────── */
 
@@ -1148,8 +1176,11 @@ export default function CameraView() {
 
   // Auto-captura del fallback simulado (sin pipeline real)
   useEffect(() => {
-    if (precisionLive || !autoCapture) return;
-    if (!(status === "live" && stable)) return;
+    if (precisionLive || !settings.autoCapture) return;
+    // Dispara en TODOS los modos con estabilidad del fallback (live sin
+    // worker, sintético y simulado) — antes solo "live" y el modo sintético
+    // prometía auto-captura que nunca llegaba.
+    if (status === "idle" || !stable) return;
     if (cooldownRef.current > Date.now()) return;
     const t = window.setTimeout(() => {
       cooldownRef.current = Date.now() + 7000;
@@ -1157,7 +1188,7 @@ export default function CameraView() {
       void captureSmartRef.current();
     }, 1500);
     return () => window.clearTimeout(t);
-  }, [precisionLive, status, stable, autoCapture]);
+  }, [precisionLive, status, stable, settings.autoCapture]);
 
   // Cierra el menú ⋮ con Escape
   useEffect(() => {
@@ -1255,13 +1286,13 @@ export default function CameraView() {
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            aria-label={`Captura automática: ${autoCapture ? "activada" : "desactivada"}`}
-            aria-pressed={autoCapture}
+            aria-label={`Captura automática: ${settings.autoCapture ? "activada" : "desactivada"}`}
+            aria-pressed={settings.autoCapture}
             title="Captura automática (recorte y disparo al detectar el documento)"
-            onClick={() => setAutoCapture((v) => !v)}
+            onClick={() => updateSettings({ autoCapture: !settings.autoCapture })}
             className={cn(
               "flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
-              autoCapture
+              settings.autoCapture
                 ? "bg-[#ffd60a]/18 ring-1 ring-[#ffd60a]/60"
                 : "bg-black/30"
             )}
@@ -1269,7 +1300,7 @@ export default function CameraView() {
             <Scan
               className={cn(
                 "h-5 w-5",
-                autoCapture ? "text-[#ffd60a]" : "text-white/70"
+                settings.autoCapture ? "text-[#ffd60a]" : "text-white/70"
               )}
               strokeWidth={2.2}
               aria-hidden="true"
@@ -1437,7 +1468,7 @@ export default function CameraView() {
 
         {/* Toast flotante: documento estable / listo para auto-captura */}
         <AnimatePresence>
-          {autoCapture && overlayStable && !processing && (precisionLive || hasStream || status === "simulated") && (
+          {settings.autoCapture && overlayStable && !processing && (precisionLive || hasStream || status === "simulated") && (
             <motion.div
               key="stable-toast"
               initial={{ opacity: 0, y: 10 }}
@@ -1574,7 +1605,36 @@ export default function CameraView() {
 
       {/* ── Bottom bar ── */}
       <footer className="ios-blur-bar relative z-20 shrink-0 pb-safe">
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center px-2 pt-3">
+        {/* Selector de perfil de documento (video de referencia: fila
+            "Pizarra · Libro · Documento · Tarjeta" sobre la toolbar). En
+            caliente ajusta los priores de aspecto de la detección. */}
+        <div
+          className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-0.5 pt-2"
+          role="tablist"
+          aria-label="Perfil de documento a detectar"
+        >
+          {DOC_PROFILES.map((p) => {
+            const active = settings.docProfile === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => updateSettings({ docProfile: p.id })}
+                className={cn(
+                  "shrink-0 rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold transition-all active:scale-95",
+                  active
+                    ? "bg-[#007aff] text-white shadow-[0_2px_12px_rgba(0,122,255,0.45)]"
+                    : "bg-white/10 text-white/75 ring-1 ring-inset ring-white/12"
+                )}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center px-2 pt-2">
           {/* Zona izquierda: Importar · Páginas */}
           <div className="flex items-center justify-around">
             <button
@@ -1700,8 +1760,13 @@ export default function CameraView() {
               className="absolute right-3 max-h-[70%] w-64 overflow-y-auto rounded-2xl border border-white/10 bg-[#1c1c1e]/95 shadow-[0_12px_40px_rgba(0,0,0,0.55)] backdrop-blur-xl divide-y divide-white/[0.08]"
               role="menu"
             >
-              {/* Auto-captura con botón propio en la toolbar (F-CLEAN).
-                  Linterna con botón propio en la toolbar inferior (F-SWAP). */}
+              <MenuRow
+                icon={Scan}
+                label="Auto-captura"
+                value={settings.autoCapture ? "Sí" : "No"}
+                onClick={() => updateSettings({ autoCapture: !settings.autoCapture })}
+              />
+              {/* Linterna con botón propio en la toolbar inferior (F-SWAP). */}
               <MenuRow icon={Sparkles} label="Añadir página de demo" onClick={captureDemo} />
               <MenuRow
                 icon={Camera}
@@ -1719,6 +1784,22 @@ export default function CameraView() {
                   galleryInputRef.current?.click();
                 }}
               />
+              {/* Perfil de documento → priores de selectQuad en caliente */}
+              <div className="px-4 pb-1.5 pt-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-[#8e8e93]">
+                  Perfil de documento
+                </p>
+              </div>
+              {DOC_PROFILES.map((p) => (
+                <MenuRow
+                  key={p.id}
+                  icon={LayoutGrid}
+                  label={p.label}
+                  sublabel={p.hint}
+                  value={settings.docProfile === p.id ? "✓" : undefined}
+                  onClick={() => updateSettings({ docProfile: p.id as DocProfileId })}
+                />
+              ))}
             </motion.div>
           </motion.div>
         )}

@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { SonnerToaster } from "@/components/scanner/SonnerToaster";
+import { Providers } from "@/components/scanner/Providers";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -39,15 +40,17 @@ export default function RootLayout({
   return (
     <html lang="es" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#e9e9ee] text-foreground`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#e9e9ee] dark:bg-[#111111] text-foreground`}
         // suppressHydrationWarning: extensiones de navegador (Grammarly,
         // asistentes de formularios, etc.) inyectan atributos en <body> antes
         // de que React hidrate — mismo patrón defensivo que usa <html>.
         suppressHydrationWarning
       >
-        {children}
-        <Toaster />
-        <SonnerToaster />
+        <Providers>
+          {children}
+          <Toaster />
+          <SonnerToaster />
+        </Providers>
       </body>
     </html>
   );

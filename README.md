@@ -2,18 +2,18 @@
 
 Aplicación web de digitalización de documentos con estética **pixel-perfect de iOS**, construida como reproducción fiel de 4 diseños originales (Cámara, Editor de perspectiva, Digitalización y Biblioteca). Toda la interfaz está en **español**.
 
-![Versión](https://img.shields.io/badge/versión-2.0.0-007AFF)
+![Versión](https://img.shields.io/badge/versión-3.0.0-007AFF)
 ![Framework](https://img.shields.io/badge/Next.js-16-black)
-![Licencia](https://img.shields.io/badge/uso-personal%2Feducativo-34C759)
+![Licencia](https://img.shields.io/badge/licencia-MIT-34C759)
 
 ---
 
 ## ✨ Funcionalidades
 
 ### 📷 Captura (Pantalla 1)
-- Cámara **nativa** del dispositivo (`<input capture="environment">`) con fallback a `getUserMedia`
-- **Detección de bordes en tiempo real** con OpenCV.js en un Web Worker (`public/scanner/detection-worker.js` + `public/vendor/opencv-4.5.5.js`)
-- Marco azul de detección con handles en las esquinas, indicador de estabilidad y **auto-captura**
+- Cámara **en vivo** con `getUserMedia`: selección automática de la lente trasera con enfoque real y **linterna (torch)** con reintento y verificación (sondas secuenciales compatibles con Android)
+- **Detección de bordes en tiempo real** en un Web Worker (`public/scanner/detection-worker.js`, motor propio Sobel/DFS con motor OpenCV opcional)
+- Marco azul de detección con handles en las esquinas, indicador de estabilidad y **auto-captura** (k-de-n frames estables)
 - Sesión **multi-página** con contador, importación desde galería y página de demo
 
 ### ✂️ Editor de perspectiva (Pantalla 2)
@@ -24,25 +24,27 @@ Aplicación web de digitalización de documentos con estética **pixel-perfect d
 
 ### 📑 Digitalización (Pantalla 3)
 - Tabs **Página / Reconocimiento OCR** con segmented control iOS animado
-- **OCR real** con modelo de visión `glm-4.6v` vía `z-ai-web-dev-sdk` (individual o todas las páginas con progreso)
-- **Exportar PDF** (jsPDF, A4, una página por hoja) y **exportar texto OCR a .txt**
+- **OCR doble motor**: servidor (modelo de visión) si existe, o **Tesseract.js local (spa+eng)** en hosting estático — el OCR funciona también en GitHub Pages; **auto-OCR** en segundo plano tras cada captura (con pill de progreso)
+- **Exportar PDF** (jsPDF, A4, una página por hoja), **exportar texto a .txt**, copiar todo y **compartir** (Web Share API)
 - Badge de calidad (nitidez Laplaciano + contraste + brillo), stats de tamaño/páginas
+- **Miniaturas desplegables** (mostrar/ocultar) y **navegación deslizando** horizontalmente entre páginas
 - Carrusel de miniaturas + "Añadir página", acciones Recortar / Rotar / **Filtros** / Eliminar
-- 7 filtros reales: Automático, Grises, B/N (Otsu), Whiteboard, Documento, Color, Original
-- **Comparación antes/después**: mantén pulsada la imagen para ver el original
+- 7 filtros reales: Automático, Grises, B/N (Otsu), Whiteboard, Documento, Color, Original — con suavizado bilineal del mapa de iluminación (sin píxeles saltantes en «Texto claro»)
+- **Zoom por pinza/doble-toque** y **comparación antes/después**: mantén pulsada la imagen para ver el original
 - Modo presentación a pantalla completa con gestos (pinza, pan, doble-tap)
 
 ### 🗂 Biblioteca (Pantalla 4)
 - Vista **cuadrícula o lista** (agrupada A-Z por inicial o por tramos temporales)
-- Búsqueda en títulos **y texto OCR**, chips de orden: Recientes / Favoritos / A-Z / **Manual**
+- Búsqueda en títulos **y texto OCR** (con resaltado de coincidencias al abrir el documento), chips de orden: Recientes / Favoritos / A-Z / **Manual**
 - **Reordenar arrastrando** por el asa ⠿ en vista de lista (persistente)
 - **Etiquetas** (tags) con colores, filtrado por etiqueta, exportación de biblioteca filtrada
 - Selección múltiple, favoritos, duplicar, renombrar, eliminar con confirmación
-- Exportar **toda la biblioteca** a un único PDF
+- **Papelera «Eliminados»** estilo iOS Files: borrado suave con **Deshacer**, restaurar, vaciar y purga automática a los **30 días**
+- Exportar **toda la biblioteca** a un único PDF · exportar/compartir el texto OCR de un documento
 
 ### ⚙️ Ajustes
-- Tema claro/oscuro/sistema, ajustes de captura y calidad
-- Panel **"Tu biblioteca"** con estadísticas, atajos de teclado y gestos documentados
+- Tema claro/oscuro/sistema, mejora automática por captura, OCR automático y calidad PDF
+- Panel **"Tu biblioteca"** con estadísticas ampliadas (palabras OCR, papelera, páginas/doc), atajos de teclado y gestos documentados
 
 ### 🌓 Otros
 - **Modo oscuro** completo en todas las vistas
@@ -60,8 +62,8 @@ Aplicación web de digitalización de documentos con estética **pixel-perfect d
 | Lenguaje | TypeScript 5 (strict) |
 | Estilos | Tailwind CSS 4 + shadcn/ui (New York) + variables iOS |
 | Estado | Zustand (app) + IndexedDB (persistencia) |
-| Visión | **OpenCV.js 4.5.5** en Web Worker |
-| OCR | `z-ai-web-dev-sdk` → modelo de visión `glm-4.6v` |
+| Visión | Web Worker propio (Sobel + DFS) con motor OpenCV.js opcional |
+| OCR | Dual: servidor (modelo de visión) o **Tesseract.js 5 local (spa+eng)** en estático |
 | PDF | jsPDF 4 |
 | Iconos / animaciones | lucide-react · framer-motion · sonner |
 
@@ -98,7 +100,7 @@ Abre <http://localhost:3000> en el navegador.
 | `bun run lint` | ESLint |
 | `bun run db:push` | Sincronizar el schema de Prisma con SQLite *(no requerido por el escáner)* |
 
-> **Nota sobre el OCR:** la ruta `/api/ocr` usa `z-ai-web-dev-sdk`, que requiere las credenciales del entorno de Z.ai (`ZAI_API_KEY` en variables de entorno). Fuera de ese entorno la app funciona con normalidad; solo fallará el OCR con un mensaje de error accionable. Todos los demás procesos (filtros, detección de bordes, recorte, PDF) son 100 % locales en el navegador.
+> **Nota sobre el OCR:** la app intenta primero `/api/ocr` (modelo de visión, disponible en desarrollo/servidor). Si el despliegue es estático (GitHub Pages) o el servidor falla, **funciona igual con Tesseract.js local** (spa+eng, ~3 MB descargados la primera vez). Filtros, detección de bordes, recorte y PDF son 100 % locales en el navegador.
 
 ---
 
@@ -117,19 +119,21 @@ Abre <http://localhost:3000> en el navegador.
 │   │       ├── ocr/route.ts          # OCR con glm-4.6v
 │   │       └── scan/process/route.ts # Pipeline de precisión server-side
 │   ├── components/
-│   │   ├── scanner/                  # 10 componentes de vista (Camera, Editor, Detail…)
+│   │   ├── scanner/                  # Vistas (Camera, Editor, Library, Onboarding, Settings…)
 │   │   └── ui/                       # shadcn/ui
 │   └── lib/scanner/
 │       ├── types.ts                  # Tipos del dominio (ScanPage, Quad, filtros…)
-│       ├── store.ts                  # Store Zustand de la app
+│       ├── store.ts                  # Store Zustand de la app (+ papelera)
 │       ├── page-store.ts             # Persistencia IndexedDB
-│       ├── image-processor.ts        # Filtros, recorte, rotación, calidad
-│       ├── detector-client.ts        # Cliente del Web Worker de OpenCV
+│       ├── image-processor.ts        # Filtros, recorte, rotación, calidad (hasta 4032 px)
+│       ├── detector-client.ts        # Cliente del Web Worker de detección
+│       ├── image-modes.ts            # Filtros por píxel (Texto claro con suavizado bilineal)
+│       ├── ocr.ts                    # OCR dual (servidor → Tesseract local)
+│       ├── text-export.ts            # Exportar/copiar/compartir texto OCR
 │       ├── quality.ts                # Métricas de calidad de captura
 │       ├── pdf-export.ts             # Exportación PDF (jsPDF)
-│       ├── ocr.ts / tags.ts / format.ts / mock-data.ts
+│       └── tags.ts / format.ts / mock-data.ts
 ├── design-specs.md                   # Especificación de los 4 diseños originales
-└── worklog.md                        # Historial completo de desarrollo (13 tareas)
 ```
 
 ---
@@ -150,6 +154,6 @@ La app se muestra dentro de un **phone-frame** centrado en escritorio y a pantal
 
 ---
 
-## 📄 Licencia y créditos
+## 📄 Licencia
 
-Proyecto personal/educativo que clona diseños propios compartidos por el usuario. OpenCV.js se distribuye bajo Apache 2.0.
+[MIT](LICENSE) · OpenCV.js se distribuye bajo Apache 2.0 · Tesseract.js bajo Apache 2.0.

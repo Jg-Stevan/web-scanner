@@ -91,6 +91,27 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+/** Fuente de imagen para el pipeline: data URL o elemento YA decodificado
+ *  (HTMLImageElement/HTMLCanvasElement). Pasar el elemento evita re-decodificar
+ *  la foto de 12 MP en cada etapa de la captura (downscale→detect→quality).
+ *  La ruta crítica pasa de 3 decodes a 1 (2 solo si hubo que re-escalar). */
+export type ImageSource = string | HTMLImageElement | HTMLCanvasElement;
+
+/** Decodifica solo si hace falta (string); el elemento pasa tal cual. */
+function ensureDecoded(
+  src: ImageSource
+): Promise<HTMLImageElement | HTMLCanvasElement> {
+  return typeof src === "string" ? loadImage(src) : Promise.resolve(src);
+}
+
+function sourceWidth(el: HTMLImageElement | HTMLCanvasElement): number {
+  return el instanceof HTMLImageElement ? el.naturalWidth || el.width : el.width;
+}
+
+function sourceHeight(el: HTMLImageElement | HTMLCanvasElement): number {
+  return el instanceof HTMLImageElement ? el.naturalHeight || el.height : el.height;
+}
+
 // ─── Helpers del pipeline preciso ───────────────────────────────────────────
 
 function floatsToQuad(f: Float32Array): Quad {
@@ -279,7 +300,7 @@ async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
  * Detección de bordes del documento — PIPELINE REAL del usuario
  * (contornos OpenCV + selección por score). Fallback: Sobel local.
  */
-export async function detectDocumentEdges(src: string): Promise<Quad> {
+export async function detectDocumentEdges(src: ImageSource): Promise<Quad> {
   // 1) Pipeline real: worker + OpenCV.js
   const quad = await detectWithWorker(src);
   if (quad) return quad;
@@ -287,15 +308,17 @@ export async function detectDocumentEdges(src: string): Promise<Quad> {
   return detectSobel(src);
 }
 
-async function detectWithWorker(src: string): Promise<Quad | null> {
+async function detectWithWorker(src: ImageSource): Promise<Quad | null> {
   const client = getScannerWorker();
   if (!client || client.isDead) return null;
   const ok = await client.waitReady();
   if (!ok) return null;
   try {
-    const img = await loadImage(src);
-    if (!img.naturalWidth || !img.naturalHeight) return null;
-    const out = await client.detect(img, img.naturalWidth, img.naturalHeight);
+    const img = await ensureDecoded(src);
+    const w = sourceWidth(img);
+    const h = sourceHeight(img);
+    if (!w || !h) return null;
+    const out = await client.detect(img, w, h);
     if (out && isValidQuadFloats(out.corners)) {
       const quad = floatsToQuad(out.corners);
       // Sanity: área razonable (el worker ya valida ≥10% del frame)
@@ -316,11 +339,13 @@ function quadArea(q: Quad): number {
 }
 
 /** Sobel simplificado sobre downscaled (fallback del pipeline real). */
-async function detectSobel(src: string): Promise<Quad> {
+async function detectSobel(src: ImageSource): Promise<Quad> {
   try {
-    const img = await loadImage(src);
+    const img = await ensureDecoded(src);
+    const w0 = sourceWidth(img);
+    const h0 = sourceHeight(img);
     const W = 160;
-    const H = Math.max(1, Math.round((img.height / img.width) * W));
+    const H = Math.max(1, Math.round((h0 / w0) * W));
     const canvas = document.createElement("canvas");
     canvas.width = W;
     canvas.height = H;
@@ -340,7 +365,7 @@ async function detectSobel(src: string): Promise<Quad> {
           -gray(i - W - 1) - 2 * gray(i - 1) - gray(i + W - 1) +
           gray(i - W + 1) + 2 * gray(i + 1) + gray(i + W + 1);
         const gy =
-          -gray(i - W - 1) - 2 * gray(i - W) - gray(i + W - 1) +
+          -gray(i - W - 1) - 2 * gray(i - W) - gray(i - W + 1) +
           gray(i + W - 1) + 2 * gray(i + W) + gray(i + W + 1);
         energy[i] = Math.sqrt(gx * gx + gy * gy);
       }
@@ -829,11 +854,13 @@ async function processImageCanvas(
 }
 
 /** Evaluación de calidad de la página (Laplaciano + contraste + brillo). */
-export async function evaluateQuality(src: string): Promise<PageQuality> {
+export async function evaluateQuality(src: ImageSource): Promise<PageQuality> {
   try {
-    const img = await loadImage(src);
+    const img = await ensureDecoded(src);
+    const w0 = sourceWidth(img);
+    const h0 = sourceHeight(img);
     const W = 120;
-    const H = Math.max(1, Math.round((img.height / img.width) * W));
+    const H = Math.max(1, Math.round((h0 / w0) * W));
     const canvas = document.createElement("canvas");
     canvas.width = W;
     canvas.height = H;

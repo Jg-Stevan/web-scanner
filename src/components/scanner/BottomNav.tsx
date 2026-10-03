@@ -12,14 +12,15 @@ import { cn } from "@/lib/utils";
 export default function BottomNav() {
   const view = useScannerStore((s) => s.view);
   const setView = useScannerStore((s) => s.setView);
-  const documents = useScannerStore((s) => s.documents);
+  // F-TRASH: el badge cuenta solo los documentos VIVOS (sin la papelera).
+  const liveCount = useScannerStore((s) => s.documents.filter((d) => d.deletedAt === undefined).length);
 
   const tabs = [
     {
       id: "library" as const,
       label: "Documentos",
       icon: FileText,
-      badge: documents.length,
+      badge: liveCount,
     },
     { id: "settings" as const, label: "Ajustes", icon: Settings },
   ];

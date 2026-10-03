@@ -1,20 +1,24 @@
 "use client";
 
 /**
- * ⚙️ Ajustes — grupos estilo iOS (Captura, Procesamiento, Exportación,
- * Almacenamiento, Acerca de) con switches azules, select de calidad PDF
- * y borrado de todos los documentos con confirmación.
+ * ⚙️ Ajustes — grupos estilo iOS (Apariencia, Captura, Procesamiento,
+ * Exportación, Almacenamiento, Acerca de) con switches azules, select de
+ * calidad PDF y borrado de todos los documentos con confirmación.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Copy, Download, FileText, Layers, Loader2, ScanText, Star, Tags, Trash2, HardDrive } from "lucide-react";
+import { Check, Copy, Download, FileText, Layers, Loader2, Monitor, Moon, ScanText, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
+import { useTheme } from "next-themes";
 import { toast } from "sonner";
 
+import { useIsHydrated } from "@/hooks/use-is-hydrated";
+
 import { useScannerStore } from "@/lib/scanner/store";
-import type { ScannerSettings } from "@/lib/scanner/types";
+import { type ScannerSettings } from "@/lib/scanner/types";
 import { dataUrlBytes, formatBytes } from "@/lib/scanner/format";
 import { countTagUsage } from "@/lib/scanner/tags";
+import { countWords } from "@/lib/scanner/text-export";
 import { getScannerWorker } from "@/lib/scanner/image-processor";
 import { storageAvailable } from "@/lib/scanner/page-store";
 import { cn } from "@/lib/utils";
@@ -38,7 +42,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 /** Switch iOS: 51×31, thumb 25px, azul #007AFF cuando está activo. */
-const SWITCH_IOS =  "h-[31px] w-[51px] data-[state=checked]:bg-[#007aff] data-[state=unchecked]:bg-[#e9e9ea] [&_[data-slot=switch-thumb]]:size-[25px]";
+const SWITCH_IOS =  "h-[31px] w-[51px] data-[state=checked]:bg-[#007aff] data-[state=unchecked]:bg-[#e9e9ea] dark:data-[state=unchecked]:bg-[#39393d] [&_[data-slot=switch-thumb]]:size-[25px]";
 
 /** Snapshot del repositorio — nombre estable servido desde /downloads
  *  (archivo estático en public/, funciona en CUALQUIER despliegue) y vía
@@ -90,11 +94,11 @@ function StatCard({
       initial={{ opacity: 0, y: 8, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.32, delay, ease: [0.22, 1, 0.36, 1] }}
-      className="flex flex-col items-start gap-1 rounded-2xl bg-white px-3 pb-2.5 pt-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
+      className="flex flex-col items-start gap-1 rounded-2xl bg-white dark:bg-[#1c1c1e] px-3 pb-2.5 pt-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
     >
       <Icon className="size-[15px]" strokeWidth={2.2} style={{ color }} aria-hidden="true" />
       <span
-        className="text-[20px] font-semibold leading-none tracking-[-0.3px] text-[#1c1c1e] tabular-nums"
+        className="text-[20px] font-semibold leading-none tracking-[-0.3px] text-[#1c1c1e] dark:text-white tabular-nums"
       >
         {value}
       </span>
@@ -111,21 +115,26 @@ export default function SettingsView() {
 
   const [confirmWipe, setConfirmWipe] = useState(false);
 
+  /* F-TRASH: las estadísticas cuentan solo la biblioteca VIVA (la papelera
+   *  se muestra aparte — es contenido distinto, como iOS Files). */
+  const liveDocs = useMemo(() => documents.filter((d) => d.deletedAt === undefined), [documents]);
+  const trashCount = useMemo(() => documents.length - liveDocs.length, [documents, liveDocs]);
+
   const totalPages = useMemo(
-    () => documents.reduce((n, d) => n + d.pages.length, 0),
-    [documents]
+    () => liveDocs.reduce((n, d) => n + d.pages.length, 0),
+    [liveDocs]
   );
 
   /** Uso estimado: suma de todos los data URLs (originales + procesadas + miniaturas). */
   const storageBytes = useMemo(() => {
     let total = 0;
-    for (const d of documents) {
+    for (const d of liveDocs) {
       for (const p of d.pages) {
         total += dataUrlBytes(p.original) + dataUrlBytes(p.processed) + dataUrlBytes(p.thumbnail);
       }
     }
     return total;
-  }, [documents]);
+  }, [liveDocs]);
 
   const wipeAll = () => {
     if (documents.length === 0) {
@@ -140,20 +149,29 @@ export default function SettingsView() {
 
   /* ── Estadísticas de la biblioteca (panel resumen) ── */
   const favoriteCount = useMemo(
-    () => documents.filter((d) => d.favorite).length,
-    [documents]
+    () => liveDocs.filter((d) => d.favorite).length,
+    [liveDocs]
   );
-  const tagCount = useMemo(() => countTagUsage(documents).length, [documents]);
+  const tagCount = useMemo(() => countTagUsage(liveDocs).length, [liveDocs]);
   const ocrPages = useMemo(
-    () => documents.reduce((n, d) => n + d.pages.filter((p) => p.ocrDone).length, 0),
-    [documents]
+    () => liveDocs.reduce((n, d) => n + d.pages.filter((p) => p.ocrDone).length, 0),
+    [liveDocs]
+  );
+  /** F-STATS: palabras totales extraídas por OCR en la biblioteca viva. */
+  const ocrWords = useMemo(
+    () =>
+      liveDocs.reduce(
+        (n, d) => n + d.pages.reduce((m, p) => m + countWords(p.ocrText ?? ""), 0),
+        0
+      ),
+    [liveDocs]
   );
 
   return (
-    <div className="flex h-full w-full flex-col bg-[#f2f2f7]">
+    <div className="flex h-full w-full flex-col bg-[#f2f2f7] dark:bg-black">
       {/* Header */}
       <header className="shrink-0 px-5 pb-2 pt-safe">
-        <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.4px] text-black">
+        <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.4px] text-black dark:text-white">
           Ajustes
         </h1>
         <p className="mt-1 text-[13px] text-[#8e8e93]">Personaliza tu escáner</p>
@@ -163,13 +181,13 @@ export default function SettingsView() {
       <div className="ios-scroll flex-1 overflow-y-auto overscroll-contain pb-8">
         {/* Panel de estadísticas de la biblioteca */}
         <section aria-label="Estadísticas de la biblioteca" className="px-5 pb-1 pt-2">
-          <h2 className="mb-2 px-1 text-[12px] font-semibold uppercase tracking-[0.06em] text-[#6d6d72]">
+          <h2 className="mb-2 px-1 text-[12px] font-semibold uppercase tracking-[0.06em] text-[#6d6d72] dark:text-[#98989e]">
             Tu biblioteca
           </h2>
           <div className="grid grid-cols-3 gap-2">
             <StatCard
-              value={String(documents.length)}
-              label={plural(documents.length, "documento", "documentos")}
+              value={String(liveDocs.length)}
+              label={plural(liveDocs.length, "documento", "documentos")}
               icon={FileText}
               color="#007aff"
               delay={0.03}
@@ -189,32 +207,58 @@ export default function SettingsView() {
               delay={0.09}
             />
             <StatCard
+              value={ocrWords >= 1000 ? `${(ocrWords / 1000).toFixed(1).replace(".0", "")}k` : String(ocrWords)}
+              label={ocrWords === 1 ? "palabra OCR" : "palabras OCR"}
+              icon={Type}
+              color="#30d158"
+              delay={0.12}
+            />
+            <StatCard
               value={String(favoriteCount)}
               label={plural(favoriteCount, "favorito", "favoritos")}
               icon={Star}
               color="#ff9500"
-              delay={0.12}
+              delay={0.15}
             />
             <StatCard
               value={String(tagCount)}
               label={plural(tagCount, "etiqueta", "etiquetas")}
               icon={Tags}
               color="#ff2d55"
-              delay={0.15}
+              delay={0.18}
             />
             <StatCard
               value={formatBytes(storageBytes)}
               label="espacio usado"
               icon={HardDrive}
               color="#8e8e93"
-              delay={0.18}
+              delay={0.21}
+            />
+            <StatCard
+              value={String(trashCount)}
+              label="en Eliminados"
+              icon={Trash2}
+              color="#ff453a"
+              delay={0.24}
+            />
+            <StatCard
+              value={String(liveDocs.length > 0 ? Math.round((totalPages / liveDocs.length) * 10) / 10 : 0)}
+              label="páginas/doc"
+              icon={Layers}
+              color="#64d2ff"
+              delay={0.27}
             />
           </div>
         </section>
 
+        {/* Apariencia: tema claro/oscuro/sistema (persiste en localStorage) */}
+        <AppearanceSection />
 
         <SettingsGroup label="Procesamiento" delay={0.1}>
-          <SettingsRow title="Mejora automática" subtitle="Aplica el mejor filtro">
+          <SettingsRow
+            title="Mejora automática"
+            subtitle="Empieza cada captura con el filtro «Texto claro» (apagado: Original puro)"
+          >
             <Switch
               checked={settings.enhance}
               onCheckedChange={(v) => updateSettings({ enhance: v })}
@@ -222,7 +266,10 @@ export default function SettingsView() {
               className={SWITCH_IOS}
             />
           </SettingsRow>
-          <SettingsRow title="Reconocimiento OCR" subtitle="Extrae texto de las páginas">
+          <SettingsRow
+            title="Reconocimiento OCR"
+            subtitle="Extrae el texto de cada página en segundo plano al capturar"
+          >
             <Switch
               checked={settings.ocrEnabled}
               onCheckedChange={(v) => updateSettings({ ocrEnabled: v })}
@@ -248,11 +295,11 @@ export default function SettingsView() {
             >
               <SelectTrigger
                 aria-label="Calidad PDF"
-                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] px-3.5 text-[14px] font-medium text-[#3c3c43] shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
+                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] px-3.5 text-[14px] font-medium text-[#3c3c43] dark:text-white shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="rounded-xl border-[#e5e5ea]">
+              <SelectContent className="rounded-xl border-[#e5e5ea] dark:border-[#38383a]">
                 <SelectItem value="standard" className="text-[14px]">
                   Estándar
                 </SelectItem>
@@ -270,7 +317,7 @@ export default function SettingsView() {
         <SettingsGroup label="Almacenamiento" delay={0.15}>
           <SettingsRow
             title="Uso estimado"
-            subtitle={`${plural(documents.length, "documento", "documentos")} · ${plural(
+            subtitle={`${plural(liveDocs.length, "documento", "documentos")} · ${plural(
               totalPages,
               "página",
               "páginas"
@@ -286,7 +333,7 @@ export default function SettingsView() {
               className={cn(
                 "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold",
                 storageAvailable()
-                  ? "bg-[#34c759]/12 text-[#248a3d]"
+                  ? "bg-[#34c759]/12 text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
                   : "bg-[#8e8e93]/15 text-[#8e8e93]"
               )}
               role="status"
@@ -317,8 +364,8 @@ export default function SettingsView() {
           <SettingsRow title="Versión">
             <span className="shrink-0 text-[15px] text-[#8e8e93]">2.0.0</span>
           </SettingsRow>
-          <div className="border-t border-[#f2f2f7] px-4 py-3">
-            <p className="text-[15px] text-[#1c1c1e]">Atajos de teclado</p>
+          <div className="border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3">
+            <p className="text-[15px] text-[#1c1c1e] dark:text-white">Atajos de teclado</p>
             <div className="mt-2 flex flex-col gap-1.5">
               {SHORTCUTS.map((s) => (
                 <div key={s.action} className="flex items-center justify-between gap-3">
@@ -332,7 +379,7 @@ export default function SettingsView() {
                     {s.keys.map((k) => (
                       <kbd
                         key={k}
-                        className="flex h-[22px] min-w-[22px] items-center justify-center rounded-[6px] border border-[#d1d1d6] border-b-2 bg-white px-1.5 font-sans text-[11px] font-semibold text-[#3c3c43] shadow-[0_1px_0_rgba(0,0,0,0.04)]"
+                        className="flex h-[22px] min-w-[22px] items-center justify-center rounded-[6px] border border-[#d1d1d6] border-b-2 bg-white dark:border-[#48484a] dark:bg-[#2c2c2e] dark:shadow-none px-1.5 font-sans text-[11px] font-semibold text-[#3c3c43] dark:text-white shadow-[0_1px_0_rgba(0,0,0,0.04)]"
                       >
                         {k}
                       </kbd>
@@ -342,8 +389,8 @@ export default function SettingsView() {
               ))}
             </div>
           </div>
-          <div className="border-t border-[#f2f2f7] px-4 py-3">
-            <p className="text-[15px] text-[#1c1c1e]">Gestos</p>
+          <div className="border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3">
+            <p className="text-[15px] text-[#1c1c1e] dark:text-white">Gestos</p>
             <div className="mt-2 flex flex-col gap-1.5">
               {GESTURES.map((g) => (
                 <div key={g.action} className="flex items-center justify-between gap-3">
@@ -355,7 +402,7 @@ export default function SettingsView() {
               ))}
             </div>
           </div>
-          <div className="flex min-h-[44px] items-center border-t border-[#f2f2f7] px-4 py-3">
+          <div className="flex min-h-[44px] items-center border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3">
             <p className="text-[15px] text-[#8e8e93]">Hecho con precisión</p>
           </div>
         </SettingsGroup>
@@ -377,7 +424,7 @@ export default function SettingsView() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea]">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
               Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
@@ -537,7 +584,7 @@ function ProjectDownloadRow() {
         rel="noopener noreferrer"
         aria-label="Descargar el código fuente del proyecto en ZIP"
         onClick={onDownload}
-        className="flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] px-4 py-3 text-left transition-colors active:bg-[#f7f7f9]"
+        className="flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3 text-left transition-colors active:bg-[#f7f7f9] dark:active:bg-[#2c2c2e]"
       >
         <div className="min-w-0">
           <p className="text-[15px] leading-snug font-medium text-[#007aff]">
@@ -562,12 +609,12 @@ function ProjectDownloadRow() {
       <button
         type="button"
         onClick={onCopyLink}
-        className="flex min-h-[44px] w-full items-center gap-2.5 border-t border-[#f2f2f7] px-4 py-3 text-left transition-colors active:bg-[#f7f7f9]"
+        className="flex min-h-[44px] w-full items-center gap-2.5 border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3 text-left transition-colors active:bg-[#f7f7f9] dark:active:bg-[#2c2c2e]"
         aria-label="Copiar enlace de descarga"
       >
         <Copy className="size-4 shrink-0 text-[#8e8e93]" strokeWidth={2.2} aria-hidden="true" />
-        <span className="text-[13px] font-medium text-[#3c3c43]">Copiar enlace de descarga</span>
-        <span className="ml-auto text-[12px] text-[#c7c7cc]">para pestaña nueva</span>
+        <span className="text-[13px] font-medium text-[#3c3c43] dark:text-white">Copiar enlace de descarga</span>
+        <span className="ml-auto text-[12px] text-[#c7c7cc] dark:text-[#8e8e93]">para pestaña nueva</span>
       </button>
     </div>
   );
@@ -607,10 +654,10 @@ function EngineBadge() {
       className={cn(
         "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold",
         state === "on"
-          ? "bg-[#34c759]/12 text-[#248a3d]"
+          ? "bg-[#34c759]/12 text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
           : state === "checking"
             ? "bg-[#8e8e93]/15 text-[#8e8e93]"
-            : "bg-[#ff3b30]/10 text-[#ff3b30]"
+            : "bg-[#ff3b30]/10 text-[#ff3b30] dark:text-[#ff453a]"
       )}
       role="status"
       aria-label={`Motor de precisión ${state === "on" ? "activo" : state === "checking" ? "cargando" : "no disponible"}`}
@@ -628,6 +675,75 @@ function EngineBadge() {
       />
       {state === "on" ? "Activo" : state === "checking" ? "Cargando…" : "No disp."}
     </span>
+  );
+}
+
+/** Sección de apariencia — tema Claro / Oscuro / Sistema (next-themes).
+ *  · Filas estilo iOS con icono + check azul en la preferencia activa.
+ *  · next-themes persiste la elección en localStorage (clave "theme")
+ *    y "Sistema" sigue el esquema de color del dispositivo.
+ *  · El check solo se pinta tras la hidratación (resolvedTheme no existe
+ *    en SSR — evita el mismatch de hidratación). */
+function AppearanceSection() {
+  const { theme, resolvedTheme, setTheme } = useTheme();
+  const mounted = useIsHydrated();
+
+  const current = theme ?? "system";
+
+  const options: {
+    id: "light" | "dark" | "system";
+    label: string;
+    icon: typeof Sun;
+  }[] = [
+    { id: "light", label: "Claro", icon: Sun },
+    { id: "dark", label: "Oscuro", icon: Moon },
+    { id: "system", label: "Sistema", icon: Monitor },
+  ];
+
+  return (
+    <SettingsGroup label="Apariencia" delay={0.05}>
+      {options.map((o) => {
+        const active = mounted && current === o.id;
+        const Icon = o.icon;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            aria-pressed={active}
+            aria-label={`Tema ${o.label.toLowerCase()}`}
+            onClick={() => setTheme(o.id)}
+            className="flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3 text-left transition-colors first:border-t-0 active:bg-[#f7f7f9] dark:active:bg-[#2c2c2e]"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Icon
+                className="size-5 shrink-0 text-[#3c3c43] dark:text-white"
+                strokeWidth={1.8}
+                aria-hidden="true"
+              />
+              <span className="min-w-0">
+                <span className="block text-[15px] leading-snug text-black dark:text-white">
+                  {o.label}
+                </span>
+                {o.id === "system" && (
+                  <span className="block text-[12px] leading-snug text-[#8e8e93]">
+                    {mounted && resolvedTheme === "dark" ? "Ahora: oscuro" : "Ahora: claro"}
+                  </span>
+                )}
+              </span>
+            </span>
+            {active ? (
+              <Check
+                className="size-5 shrink-0 text-[#007aff] dark:text-[#0a84ff]"
+                strokeWidth={2.6}
+                aria-hidden="true"
+              />
+            ) : (
+              <span className="size-5 shrink-0" aria-hidden="true" />
+            )}
+          </button>
+        );
+      })}
+    </SettingsGroup>
   );
 }
 
@@ -650,7 +766,7 @@ function SettingsGroup({
       <h2 className="px-5 pb-1.5 pt-4 text-[13px] font-medium uppercase tracking-[0.04em] text-[#8e8e93]">
         {label}
       </h2>
-      <div className="mx-4 overflow-hidden rounded-xl bg-white shadow-[0_2px_8px_rgba(0,0,0,0.08)]">
+      <div className="mx-4 overflow-hidden rounded-xl bg-white dark:bg-[#1c1c1e] shadow-[0_2px_8px_rgba(0,0,0,0.08)]">
         {children}
       </div>
     </motion.section>
@@ -673,8 +789,8 @@ function SettingsRow({
   children?: React.ReactNode;
 }) {
   const className = cn(
-    "flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] px-4 py-3 text-left first:border-t-0 transition-colors",
-    onClick && "cursor-pointer active:bg-[#f7f7f9]",
+    "flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3 text-left first:border-t-0 transition-colors",
+    onClick && "cursor-pointer active:bg-[#f7f7f9] dark:active:bg-[#2c2c2e]",
     disabled && "cursor-default opacity-40"
   );
 
@@ -684,7 +800,7 @@ function SettingsRow({
         <p
           className={cn(
             "text-[15px] leading-snug",
-            destructive ? "font-medium text-[#ff3b30]" : "text-black"
+            destructive ? "font-medium text-[#ff3b30]" : "text-black dark:text-white"
           )}
         >
           {title}

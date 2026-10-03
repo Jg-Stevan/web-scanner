@@ -113,6 +113,12 @@ export class CameraFrameLoop {
     this.fpsWindow = [];
     this.firstAttemptMs = performance.now();
     this.lastTriggerMs = 0;
+    // Reset de estado transitorio (reuso de instancia sin stop explícito):
+    // rearmNeeded heredado bloquearía el disparo automático hasta que el
+    // score caiga de nuevo, y lastNoDetectNotice dispararía el aviso al
+    // instante.
+    this.rearmNeeded = false;
+    this.lastNoDetectNotice = 0;
     this.running = true;
     // Precalienta OpenCV si aún no está (la primera detección tarda más).
     void this.client?.waitReady().then((ok) => {
@@ -171,9 +177,11 @@ export class CameraFrameLoop {
     const client = this.client;
     // Sin worker / no ready / procesando otro mensaje → DESCARTAR el frame
     // (backpressure por descarte — nunca encolar; constante del usuario).
+    // NOTA: NO emitimos null aquí — durante la espera el overlay conserva el
+    // último quad conocido; si emitiéramos, el marco azul parpadearía a ~5 Hz
+    // en hardware real (detección 50–100 ms vs 30 fps de frames).
     if (!client || !client.isReady || client.busy) {
       this.dropped += 1;
-      this.emit(null, null);
       this.scheduleNext();
       return;
     }
@@ -208,7 +216,9 @@ export class CameraFrameLoop {
           });
       })
       .catch(() => {
-        this.scheduleNext();
+        // Frame sin bitmap (presión de memoria / video en estado raro):
+        // el scheduleNext() del final de tick() YA programó el siguiente tick
+        // — no re-programar aquí o el bucle se duplicaría exponencialmente.
       });
 
     this.scheduleNext();

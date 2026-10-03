@@ -16,7 +16,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion";
 import {
   Check,
+  ChevronLeft,
   ChevronRight,
+  Clock,
   Copy,
   FileDown,
   FileSearch,
@@ -27,9 +29,11 @@ import {
   Loader2,
   MoreHorizontal,
   Pencil,
+  RotateCcw,
   ScanLine,
   ScanText,
   Search,
+  Send,
   Settings,
   Share2,
   Star,
@@ -42,8 +46,10 @@ import { toast } from "sonner";
 
 import { useScannerStore } from "@/lib/scanner/store";
 import type { ScanDocument } from "@/lib/scanner/types";
+import { TRASH_RETENTION_DAYS, isTrashed, trashDaysLeft } from "@/lib/scanner/types";
 import { formatBytes, relativeTime } from "@/lib/scanner/format";
 import { buildDocPdf, buildLibraryPdf, downloadBlob, sanitizeFileName, toJpeg } from "@/lib/scanner/pdf-export";
+import { docHasOcrText, downloadOcrTxt, shareOcrText } from "@/lib/scanner/text-export";
 import { ocrTextIsValid, requestOcr } from "@/lib/scanner/ocr";
 import { countTagUsage, docTags, normalizeTag, tagColor } from "@/lib/scanner/tags";
 import { MiniTagRow, TagsDialog } from "@/components/scanner/TagsDialog";
@@ -250,7 +256,7 @@ function SelectCheck({ checked }: { checked: boolean }) {
 function Thumb({ src, alt, className }: { src?: string; alt: string; className?: string }) {
   if (!src) {
     return (
-      <div className={cn("flex items-center justify-center bg-[#f2f2f7]", className)}>
+      <div className={cn("flex items-center justify-center bg-[#f2f2f7] dark:bg-[#2c2c2e]", className)}>
         <FileText className="h-6 w-6 text-[#c7c7cc]" strokeWidth={1.5} aria-hidden="true" />
       </div>
     );
@@ -261,7 +267,7 @@ function Thumb({ src, alt, className }: { src?: string; alt: string; className?:
       alt={alt}
       loading="lazy"
       draggable={false}
-      className={cn("bg-[#f2f2f7] object-cover", className)}
+      className={cn("bg-[#f2f2f7] dark:bg-[#2c2c2e] object-cover", className)}
     />
   );
 }
@@ -272,10 +278,14 @@ export default function LibraryView() {
   const openDocument = useScannerStore((s) => s.openDocument);
   const renameDocument = useScannerStore((s) => s.renameDocument);
   const deleteDocument = useScannerStore((s) => s.deleteDocument);
+  const restoreDocument = useScannerStore((s) => s.restoreDocument);
+  const purgeDocument = useScannerStore((s) => s.purgeDocument);
+  const emptyTrash = useScannerStore((s) => s.emptyTrash);
   const toggleFavorite = useScannerStore((s) => s.toggleFavorite);
   const setOcrText = useScannerStore((s) => s.setOcrText);
   const setDocumentsOrder = useScannerStore((s) => s.setDocumentsOrder);
   const exportQuality = useScannerStore((s) => s.settings.exportQuality);
+  const setPendingFindQuery = useScannerStore((s) => s.setPendingFindQuery);
 
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("recientes");
@@ -291,6 +301,11 @@ export default function LibraryView() {
   const [renameValue, setRenameValue] = useState("");
   const [deleting, setDeleting] = useState<ScanDocument | null>(null);
 
+  // F-TRASH: papelera «Eliminados» (pantalla propia dentro de la biblioteca).
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [purging, setPurging] = useState<ScanDocument | null>(null);
+  const [emptyTrashOpen, setEmptyTrashOpen] = useState(false);
+
   // Exportar toda la biblioteca a un único PDF
   const [exportAllOpen, setExportAllOpen] = useState(false);
   const [exportingAll, setExportingAll] = useState(false);
@@ -303,19 +318,27 @@ export default function LibraryView() {
   const [exportingSel, setExportingSel] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
 
-  const totalPages = useMemo(
-    () => documents.reduce((n, d) => n + d.pages.length, 0),
+  /* F-TRASH: la biblioteca VISIBLE excluye la papelera; la papelera se
+   * ordena por fecha de borrado (más reciente arriba), patrón iOS Files. */
+  const liveDocs = useMemo(() => documents.filter((d) => !isTrashed(d)), [documents]);
+  const trashDocs = useMemo(
+    () => documents.filter((d) => isTrashed(d)).sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0)),
     [documents]
+  );
+
+  const totalPages = useMemo(
+    () => liveDocs.reduce((n, d) => n + d.pages.length, 0),
+    [liveDocs]
   );
 
   /** Documentos exportables (con ≥1 página) y su nº total de páginas. */
   const exportableCount = useMemo(
-    () => documents.filter((d) => d.pages.length > 0).length,
-    [documents]
+    () => liveDocs.filter((d) => d.pages.length > 0).length,
+    [liveDocs]
   );
   const exportablePages = useMemo(
-    () => documents.filter((d) => d.pages.length > 0).reduce((n, d) => n + d.pages.length, 0),
-    [documents]
+    () => liveDocs.filter((d) => d.pages.length > 0).reduce((n, d) => n + d.pages.length, 0),
+    [liveDocs]
   );
 
   /** Documentos con coincidencias en el texto OCR (para el badge de la card). */
@@ -323,20 +346,20 @@ export default function LibraryView() {
     const q = normalizeText(query.trim());
     if (!q) return new Set<string>();
     const ids = new Set<string>();
-    for (const d of documents) {
+    for (const d of liveDocs) {
       if (normalizeText(d.title).includes(q)) continue; // solo destacado de matches "ocultos"
       if (d.pages.some((p) => p.ocrText && normalizeText(p.ocrText).includes(q))) {
         ids.add(d.id);
       }
     }
     return ids;
-  }, [documents, query]);
+  }, [liveDocs, query]);
 
   /** Etiquetas de la biblioteca con conteo de uso (chips de filtro). */
-  const allTags = useMemo(() => countTagUsage(documents), [documents]);
+  const allTags = useMemo(() => countTagUsage(liveDocs), [liveDocs]);
 
   const visible = useMemo(() => {
-    let docs = documents;
+    let docs = liveDocs;
     const q = normalizeText(query.trim());
     if (q) {
       // Busca en títulos, etiquetas Y en el texto reconocido por OCR.
@@ -359,13 +382,13 @@ export default function LibraryView() {
     } else if (sort === "manual") {
       // El orden del array del store ES el orden manual (persistido en meta).
       // Solo rellena los ausentes (p. ej. filtro activo) — sin re-sortear.
-      const pos = new Map(documents.map((d, i) => [d.id, i] as const));
+      const pos = new Map(liveDocs.map((d, i) => [d.id, i] as const));
       sorted.sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
     } else {
       sorted.sort((a, b) => b.updatedAt - a.updatedAt);
     }
     return sorted;
-  }, [documents, query, sort, tagFilter]);
+  }, [liveDocs, query, sort, tagFilter]);
 
   /** ¿El modo manual admite arrastre aquí? (vista lista, sin selección,
    *  sin búsqueda ni etiqueta — con filtros el subconjunto se reordena raro). */
@@ -390,7 +413,7 @@ export default function LibraryView() {
 
   /** Confirma el orden local en el store (drag & drop de la lista manual). */
   const commitManualOrder = () => {
-    const storeIds = documents.map((d) => d.id);
+    const storeIds = liveDocs.map((d) => d.id);
     const order = manualOrderIds;
     const changed =
       order.length === storeIds.length && order.some((id, i) => id !== storeIds[i]);
@@ -402,13 +425,18 @@ export default function LibraryView() {
 
   /** Abre el documento en el EDITOR (F-NOVIEW: la 3ª interfaz desapareció —
    *  la biblioteca lleva directo a la revisión de sus páginas, como Adobe
-   *  Scan). La búsqueda de OCR solo filtra aquí; el texto se ve/copia con el
-   *  botón "Texto" del editor. */
+   *  Scan). F-FIND: si la búsqueda activa matcheó por texto OCR (no por
+   *  título/etiqueta), presta la consulta al editor — abre el sheet "Texto"
+   *  en la 1ª página con coincidencias y las resalta en amarillo. */
   const openDocSmart = useCallback(
     (doc: ScanDocument) => {
+      const q = query.trim();
+      if (q && ocrMatches.has(doc.id)) {
+        setPendingFindQuery(q);
+      }
       openDocument(doc.id);
     },
-    [openDocument]
+    [openDocument, query, ocrMatches, setPendingFindQuery]
   );
 
   /** Secciones de la vista de lista (A-Z → inicial, Recientes/Favoritos →
@@ -434,8 +462,8 @@ export default function LibraryView() {
   /* ------------------------- Selección múltiple ------------------------- */
 
   const selectedDocs = useCallback(
-    () => documents.filter((d) => selectedIds.has(d.id)),
-    [documents, selectedIds]
+    () => liveDocs.filter((d) => selectedIds.has(d.id)),
+    [liveDocs, selectedIds]
   );
 
   const enterSelection = useCallback((firstId?: string) => {
@@ -494,7 +522,10 @@ export default function LibraryView() {
     if (docs.length === 0) return;
     for (const d of docs) deleteDocument(d.id);
     toast.success(
-      plural(docs.length, "documento eliminado", "documentos eliminados")
+      `${plural(docs.length, "documento movido a", "documentos movidos a")} Eliminados`,
+      {
+        description: `Recuperables durante ${TRASH_RETENTION_DAYS} días desde la papelera.`,
+      }
     );
     setDeleteManyOpen(false);
     exitSelection();
@@ -535,7 +566,9 @@ export default function LibraryView() {
         {
           id: progressId,
           description:
-            (adjusted ? "Ajustado al presupuesto" : "Dentro del presupuesto") +
+            (adjusted
+              ? "El contenido excedía el presupuesto y se comprimió para caber"
+              : "Dentro del presupuesto") +
             " · portada con índice y marcador por documento",
         }
       );
@@ -621,26 +654,73 @@ export default function LibraryView() {
 
   const confirmDelete = () => {
     if (!deleting) return;
-    deleteDocument(deleting.id);
-    toast.success("Documento eliminado");
+    const { id, title } = deleting;
+    deleteDocument(id);
+    // F-TRASH: el borrado es suave → «Deshacer» restaura al instante.
+    toast.success(`«${title}» movido a Eliminados`, {
+      description: `Podrás recuperarlo durante ${TRASH_RETENTION_DAYS} días.`,
+      action: {
+        label: "Deshacer",
+        onClick: () => {
+          restoreDocument(id);
+          toast.success(`«${title}» restaurado`);
+        },
+      },
+    });
     setDeleting(null);
+  };
+
+  /* ------------------------------ Papelera ------------------------------- */
+
+  /** Restaura un documento de la papelera (botón de su fila). */
+  const restoreFromTrash = (doc: ScanDocument) => {
+    restoreDocument(doc.id);
+    toast.success(`«${doc.title}» restaurado`, {
+      description: "Ya está de vuelta en Mis documentos.",
+    });
+  };
+
+  /** Borrado definitivo de un documento de la papelera (con confirmación). */
+  const confirmPurge = () => {
+    if (!purging) return;
+    purgeDocument(purging.id);
+    toast.success(`«${purging.title}» eliminado definitivamente`, {
+      description: "Esta acción no se puede deshacer.",
+    });
+    setPurging(null);
+  };
+
+  /** Vacía la papelera completa (con confirmación). */
+  const confirmEmptyTrash = () => {
+    const count = trashDocs.length;
+    if (count === 0) {
+      setEmptyTrashOpen(false);
+      return;
+    }
+    emptyTrash();
+    toast.success(`Papelera vaciada · ${plural(count, "documento", "documentos")}`, {
+      description: "Los eliminados se borraron definitivamente.",
+    });
+    setEmptyTrashOpen(false);
   };
 
   /* -------------------------- Atajos de escritorio ----------------------- */
 
-  // «/» enfoca la búsqueda (patrón Gmail/GitHub) · Escape sale de la selección.
+  // «/» enfoca la búsqueda (patrón Gmail/GitHub) · Escape sale de la
+  // selección o de la papelera.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && selecting) {
+      if (e.key === "Escape" && (selecting || trashOpen)) {
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
         if (document.querySelector('[role="dialog"], [role="menu"]')) return;
         e.preventDefault();
-        exitSelection();
+        if (selecting) exitSelection();
+        else setTrashOpen(false);
         return;
       }
       if (e.key !== "/") return;
-      if (selecting) return;
+      if (selecting || trashOpen) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (document.querySelector('[role="dialog"], [role="menu"]')) return;
@@ -649,7 +729,7 @@ export default function LibraryView() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [exitSelection, selecting]);
+  }, [exitSelection, selecting, trashOpen]);
 
   /** Exporta la biblioteca (o el subconjunto filtrado) a un único PDF
    *  multi-documento (portada con índice, marcadores por documento,
@@ -697,9 +777,11 @@ export default function LibraryView() {
         },
         { cover: true, coverTitle: exportScope.label ?? undefined }
       );
-      const fileLabel = sanitizeFileName(
-        exportScope.label!.replace(/[«»·]/g, "").replace(/\s+/g, " ").trim()
-      );
+      const fileLabel = exportScope.label
+        ? sanitizeFileName(
+            exportScope.label.replace(/[«»·]/g, "").replace(/\s+/g, " ").trim()
+          )
+        : "";
       const fileName = exportScope.scoped
         ? `Biblioteca-${fileLabel}-${docCount}-documentos.pdf`
         : `Biblioteca-${docCount}-documentos.pdf`;
@@ -709,7 +791,9 @@ export default function LibraryView() {
         {
           id: progressId,
           description:
-            (adjusted ? "Ajustado al presupuesto global" : "Dentro del presupuesto global") +
+            (adjusted
+              ? "El contenido excedía el presupuesto y se comprimió para caber"
+              : "Dentro del presupuesto global") +
             " · portada con índice y marcador por documento",
         }
       );
@@ -741,7 +825,7 @@ export default function LibraryView() {
   // Estado vacío: sin documentos, sin favoritos o sin resultados de búsqueda
   let empty: { Icon: LucideIcon; title: string; text: string } | null = null;
   if (visible.length === 0) {
-    if (documents.length === 0) {
+    if (liveDocs.length === 0) {
       empty = {
         Icon: FileSearch,
         title: "Aún no hay documentos",
@@ -773,13 +857,40 @@ export default function LibraryView() {
     // de formularios como Protocompass) inyectan atributos data-* en el
     // contenedor del buscador ANTES de que React hidrate → desajuste SSR/cliente
     // puramente cosmético. Se tolera en este elemento (no afecta a los hijos).
-    <div className="relative flex h-full w-full flex-col bg-[#f2f2f7]" suppressHydrationWarning>
+    <div className="relative flex h-full w-full flex-col bg-[#f2f2f7] dark:bg-black" suppressHydrationWarning>
       {/* Header */}
       <header className="shrink-0 px-5 pb-3 pt-safe">
-        {selecting ? (
+        {trashOpen ? (
+          /* F-TRASH: cabecera de la papelera «Eliminados» con volver + vaciar */
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <button
+                type="button"
+                aria-label="Volver a Mis documentos"
+                onClick={() => setTrashOpen(false)}
+                className="-ml-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-opacity active:opacity-60"
+              >
+                <ChevronLeft className="h-[26px] w-[26px] text-[#007aff]" strokeWidth={2.2} />
+              </button>
+              <div className="min-w-0">
+                <h1 className="truncate text-[28px] font-semibold leading-tight tracking-[-0.4px] text-black dark:text-white">
+                  Eliminados
+                </h1>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={trashDocs.length === 0}
+              onClick={() => setEmptyTrashOpen(true)}
+              className="shrink-0 text-[16px] font-normal text-[#ff3b30] transition-opacity active:opacity-60 disabled:opacity-40"
+            >
+              Vaciar
+            </button>
+          </div>
+        ) : selecting ? (
           /* Modo selección: título con conteo + Cancelar */
           <div className="flex items-center justify-between gap-3">
-            <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.4px] text-black">
+            <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.4px] text-black dark:text-white">
               {selCount === 0
                 ? "Seleccionar"
                 : `${selCount} ${selCount === 1 ? "seleccionado" : "seleccionados"}`}
@@ -795,17 +906,17 @@ export default function LibraryView() {
         ) : (
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.4px] text-black">
+              <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.4px] text-black dark:text-white">
                 Mis documentos
               </h1>
               <p className="mt-1 text-[13px] text-[#8e8e93]">
-                {plural(documents.length, "documento", "documentos")} ·{" "}
+                {plural(liveDocs.length, "documento", "documentos")} ·{" "}
                 {plural(totalPages, "página", "páginas")}
               </p>
             </div>
             <div className="mt-1 flex shrink-0 items-center gap-1">
               {/* Seleccionar (modo selección múltiple, patrón Fotos de iOS) */}
-              {documents.length > 0 && (
+              {liveDocs.length > 0 && (
                 <button
                   type="button"
                   aria-label="Seleccionar documentos"
@@ -819,7 +930,7 @@ export default function LibraryView() {
                 </button>
               )}
               {/* Exportar toda la biblioteca a un único PDF (≥2 documentos con páginas) */}
-              {documents.filter((d) => d.pages.length > 0).length >= 2 && (
+              {liveDocs.filter((d) => d.pages.length > 0).length >= 2 && (
                 <button
                   type="button"
                   aria-label="Exportar todos los documentos en un PDF"
@@ -832,6 +943,23 @@ export default function LibraryView() {
                   ) : (
                     <FileDown className="h-[22px] w-[22px] text-[#007aff]" strokeWidth={2} />
                   )}
+                </button>
+              )}
+              {/* F-TRASH: papelera «Eliminados» (solo visible si hay algo) */}
+              {trashDocs.length > 0 && (
+                <button
+                  type="button"
+                  aria-label={`Ver Eliminados · ${plural(trashDocs.length, "documento", "documentos")}`}
+                  onClick={() => setTrashOpen(true)}
+                  className="relative flex h-10 w-10 items-center justify-center rounded-full transition-transform duration-150 active:scale-90"
+                >
+                  <Trash2 className="h-[21px] w-[21px] text-[#007aff]" strokeWidth={2} />
+                  <span
+                    aria-hidden="true"
+                    className="absolute -right-0.5 -top-0.5 flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-[#ff3b30] px-[5px] text-[10px] font-bold leading-none text-white tabular-nums shadow-[0_1px_4px_rgba(255,59,48,0.45)]"
+                  >
+                    {trashDocs.length}
+                  </span>
                 </button>
               )}
               <button
@@ -847,9 +975,11 @@ export default function LibraryView() {
         )}
       </header>
 
-      {/* Búsqueda */}
+      {/* Búsqueda (oculta dentro de la papelera) */}
+      {!trashOpen && (
+      <>
       <div className="shrink-0 px-4 pb-3">
-        <div className="flex h-11 items-center gap-2 rounded-xl bg-white px-3 shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
+        <div className="flex h-11 items-center gap-2 rounded-xl border border-transparent bg-white dark:bg-[#1c1c1e] px-3 shadow-[0_1px_3px_rgba(0,0,0,0.05)] transition-[box-shadow,border-color] duration-200 focus-within:border-[#007aff]/30 focus-within:shadow-[0_0_0_3px_rgba(0,122,255,0.14),0_1px_3px_rgba(0,0,0,0.05)]">
           <Search className="h-[18px] w-[18px] shrink-0 text-[#8e8e93]" strokeWidth={2} aria-hidden="true" />
           <input
             ref={searchRef}
@@ -858,14 +988,14 @@ export default function LibraryView() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar en títulos y texto OCR"
             aria-label="Buscar en títulos y texto OCR"
-            className="h-full min-w-0 flex-1 bg-transparent text-[15px] text-black outline-none placeholder:text-[#8e8e93]"
+            className="h-full min-w-0 flex-1 bg-transparent text-[15px] text-black dark:text-white outline-none placeholder:text-[#8e8e93]"
           />
           {query && (
             <button
               type="button"
               aria-label="Limpiar búsqueda"
               onClick={() => setQuery("")}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#c7c7cc] text-white transition-transform active:scale-90"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#c7c7cc] dark:bg-[#545456] text-white transition-transform active:scale-90"
             >
               <X className="h-3.5 w-3.5" strokeWidth={2.5} />
             </button>
@@ -886,8 +1016,8 @@ export default function LibraryView() {
               className={cn(
                 "flex h-8 shrink-0 items-center rounded-full px-4 text-[13px] font-semibold transition-all duration-150 active:scale-95",
                 active
-                  ? "bg-black text-white"
-                  : "border border-[#e5e5ea] bg-white text-[#3c3c43] active:opacity-70"
+                  ? "bg-black text-white dark:bg-white dark:text-black"
+                  : "border border-[#e5e5ea] bg-white text-[#3c3c43] dark:border-[#3a3a3c] dark:bg-[#1c1c1e] dark:text-white active:opacity-70"
               )}
             >
               {chip.label}
@@ -898,7 +1028,7 @@ export default function LibraryView() {
           type="button"
           aria-label={viewMode === "grid" ? "Cambiar a vista de lista" : "Cambiar a vista de cuadrícula"}
           onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
-          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#e5e5ea] bg-white text-[#8e8e93] transition-transform active:scale-90"
+          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#e5e5ea] bg-white text-[#8e8e93] dark:border-[#3a3a3c] dark:bg-[#1c1c1e] dark:text-[#8e8e93] transition-transform active:scale-90"
         >
           {viewMode === "grid" ? (
             <LayoutGrid className="h-[18px] w-[18px]" strokeWidth={2} />
@@ -918,8 +1048,8 @@ export default function LibraryView() {
             className={cn(
               "flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold transition-all duration-150 active:scale-95",
               tagFilter === null
-                ? "border-black bg-black text-white"
-                : "border-[#e5e5ea] bg-white text-[#3c3c43] active:opacity-70"
+                ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
+                : "border-[#e5e5ea] bg-white text-[#3c3c43] dark:border-[#3a3a3c] dark:bg-[#1c1c1e] dark:text-white active:opacity-70"
             )}
           >
             Todas
@@ -933,11 +1063,16 @@ export default function LibraryView() {
                 type="button"
                 aria-pressed={active}
                 onClick={() => setTagFilter(active ? null : tag)}
-                className="flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-semibold transition-all duration-150 active:scale-95"
+                className={cn(
+                  "flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-semibold transition-all duration-150 active:scale-95",
+                  active
+                    ? ""
+                    : "border-[#e5e5ea] bg-white text-[#3c3c43] dark:border-[#3a3a3c] dark:bg-[#1c1c1e] dark:text-white"
+                )}
                 style={
                   active
                     ? { backgroundColor: c.soft, borderColor: c.dot, color: c.text }
-                    : { borderColor: "#e5e5ea", backgroundColor: "#ffffff", color: "#3c3c43" }
+                    : undefined
                 }
               >
                 <span
@@ -959,10 +1094,57 @@ export default function LibraryView() {
           })}
         </div>
       )}
+      </>
+      )}
 
       {/* Contenido con scroll */}
       <div className="ios-scroll relative flex-1 overflow-y-auto overscroll-contain pb-32">
-        {empty ? (
+        {trashOpen ? (
+          /* ⭐ F-TRASH: papelera «Eliminados» (iOS Files) */
+          <div className="flex flex-col px-4 pt-1">
+            <div className="mb-3 flex items-start gap-2 rounded-xl bg-white dark:bg-[#1c1c1e] px-3.5 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-[#8e8e93]" strokeWidth={2.2} aria-hidden="true" />
+              <p className="text-[12px] leading-snug text-[#8e8e93]">
+                Los documentos se guardan aquí durante{" "}
+                <span className="font-semibold text-[#3c3c43] dark:text-white">
+                  {TRASH_RETENTION_DAYS} días
+                </span>{" "}
+                y luego se borran definitivamente.
+              </p>
+            </div>
+            {trashDocs.length === 0 ? (
+              <EmptyState
+                Icon={Trash2}
+                title="La papelera está vacía"
+                text={`Los documentos que elimines aparecerán aquí durante ${TRASH_RETENTION_DAYS} días.`}
+                onScan={() => setTrashOpen(false)}
+                scanLabel="Volver"
+              />
+            ) : (
+              <>
+                <div className="flex flex-col gap-2">
+                  {trashDocs.map((doc, i) => (
+                    <TrashRow
+                      key={doc.id}
+                      doc={doc}
+                      index={i}
+                      onRestore={() => restoreFromTrash(doc)}
+                      onPurge={() => setPurging(doc)}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEmptyTrashOpen(true)}
+                  className="mt-5 flex items-center justify-center gap-2 rounded-xl border border-[#ff3b30]/25 bg-[#ff3b30]/[0.06] px-4 py-3 text-[14px] font-semibold text-[#ff3b30] transition-transform active:scale-[0.98] dark:border-[#ff453a]/30 dark:bg-[#ff453a]/10"
+                >
+                  <Trash2 className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
+                  Vaciar papelera ({trashDocs.length})
+                </button>
+              </>
+            )}
+          </div>
+        ) : empty ? (
           <EmptyState
             Icon={empty.Icon}
             title={empty.title}
@@ -975,7 +1157,7 @@ export default function LibraryView() {
               <button
                 type="button"
                 onClick={() => setViewMode("list")}
-                className="col-span-2 flex items-center justify-center gap-1.5 rounded-xl bg-white px-3 py-2.5 text-[12px] font-medium text-[#007aff] shadow-[0_1px_3px_rgba(0,0,0,0.05)] transition-transform active:scale-[0.98]"
+                className="col-span-2 flex items-center justify-center gap-1.5 rounded-xl bg-white dark:bg-[#1c1c1e] px-3 py-2.5 text-[12px] font-medium text-[#007aff] shadow-[0_1px_3px_rgba(0,0,0,0.05)] transition-transform active:scale-[0.98]"
               >
                 <List className="size-3.5 shrink-0" strokeWidth={2.2} aria-hidden="true" />
                 Cambia a la vista de lista para reordenar arrastrando
@@ -1012,7 +1194,13 @@ export default function LibraryView() {
               onReorder={setManualOrderIds}
               className="flex flex-col gap-2"
             >
-              {visible.map((doc) => {
+              {/* framer-motion Reorder exige renderizar los hijos en el ORDEN
+                  de `values` — renderizar `visible` (orden del store) hace que
+                  las demás filas no se desplacen durante el drag y haya un
+                  snap-back al soltar. */}
+              {manualOrderIds.map((id) => {
+                const doc = visible.find((d) => d.id === id);
+                if (!doc) return null;
                 const i = globalRowIndex(doc.id);
                 return (
                   <ManualListRow
@@ -1042,7 +1230,7 @@ export default function LibraryView() {
                     className={si === 0 ? "pt-0" : "pt-5"}
                   >
                     {sec.label && (
-                      <h2 className="mb-2 px-1 text-[12px] font-semibold uppercase tracking-[0.06em] text-[#6d6d72]">
+                      <h2 className="mb-2 px-1 text-[12px] font-semibold uppercase tracking-[0.06em] text-[#6d6d72] dark:text-[#98989e]">
                         {sec.label}
                         <span className="ml-1.5 text-[11px] font-medium normal-case tracking-normal text-[#8e8e93]/70 tabular-nums">
                           {sec.docs.length}
@@ -1077,9 +1265,10 @@ export default function LibraryView() {
         )}
       </div>
 
-      {/* FAB / Barra de selección (se intercambian con animación) */}
+      {/* FAB / Barra de selección (se intercambian con animación; en la
+          papelera no hay nada que escanear desde aquí — se ocultan) */}
       <AnimatePresence initial={false} mode="wait">
-        {selecting ? (
+        {trashOpen ? null : selecting ? (
           <motion.div
             key="selection-bar"
             initial={{ y: 90, opacity: 0 }}
@@ -1088,7 +1277,7 @@ export default function LibraryView() {
             transition={{ type: "spring", stiffness: 420, damping: 34 }}
             className="pointer-events-none absolute inset-x-0 bottom-6 z-30 flex justify-center px-4"
           >
-            <div className="pointer-events-auto w-full max-w-[360px] rounded-[26px] border border-black/5 bg-white/92 px-4 pb-2.5 pt-2.5 shadow-[0_10px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+            <div className="pointer-events-auto w-full max-w-[360px] rounded-[26px] border border-black/5 dark:border-white/10 bg-white/92 dark:bg-[#1c1c1e]/92 px-4 pb-2.5 pt-2.5 shadow-[0_10px_40px_rgba(0,0,0,0.16)] backdrop-blur-xl">
               {/* Fila 1: conteo + seleccionar todo */}
               <div className="flex items-center justify-between gap-2">
                 <p className="min-w-0 truncate text-[13px] font-semibold text-[#8e8e93]">
@@ -1184,7 +1373,7 @@ export default function LibraryView() {
               <button
                 type="button"
                 onClick={() => setRenaming(null)}
-                className="h-10 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] transition-colors hover:bg-[#e5e5ea]"
+                className="h-10 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] transition-colors hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]"
               >
                 Cancelar
               </button>
@@ -1199,17 +1388,18 @@ export default function LibraryView() {
         </DialogContent>
       </Dialog>
 
-      {/* AlertDialog: Eliminar (uno) */}
+      {/* AlertDialog: Eliminar (uno) — F-TRASH: borrado suave */}
       <AlertDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
         <AlertDialogContent className="max-w-[320px] rounded-2xl">
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar documento?</AlertDialogTitle>
             <AlertDialogDescription>
-              “{deleting?.title}” se eliminará permanentemente con todas sus páginas.
+              “{deleting?.title}” se moverá a «Eliminados» con todas sus páginas. Podrás
+              recuperarlo durante {TRASH_RETENTION_DAYS} días.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea]">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
               Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
@@ -1222,7 +1412,7 @@ export default function LibraryView() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* AlertDialog: Eliminar la selección */}
+      {/* AlertDialog: Eliminar la selección — F-TRASH: borrado suave */}
       <AlertDialog open={deleteManyOpen} onOpenChange={setDeleteManyOpen}>
         <AlertDialogContent className="max-w-[320px] rounded-2xl">
           <AlertDialogHeader>
@@ -1230,13 +1420,13 @@ export default function LibraryView() {
               ¿Eliminar {plural(selCount, "documento", "documentos")}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Se eliminarán permanentemente{" "}
+              Se moverán a «Eliminados»{" "}
               {plural(selCount, "documento y todas sus páginas", "documentos y todas sus páginas")}
-              . Esta acción no se puede deshacer.
+              , donde podrás recuperarlos durante {TRASH_RETENTION_DAYS} días.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea]">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
               Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
@@ -1278,7 +1468,7 @@ export default function LibraryView() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea]">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
               Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
@@ -1306,7 +1496,7 @@ export default function LibraryView() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea]">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
               Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
@@ -1319,12 +1509,60 @@ export default function LibraryView() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* AlertDialog F-TRASH: borrado DEFINITIVO de un documento de la papelera */}
+      <AlertDialog open={purging !== null} onOpenChange={(o) => !o && setPurging(null)}>
+        <AlertDialogContent className="max-w-[320px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar definitivamente?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{purging?.title}” se borrará para siempre con todas sus páginas y su texto
+              reconocido. Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmPurge}
+              className="flex-1 rounded-full border-0 bg-[#ff3b30] text-[15px] font-semibold text-white hover:bg-[#ff453a]"
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* AlertDialog F-TRASH: vaciar la papelera completa */}
+      <AlertDialog open={emptyTrashOpen} onOpenChange={setEmptyTrashOpen}>
+        <AlertDialogContent className="max-w-[320px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Vaciar la papelera?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se eliminarán definitivamente {plural(trashDocs.length, "documento", "documentos")}
+              con todas sus páginas. Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmEmptyTrash}
+              className="flex-1 rounded-full border-0 bg-[#ff3b30] text-[15px] font-semibold text-white hover:bg-[#ff453a]"
+            >
+              Vaciar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Dialog: etiquetas (documento individual desde el menú ··· o lote) */}
       <TagsDialog
         open={tagDialogIds !== null}
         onOpenChange={(o) => !o && setTagDialogIds(null)}
         docIds={tagDialogIds ?? []}
-        documents={documents}
+        documents={liveDocs}
       />
     </div>
   );
@@ -1367,7 +1605,7 @@ function SelectionAction({
       <span
         className={cn(
           "text-[11px] font-semibold leading-none",
-          danger ? "text-[#ff3b30]" : "text-[#3c3c43]"
+          danger ? "text-[#ff3b30]" : "text-[#3c3c43] dark:text-white"
         )}
       >
         {label}
@@ -1447,12 +1685,16 @@ function GridCard({
       }}
       {...handlers}
       className={cn(
-        "cursor-pointer select-none overflow-hidden rounded-xl bg-white shadow-[0_2px_8px_rgba(0,0,0,0.08)] outline-none transition-shadow duration-150 focus-visible:ring-2 focus-visible:ring-[#007aff]/60",
+        "group cursor-pointer select-none overflow-hidden rounded-xl bg-white dark:bg-[#1c1c1e] shadow-[0_2px_8px_rgba(0,0,0,0.08)] outline-none transition-shadow duration-150 focus-visible:ring-2 focus-visible:ring-[#007aff]/60",
         selecting && selected && "ring-2 ring-[#007aff] ring-offset-0"
       )}
     >
-      <div className="relative aspect-[3/4] overflow-hidden rounded-t-xl bg-[#f2f2f7]">
-        <Thumb src={doc.pages[0]?.thumbnail} alt={doc.title} className="h-full w-full" />
+      <div className="relative aspect-[3/4] overflow-hidden rounded-t-xl bg-[#f2f2f7] ring-1 ring-inset ring-black/[0.04] dark:bg-[#2c2c2e] dark:ring-white/[0.06]">
+        <Thumb
+          src={doc.pages[0]?.thumbnail}
+          alt={doc.title}
+          className="h-full w-full transition-transform duration-300 ease-out group-hover:scale-[1.03]"
+        />
         {/* Degradado inferior para legibilidad de los badges */}
         <div
           aria-hidden="true"
@@ -1468,25 +1710,28 @@ function GridCard({
             <SelectCheck checked={selected} />
           </span>
         )}
-        {/* Badge de páginas · esquina inferior izquierda */}
-        <span
-          className={cn(
-            "absolute bottom-1.5 left-1.5 flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm",
-            selecting && "opacity-70"
-          )}
-        >
-          <FileText className="size-3" strokeWidth={2.4} aria-hidden="true" />
-          {doc.pages.length}
-        </span>
-        {ocrPages > 0 && !selecting && (
+        {/* Badges · esquina inferior izquierda (fila flexible: sin offsets
+         *  fijos que se rompían con contadores de 2 dígitos) */}
+        <div className="absolute inset-x-1.5 bottom-1.5 flex items-center gap-1.5">
           <span
-            className="absolute bottom-1.5 left-[60px] flex items-center gap-1 rounded-full bg-[#007aff]/85 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm"
-            aria-label="Texto OCR disponible"
+            className={cn(
+              "flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-white backdrop-blur-sm",
+              selecting && "opacity-70"
+            )}
           >
-            <ScanText className="size-3" strokeWidth={2.4} aria-hidden="true" />
-            OCR
+            <FileText className="size-3" strokeWidth={2.4} aria-hidden="true" />
+            {doc.pages.length}
           </span>
-        )}
+          {ocrPages > 0 && !selecting && (
+            <span
+              className="flex items-center gap-1 rounded-full bg-[#007aff]/85 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-white shadow-[0_2px_6px_rgba(0,122,255,0.35)] backdrop-blur-sm"
+              aria-label={`Texto OCR en ${ocrPages} de ${doc.pages.length} páginas`}
+            >
+              <ScanText className="size-3" strokeWidth={2.4} aria-hidden="true" />
+              {ocrPages === doc.pages.length ? "OCR" : `OCR ${ocrPages}/${doc.pages.length}`}
+            </span>
+          )}
+        </div>
         {ocrMatch && (
           <span className="absolute inset-x-0 top-0 flex justify-center pt-1.5">
             <span className="flex items-center gap-1 rounded-full bg-[#007aff] px-2 py-0.5 text-[10px] font-semibold text-white shadow-[0_2px_6px_rgba(0,122,255,0.4)]">
@@ -1521,7 +1766,7 @@ function GridCard({
       </div>
       <div className="px-3 pb-2.5 pt-2">
         <div className="flex items-start gap-0.5">
-          <p className="min-w-0 flex-1 text-[14px] font-semibold leading-tight text-black [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow:hidden]">
+          <p className="min-w-0 flex-1 text-[14px] font-semibold leading-tight text-black dark:text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow:hidden]">
             {doc.title}
           </p>
           {/* Menú ··· (oculto en modo selección) */}
@@ -1533,6 +1778,22 @@ function GridCard({
         <p className="mt-1 truncate text-[12px] text-[#8e8e93]">
           {plural(doc.pages.length, "página", "páginas")} · {relativeTime(doc.updatedAt)}
         </p>
+        {/* S-CARDS: micro-barra de cobertura OCR (azul, animada al cambiar) */}
+        {doc.pages.length > 0 && ocrPages > 0 && (
+          <div
+            className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-[#e5e5ea] dark:bg-[#3a3a3c]"
+            role="progressbar"
+            aria-label={`Texto reconocido en ${ocrPages} de ${doc.pages.length} páginas`}
+            aria-valuenow={ocrPages}
+            aria-valuemin={0}
+            aria-valuemax={doc.pages.length}
+          >
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[#0a84ff] to-[#007aff] transition-[width] duration-500"
+              style={{ width: `${(ocrPages / doc.pages.length) * 100}%` }}
+            />
+          </div>
+        )}
       </div>
     </motion.div>
   );
@@ -1660,7 +1921,7 @@ function ListRow({
       }}
       {...handlers}
       className={cn(
-        "flex cursor-pointer select-none items-center gap-3 rounded-xl bg-white p-3 shadow-[0_2px_8px_rgba(0,0,0,0.08)] outline-none transition-shadow duration-150 focus-visible:ring-2 focus-visible:ring-[#007aff]/60",
+        "flex cursor-pointer select-none items-center gap-3 rounded-xl bg-white dark:bg-[#1c1c1e] p-3 shadow-[0_2px_8px_rgba(0,0,0,0.08)] outline-none transition-shadow duration-150 focus-visible:ring-2 focus-visible:ring-[#007aff]/60",
         selecting && selected && "ring-2 ring-[#007aff]"
       )}
     >
@@ -1682,7 +1943,7 @@ function ListRow({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <p className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-tight text-black">
+          <p className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-tight text-black dark:text-white">
             {doc.title}
           </p>
           {ocrMatch && (
@@ -1725,7 +1986,7 @@ function ListRow({
         <Star
           className={cn(
             "h-[18px] w-[18px]",
-            doc.favorite ? "fill-[#ffce00] text-[#ffce00]" : "text-[#c7c7cc]"
+            doc.favorite ? "fill-[#ffce00] text-[#ffce00]" : "text-[#c7c7cc] dark:text-[#545456]"
           )}
           strokeWidth={2}
         />
@@ -1742,14 +2003,14 @@ function ListRow({
             onHandlePointerDown?.(e);
           }}
           className={cn(
-            "-mr-1 flex h-9 w-7 shrink-0 cursor-grab touch-none flex-col items-center justify-center rounded-md text-[#c7c7cc] transition-colors active:cursor-grabbing active:bg-[#f2f2f7] active:text-[#8e8e93]"
+            "-mr-1 flex h-9 w-7 shrink-0 cursor-grab touch-none flex-col items-center justify-center rounded-md text-[#c7c7cc] dark:text-[#545456] transition-colors active:cursor-grabbing active:bg-[#f2f2f7] dark:active:bg-[#2c2c2e] active:text-[#8e8e93]"
           )}
         >
           <GripVertical className="h-5 w-5" strokeWidth={2.2} />
         </button>
       ) : (
         <ChevronRight
-          className={cn("h-5 w-5 shrink-0 text-[#c7c7cc] transition-opacity duration-150", selecting && "opacity-0")}
+          className={cn("h-5 w-5 shrink-0 text-[#c7c7cc] dark:text-[#545456] transition-opacity duration-150", selecting && "opacity-0")}
           strokeWidth={2}
           aria-hidden="true"
         />
@@ -1780,7 +2041,8 @@ function DocMenu({
   const toggleFavorite = useScannerStore((s) => s.toggleFavorite);
   const duplicateDocument = useScannerStore((s) => s.duplicateDocument);
   const exportQuality = useScannerStore((s) => s.settings.exportQuality);
-  const [pdfBusy, setPdfBusy] = useState<"export" | "share" | null>(null);
+  const [pdfBusy, setPdfBusy] = useState<"export" | "share" | "text" | "share-text" | null>(null);
+  const hasOcr = docHasOcrText(doc);
 
   /** Exporta (descarga) el PDF adaptativo §8 del documento. */
   const exportPdf = async () => {
@@ -1827,6 +2089,48 @@ function DocMenu({
     }
   };
 
+  /** F-TXT: exporta el texto OCR de todas las páginas como .txt (UTF-8 BOM
+   *  — se abre bien en Windows). Sin OCR en el documento → ítem deshabilitado. */
+  const exportText = () => {
+    if (pdfBusy || !hasOcr) return;
+    setPdfBusy("text");
+    try {
+      const { bytes, words } = downloadOcrTxt(doc);
+      toast.success("Texto exportado", {
+        description: `${words} ${words === 1 ? "palabra" : "palabras"} · ${formatBytes(bytes)} · .txt`,
+      });
+    } catch {
+      toast.error("No se pudo exportar el texto");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  /** F-SHARE-TXT: comparte el texto OCR plano vía Web Share nivel 1 (hoja
+   *  nativa en móvil). Sin navigator.share (escritorio/headless) cae a un
+   *  .txt descargado — nunca rompe. */
+  const shareText = async () => {
+    if (pdfBusy || !hasOcr) return;
+    setPdfBusy("share-text");
+    try {
+      const shared = await shareOcrText(doc);
+      if (shared) {
+        toast.success("Texto compartido", {
+          description: `«${doc.title}» · ${doc.pages.filter((p) => p.ocrText?.trim()).length} ${doc.pages.filter((p) => p.ocrText?.trim()).length === 1 ? "página con texto" : "páginas con texto"}`,
+        });
+      } else {
+        const { bytes, words } = downloadOcrTxt(doc);
+        toast.info("Compartir texto no está disponible aquí", {
+          description: `Se descargó como .txt · ${words} ${words === 1 ? "palabra" : "palabras"} · ${formatBytes(bytes)}`,
+        });
+      }
+    } catch {
+      toast.error("No se pudo compartir el texto");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -1835,7 +2139,7 @@ function DocMenu({
           aria-label={`Más opciones de ${doc.title}`}
           onClick={(e) => e.stopPropagation()}
           className={cn(
-            "flex shrink-0 items-center justify-center rounded-full text-[#8e8e93] transition-colors hover:bg-[#f2f2f7] active:bg-[#e5e5ea]",
+            "flex shrink-0 items-center justify-center rounded-full text-[#8e8e93] transition-colors hover:bg-[#f2f2f7] dark:hover:bg-[#2c2c2e] active:bg-[#e5e5ea] dark:active:bg-[#3a3a3c]",
             compact ? "h-7 w-7" : "h-8 w-8"
           )}
         >
@@ -1846,7 +2150,7 @@ function DocMenu({
         align="end"
         sideOffset={4}
         onClick={(e) => e.stopPropagation()}
-        className="w-48 rounded-xl border-[#e5e5ea]"
+        className="w-48 rounded-xl border-[#e5e5ea] dark:border-[#38383a]"
       >
         <DropdownMenuItem onSelect={onTags} className="gap-2.5 text-[14px]">
           <Tag className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
@@ -1880,6 +2184,30 @@ function DocMenu({
           )}
           Compartir
         </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => exportText()}
+          disabled={pdfBusy !== null || !hasOcr}
+          className="gap-2.5 text-[14px]"
+        >
+          {pdfBusy === "text" ? (
+            <Loader2 className="h-4 w-4 animate-spin text-[#8e8e93]" strokeWidth={2} />
+          ) : (
+            <FileText className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
+          )}
+          Exportar texto
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => void shareText()}
+          disabled={pdfBusy !== null || !hasOcr}
+          className="gap-2.5 text-[14px]"
+        >
+          {pdfBusy === "share-text" ? (
+            <Loader2 className="h-4 w-4 animate-spin text-[#8e8e93]" strokeWidth={2} />
+          ) : (
+            <Send className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
+          )}
+          Compartir texto
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onRename()} className="gap-2.5 text-[14px]">
           <Pencil className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
           Renombrar
@@ -1909,7 +2237,7 @@ function DocMenu({
           <Copy className="h-4 w-4 text-[#8e8e93]" strokeWidth={2} />
           Duplicar
         </DropdownMenuItem>
-        <DropdownMenuSeparator className="bg-[#f2f2f7]" />
+        <DropdownMenuSeparator className="bg-[#f2f2f7] dark:bg-[#38383a]" />
         <DropdownMenuItem
           onSelect={() => onDelete()}
           className="gap-2.5 text-[14px] text-[#ff3b30] focus:bg-[#ff3b30]/10 focus:text-[#ff3b30]"
@@ -1928,11 +2256,14 @@ function EmptyState({
   title,
   text,
   onScan,
+  scanLabel,
 }: {
   Icon: LucideIcon;
   title: string;
   text: string;
   onScan: () => void;
+  /** Texto del botón (por defecto «Escanear primer documento»). */
+  scanLabel?: string;
 }) {
   return (
     <motion.div
@@ -1941,18 +2272,96 @@ function EmptyState({
       transition={{ duration: 0.3, ease: "easeOut" }}
       className="flex flex-col items-center px-8 pt-14 text-center"
     >
-      <div className="flex h-24 w-24 items-center justify-center rounded-[28px] bg-[#e5e5ea]/60">
+      <div className="flex h-24 w-24 items-center justify-center rounded-[28px] bg-[#e5e5ea]/60 dark:bg-[#2c2c2e]">
         <Icon className="h-12 w-12 text-[#8e8e93]" strokeWidth={1.5} aria-hidden="true" />
       </div>
-      <h2 className="mt-5 text-[17px] font-semibold text-black">{title}</h2>
+      <h2 className="mt-5 text-[17px] font-semibold text-black dark:text-white">{title}</h2>
       <p className="mt-1.5 max-w-[260px] text-[14px] leading-relaxed text-[#8e8e93]">{text}</p>
       <button
         type="button"
         onClick={onScan}
         className="mt-6 rounded-full bg-[#007aff] px-6 py-3 text-[15px] font-semibold text-white shadow-[0_8px_24px_rgba(0,122,255,0.35)] transition-transform active:scale-95"
       >
-        Escanear primer documento
+        {scanLabel ?? "Escanear primer documento"}
       </button>
+    </motion.div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* ⭐ F-TRASH: fila de la papelera «Eliminados»                         */
+/* ------------------------------------------------------------------ */
+
+/** Fila de documento eliminado (patrón «Eliminados recientemente» de
+ *  iOS Files): miniatura atenuada en escala de grises, badge rojo con los
+ *  días restantes y acciones Restaurar / Eliminar definitivamente. */
+function TrashRow({
+  doc,
+  index,
+  onRestore,
+  onPurge,
+}: {
+  doc: ScanDocument;
+  index: number;
+  onRestore: () => void;
+  onPurge: () => void;
+}) {
+  const daysLeft = trashDaysLeft(doc);
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, delay: Math.min(index * 0.04, 0.28), ease: "easeOut" }}
+      exit={{ opacity: 0, scale: 0.96 }}
+      className="flex items-center gap-3 overflow-hidden rounded-xl bg-white dark:bg-[#1c1c1e] p-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]"
+    >
+      {/* Miniatura atenuada (en escala de grises — visual de «eliminado») */}
+      <div className="relative h-[72px] w-[54px] shrink-0 overflow-hidden rounded-lg bg-[#f2f2f7] dark:bg-[#2c2c2e] ring-1 ring-inset ring-black/5 dark:ring-white/5">
+        <Thumb src={doc.pages[0]?.thumbnail} alt="" className="h-full w-full opacity-55 grayscale" />
+        {/* Badge de días restantes */}
+        <span
+          className={cn(
+            "absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-[#ff3b30]/90 px-1 py-0.5 text-[9px] font-bold text-white tabular-nums backdrop-blur-[2px]",
+            daysLeft <= 7 && "animate-pulse"
+          )}
+          aria-label={`Quedan ${daysLeft} días`}
+        >
+          <Clock className="size-2.5" strokeWidth={2.6} aria-hidden="true" />
+          {daysLeft} d
+        </span>
+      </div>
+      {/* Título + metadatos */}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[15px] font-semibold leading-tight text-black/60 dark:text-white/60">
+          {doc.title}
+        </p>
+        <p className="mt-1 truncate text-[12px] text-[#8e8e93]">
+          {plural(doc.pages.length, "página", "páginas")} · eliminado{" "}
+          {relativeTime(doc.deletedAt ?? doc.updatedAt)}
+        </p>
+        <p className="mt-0.5 truncate text-[11px] text-[#8e8e93]/80">
+          Quedan {daysLeft} {daysLeft === 1 ? "día" : "días"} para recuperarlo
+        </p>
+      </div>
+      {/* Acciones */}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button
+          type="button"
+          aria-label={`Restaurar ${doc.title}`}
+          onClick={onRestore}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-[#007aff]/10 text-[#007aff] transition-all duration-150 hover:bg-[#007aff]/16 active:scale-90 dark:bg-[#0a84ff]/15 dark:text-[#0a84ff]"
+        >
+          <RotateCcw className="h-[18px] w-[18px]" strokeWidth={2.2} />
+        </button>
+        <button
+          type="button"
+          aria-label={`Eliminar definitivamente ${doc.title}`}
+          onClick={onPurge}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-[#ff3b30]/10 text-[#ff3b30] transition-all duration-150 hover:bg-[#ff3b30]/16 active:scale-90 dark:bg-[#ff453a]/15 dark:text-[#ff453a]"
+        >
+          <Trash2 className="h-[18px] w-[18px]" strokeWidth={2.2} />
+        </button>
+      </div>
     </motion.div>
   );
 }

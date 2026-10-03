@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { useScannerStore } from "@/lib/scanner/store";
+import { useScannerStore, ONBOARDING_STORAGE_KEY } from "@/lib/scanner/store";
 import type { ScannerView } from "@/lib/scanner/types";
 import { warmUpScannerWorker } from "@/lib/scanner/image-processor";
 import LibraryView from "@/components/scanner/LibraryView";
@@ -20,6 +20,7 @@ import CameraView from "@/components/scanner/CameraView";
 import EditorView from "@/components/scanner/EditorView";
 import SettingsView from "@/components/scanner/SettingsView";
 import BottomNav from "@/components/scanner/BottomNav";
+import OnboardingView from "@/components/scanner/OnboardingView";
 
 /** Profundidad de navegación (para decidir dirección del slide). */
 const VIEW_RANK: Record<ScannerView, number> = {
@@ -31,6 +32,14 @@ const VIEW_RANK: Record<ScannerView, number> = {
 
 export default function Home() {
   const view = useScannerStore((s) => s.view);
+  const hydrated = useScannerStore((s) => s.hydrated);
+  const onboardingDone = useScannerStore((s) => s.onboardingDone);
+
+  // Onboarding de primera ejecución: el store arranca SIEMPRE con false
+  // (server + primer render del cliente — sin mismatch de hidratación);
+  // tras montar se lee la marca persistida y, una vez hidratado el store,
+  // el onboarding ocupa el frame EN LUGAR de la app (sin BottomNav).
+  const showOnboarding = hydrated && !onboardingDone;
 
   // Vista previa para la dirección de la transición (ajuste de estado en
   // fase de render — patrón oficial de React, sin leer refs en render).
@@ -47,6 +56,16 @@ export default function Home() {
   // hidrata documentos + ajustes desde IndexedDB/localStorage (§8 — la
   // biblioteca sobrevive al recargar; en instalación nueva conservan mocks).
   useEffect(() => {
+    // Marca de onboarding (lectura síncrona ANTES de hidratar): si ya se
+    // completó en una ejecución anterior, el flag se activa aquí — la
+    // transición a la app es invisible para visitas repetidas.
+    try {
+      if (localStorage.getItem(ONBOARDING_STORAGE_KEY) === "1") {
+        useScannerStore.setState({ onboardingDone: true });
+      }
+    } catch {
+      /* sin localStorage (privada/SSR): el onboarding vuelve a mostrarse */
+    }
     warmUpScannerWorker();
     void useScannerStore.getState().hydrateFromStorage();
   }, []);
@@ -97,38 +116,57 @@ export default function Home() {
     // (p.ej. data-protocompass-form de asistentes de formularios) → mismatch
     // SSR/cliente cosmético que disparaba el overlay de hidratación.
     <div
-      className="flex min-h-screen w-full items-stretch justify-center bg-[#e9e9ee] sm:items-center sm:py-6"
+      className="flex min-h-screen w-full items-stretch justify-center bg-[#e9e9ee] dark:bg-[#111111] sm:items-center sm:py-6"
       suppressHydrationWarning
     >
       <div
         id="app-phone"
         suppressHydrationWarning
         className={[
-          "relative flex w-full flex-col overflow-hidden bg-[#f2f2f7]",
+          "relative flex w-full flex-col overflow-hidden bg-[#f2f2f7] dark:bg-black",
           "h-[100svh] sm:h-[min(880px,94svh)] sm:max-w-[420px]",
           fullBleed ? "bg-black sm:rounded-[44px]" : "sm:rounded-[44px]",
           "sm:phone-frame",
         ].join(" ")}
       >
         <main className="relative flex min-h-0 flex-1 flex-col">
-          <AnimatePresence initial={false}>
-            <motion.div
-              key={view}
-              initial={{ opacity: 0, x: direction * 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: direction * -20 }}
-              transition={{ duration: 0.19, ease: [0.32, 0.72, 0, 1] }}
-              className="absolute inset-0 flex flex-col"
-            >
-              {view === "library" && <LibraryView />}
-              {view === "camera" && <CameraView />}
-              {view === "editor" && <EditorView />}
-              {view === "settings" && <SettingsView />}
-            </motion.div>
+          {/* Onboarding de primera ejecución — tapa las vistas dentro del
+              frame y hace fade-out al completarse (transición a biblioteca). */}
+          <AnimatePresence>
+            {showOnboarding && (
+              <motion.div
+                key="onboarding-root"
+                className="ios-bg absolute inset-0 z-10 flex flex-col"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.24, ease: "easeOut" }}
+              >
+                <OnboardingView />
+              </motion.div>
+            )}
           </AnimatePresence>
+
+          {!showOnboarding && (
+            <AnimatePresence initial={false}>
+              <motion.div
+                key={view}
+                initial={{ opacity: 0, x: direction * 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: direction * -20 }}
+                transition={{ duration: 0.19, ease: [0.32, 0.72, 0, 1] }}
+                className="absolute inset-0 flex flex-col"
+              >
+                {view === "library" && <LibraryView />}
+                {view === "camera" && <CameraView />}
+                {view === "editor" && <EditorView />}
+                {view === "settings" && <SettingsView />}
+              </motion.div>
+            </AnimatePresence>
+          )}
         </main>
 
-        {(view === "library" || view === "settings") && <BottomNav />}
+        {!showOnboarding && (view === "library" || view === "settings") && <BottomNav />}
       </div>
     </div>
   );

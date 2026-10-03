@@ -211,9 +211,9 @@ export function TagsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[340px] rounded-2xl bg-white p-5">
+      <DialogContent className="max-w-[340px] rounded-2xl bg-white dark:bg-[#1c1c1e] p-5">
         <DialogHeader className="gap-1 text-left">
-          <DialogTitle className="text-[17px] font-semibold text-black">
+          <DialogTitle className="text-[17px] font-semibold text-black dark:text-white">
             {many ? `Etiquetar ${docIds.length} documentos` : "Etiquetas"}
           </DialogTitle>
           <DialogDescription className="text-[13px] leading-snug text-[#8e8e93]">
@@ -244,13 +244,19 @@ export function TagsDialog({
                     }
                   }}
                   className={cn(
-                    "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12.5px] font-semibold transition-all active:scale-95"
+                    "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12.5px] font-semibold transition-all active:scale-95",
+                    !checked &&
+                      "border-[#e5e5ea] bg-[#f2f2f7]/90 text-[#3c3c43] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] dark:text-white"
                   )}
-                  style={{
-                    backgroundColor: checked ? c.soft : "rgba(242,242,247,0.9)",
-                    borderColor: checked ? c.softBorder : "#e5e5ea",
-                    color: checked ? c.text : "#3c3c43",
-                  }}
+                  style={
+                    checked
+                      ? {
+                          backgroundColor: c.soft,
+                          borderColor: c.softBorder,
+                          color: c.text,
+                        }
+                      : undefined
+                  }
                 >
                   {checked ? (
                     <Check className="size-3.5" strokeWidth={3} style={{ color: c.dot }} />
@@ -263,7 +269,7 @@ export function TagsDialog({
             })}
           </div>
         ) : (
-          <div className="flex items-center gap-2 rounded-xl bg-[#f2f2f7] px-3 py-2.5 text-[13px] text-[#8e8e93]">
+          <div className="flex items-center gap-2 rounded-xl bg-[#f2f2f7] dark:bg-[#2c2c2e] px-3 py-2.5 text-[13px] text-[#8e8e93]">
             <TagIcon className="size-4 shrink-0" />
             {many
               ? "Los documentos no tienen etiquetas todavía."
@@ -285,7 +291,7 @@ export function TagsDialog({
             maxLength={MAX_TAG_LEN}
             placeholder="Nueva etiqueta…"
             aria-label="Nueva etiqueta"
-            className="h-10 flex-1 rounded-xl border-[#e5e5ea] bg-[#f2f2f7] text-[14px]"
+            className="h-10 flex-1 rounded-xl border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] dark:text-white text-[14px]"
           />
           <button
             type="submit"
@@ -331,7 +337,7 @@ export function TagsDialog({
         <button
           type="button"
           onClick={() => onOpenChange(false)}
-          className="mt-1 h-10 w-full rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] transition-colors hover:bg-[#e5e5ea]"
+          className="mt-1 h-10 w-full rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] transition-colors hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]"
         >
           Listo
         </button>

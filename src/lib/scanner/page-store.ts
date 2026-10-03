@@ -39,17 +39,26 @@ interface StoredDocument extends Omit<ScanDocument, "pages"> {
 // ─── utilidades data URL ⇄ Blob ─────────────────────────────────────────────
 
 export function dataUrlToBlob(dataUrl: string): Blob {
-  // Sin fetch() (más portable en workers/contextos fríos): parse manual del
-  // base64. Los data URLs de esta app siempre son image/png o image/jpeg.
+  // Sin fetch() (más portable en workers/contextos fríos): parse manual.
+  // Soporta DOS variantes de data URL:
+  //  · base64 (image/png, image/jpeg de los escaneos reales)
+  //  · percent-encoded (data:image/svg+xml;charset=utf-8,… de los mocks demo)
+  // atob() sobre SVG percent-encoded lanza InvalidCharacterError — antes se
+  // tragaba el error en el catch de persistDocument y los cambios sobre
+  // documentos demo (renombrar, favorito, etiquetas…) NO persistían.
   const comma = dataUrl.indexOf(",");
   if (comma < 0) return new Blob();
   const header = dataUrl.slice(0, comma);
   const mime = /data:([^;]+)/.exec(header)?.[1] ?? "application/octet-stream";
-  const b64 = dataUrl.slice(comma + 1);
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
+  const payload = dataUrl.slice(comma + 1);
+  if (/;base64$/i.test(header)) {
+    const bin = atob(payload);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+  const text = decodeURIComponent(payload);
+  return new Blob([text], { type: mime });
 }
 
 export function blobToDataUrl(blob: Blob): Promise<string> {

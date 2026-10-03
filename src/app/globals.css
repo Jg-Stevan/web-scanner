@@ -95,6 +95,16 @@
 }
 
 .dark {
+  /* iOS dark: mismos tokens del sistema con valores oscuros */
+  --ios-bg: #000000;
+  --ios-bg-secondary: #1c1c1e;
+  --ios-gray-4: #38383a;
+  --ios-gray-5: #545456;
+  --ios-dark: #1c1c1e;
+  --ios-dark-2: #2c2c2e;
+  --ios-dark-3: #3a3a3c;
+  --ios-label: #ffffff;
+
   --background: #000000;
   --foreground: #ffffff;
   --card: #1c1c1e;
@@ -159,6 +169,11 @@
     -webkit-backdrop-filter: blur(20px);
     border-top: 0.5px solid var(--ios-gray-4);
   }
+  /* Variante oscura de la barra clara (dark: #1c1c1e translúcido) */
+  .dark .ios-blur-bar-light {
+    background: rgba(28, 28, 30, 0.95);
+    border-top: 0.5px solid #38383a;
+  }
   /* Home indicator de iPhone */
   .home-indicator {
     width: 134px;
@@ -169,6 +184,10 @@
   }
   .home-indicator-dark {
     background: rgba(0, 0, 0, 0.35);
+  }
+  /* En modo oscuro el home indicator de las barras claras es blanco */
+  .dark .home-indicator-dark {
+    background: rgba(255, 255, 255, 0.4);
   }
   /* Safe areas de iPhone */
   .pt-safe {
@@ -223,6 +242,9 @@
   /* Contenedor tipo teléfono en desktop */
   .phone-frame {
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 24px 80px rgba(0, 0, 0, 0.25);
+  }
+  .dark .phone-frame {
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 80px rgba(0, 0, 0, 0.6);
   }
 }
 

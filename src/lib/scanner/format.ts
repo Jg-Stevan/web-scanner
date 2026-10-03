@@ -34,11 +34,20 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** Estima el tamaño de un data URL en bytes. */
+/** Estima el tamaño de un data URL en bytes (real para base64 y texto). */
 export function dataUrlBytes(dataUrl: string): number {
   const idx = dataUrl.indexOf(",");
   if (idx < 0) return 0;
-  return Math.round(((dataUrl.length - idx - 1) * 3) / 4);
+  const header = dataUrl.slice(0, idx);
+  const payload = dataUrl.length - idx - 1;
+  // base64 → 4 chars ≈ 3 bytes; percent-encoded (SVG de mocks) → decodificado.
+  if (/;base64$/i.test(header)) return Math.round((payload * 3) / 4);
+  try {
+    return new TextEncoder().encode(decodeURIComponent(dataUrl.slice(idx + 1)))
+      .length;
+  } catch {
+    return payload;
+  }
 }
 
 export { BASE_TIME };

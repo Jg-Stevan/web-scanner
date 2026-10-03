@@ -185,7 +185,10 @@ export class ScannerWorkerClient {
     return this.dead;
   }
 
-  /** Inicializa el worker y espera a que OpenCV.js esté listo. */
+  /** Inicializa el worker y espera a que OpenCV.js esté listo.
+   *  Self-healing: si el timeout de arranque vence, el worker se termina
+   *  (queda dead) y `getScannerWorker()` creará uno NUEVO en la siguiente
+   *  consulta — el pipeline se recupera sin recargar la página. */
   waitReady(): Promise<boolean> {
     if (this.dead) return Promise.resolve(false);
     if (this._ready) return Promise.resolve(true);
@@ -193,7 +196,19 @@ export class ScannerWorkerClient {
       this.readyPromise = new Promise<boolean>((resolve) => {
         this.readyResolve = resolve;
         const timer = window.setTimeout(() => {
-          if (!this._ready) resolve(false);
+          if (!this._ready) {
+            // Arranque fallido: mata ESTE worker para que el singleton pueda
+            // reemplazarlo (antes el false quedaba cacheado para siempre).
+            try {
+              this.worker?.terminate();
+            } catch {
+              /* ya muerto */
+            }
+            this.worker = null;
+            this.dead = true;
+            this.rejectAll(new Error("worker: timeout de arranque"));
+            resolve(false);
+          }
         }, READY_TIMEOUT_MS);
         const origResolve = this.readyResolve;
         this.readyResolve = (ok: boolean) => {
@@ -482,7 +497,10 @@ export class ScannerWorkerClient {
 
 let client: ScannerWorkerClient | null | undefined;
 
-/** Instancia perezosa del worker (null en SSR o si ya murió). */
+/** Instancia perezosa del worker (null en SSR o si ya murió).
+ *  Self-healing: si el cliente anterior murió (p. ej. timeout de arranque
+ *  de OpenCV.js), se sustituye por uno fresco aquí — la app se recupera
+ *  sin recargar. */
 export function getScannerWorker(): ScannerWorkerClient | null {
   if (client === undefined) {
     if (typeof window === "undefined" || typeof Worker === "undefined") {
@@ -490,6 +508,9 @@ export function getScannerWorker(): ScannerWorkerClient | null {
     } else {
       client = new ScannerWorkerClient();
     }
+  }
+  if (client !== null && client.isDead) {
+    client = new ScannerWorkerClient();
   }
   return client;
 }
