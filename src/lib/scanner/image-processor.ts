@@ -44,12 +44,13 @@ export interface ProcessOptions {
   unsharpOriginal?: boolean;
 }
 
-/** Lado mayor tope del resultado. 3200 (subido desde 2560 — F-OCR):
- *  conserva la resolución del sensor tras el recorte para que el OCR
- *  reciba píxeles reales y el texto no se vea borroso. 3200×2400 ≈ 7.7 MP,
- *  muy por debajo del límite de canvas de iOS (~16.7 MP); IndexedDB guarda
+/** Lado mayor tope del resultado. 4032 (bug v3 de CALIDAD: estaba en 3200 y
+ *  RECORTABA la foto completa del sensor — el iPhone captura a 4032px, así
+ *  que el pipeline tiraba ~21% de resolución que codigo-test sí conservaba
+ *  al usar maxLongSide 0 = resolución completa). 4032×3024 ≈ 12.2 MP, aún
+ *  por debajo del límite de canvas de iOS (~16.7 MP); IndexedDB guarda
  *  Blobs → sin problema de cuota. */
-const PROCESSED_MAX_LONG_SIDE = 3200;
+const PROCESSED_MAX_LONG_SIDE = 4032;
 
 /** Mapea los 3 filtros del producto (§8) a los modos reales del worker. */
 export function filterToEnhanceMode(filter: PageFilter): EnhanceMode {

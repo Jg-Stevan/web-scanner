@@ -88,8 +88,10 @@ type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
  *         principal) para que el encuadre no mienta aunque caiga en la
  *         lente equivocada por limitación del navegador. */
 const IDEAL_CAPTURE_WIDTH = 3840;
-/** Máximo de candidatos traseros a probar (no bloquea el arranque). */
-const MAX_CAMERA_PROBES = 4;
+/** Máximo de candidatos traseros a probar (no bloquea el arranque).
+ *  8 (bug v3: con 4 podían quedarse sin probar la principal los móviles con
+ *  5+ lentes traseras — p. ej. Samsung ultra: 0.6×, 1×, 3×, 10×, macro…). */
+const MAX_CAMERA_PROBES = 8;
 const BACK_CAMERA_RE = /back|rear|environment|trasera|posterior|arri[eè]re/i;
 const FRONT_CAMERA_RE = /front|delantera|anterior|face|facial|selfie/i;
 /** Lentes secundarias que NO queremos (gran angular, macro, tele, etc.). */
@@ -99,6 +101,18 @@ const MACRO_LENS_RE = /macro|depth|truedepth|profundidad/i;
 /** "wide" a secas suele ser la principal en Android ("Back camera (wide)")
  *  — penalización leve, no dura. */
 const PLAIN_WIDE_RE = /\bwide\b/i;
+
+/** F-FLASH v2 — diagnóstico cuando el botón flash sale deshabilitado:
+ *  casi siempre es el NAVEGADOR (no el teléfono). Chrome/Firefox de iPhone
+ *  no exponen torch (motor WebKit limitado), los WebView in-app tampoco y
+ *  Android necesita Chrome 70+. Safari iOS lo soporta desde 17.4. */
+const TORCH_HINT =
+  "La linterna no está disponible aquí. Tu teléfono puede tener flash, " +
+  "pero este navegador no lo expone: en iPhone usa Safari (17.4 o " +
+  "posterior; Chrome/Firefox de iOS no lo permiten), en Android Chrome " +
+  "actualizado, y evita abrir la app dentro de otra app (Instagram, " +
+  "WhatsApp…). Si aun así no se enciende, la cámara abierta no es la " +
+  "principal: cierra el escáner y vuelve a abrirlo.";
 
 /** Penalización de lente por label (menor = mejor). */
 function lensScore(label: string): number {
@@ -175,10 +189,12 @@ function jitteredQuad(): Quad {
 }
 
 /** Reduce imágenes enormes de galería para no reventar la memoria del store.
- *  3400 (F-OCR, subido desde 2560): conserva más resolución del sensor tras
- *  el takePhoto hi-res (4032px iPhone) para que el OCR extraiga texto fino
- *  sin borrosidad; 3400×2550 ≈ 8.7 MP, lejos del límite de canvas de iOS. */
-async function downscaleDataUrl(dataUrl: string, max = 3400): Promise<string> {
+ *  4032 (bug v3 de CALIDAD: estaba en 3400 y re-escalaba la foto nativa del
+ *  iPhone de 4032px, añadiendo un re-encode JPEG extra — codigo-test guarda
+ *  la foto full-res con una sola compresión). Con el tope en la resolución
+ *  completa del sensor ya no hay downscale en el flujo normal de captura;
+ *  4032×3024 ≈ 12.2 MP, aún lejos del límite de canvas de iOS. */
+async function downscaleDataUrl(dataUrl: string, max = 4032): Promise<string> {
   try {
     const img = await loadImage(dataUrl);
     const big = Math.max(img.width, img.height);
@@ -348,6 +364,8 @@ export default function CameraView() {
   const autoRef = useRef(settings.autoCapture);
   /** F-FLASH: preferencia persistida (re-aplicada al abrir cada stream). */
   const flashRef = useRef(settings.flash);
+  /** F-FLASH v2: espejo de torchOn legible desde listeners sin re-render. */
+  const torchOnRef = useRef(false);
   const lastTelemetryAt = useRef(0);
 
   const [status, setStatus] = useState<CameraStatus>("idle");
@@ -371,10 +389,44 @@ export default function CameraView() {
 
   autoRef.current = settings.autoCapture;
   flashRef.current = settings.flash;
+  torchOnRef.current = torchOn;
 
   const pageCount = capturePages.length;
   const hasStream = status === "live" || status === "synthetic";
   const precisionLive = hasStream && precisionReady;
+
+  /* ── Linterna — F-FLASH v2 ───────────────────────────────────────── */
+
+  /** Aplica el torch al track activo CON REINTENTOS (0 / 250 / 700 ms):
+   *  varios Android (y Chrome con resoluciones altas) rechazan
+   *  applyConstraints justo tras getUserMedia y solo lo aceptan cuando el
+   *  video ya está en reproducción — bug v3: el flash quedaba muerto en el
+   *  arranque aunque la lente sí tuviera LED. Idempotente y con guardas de
+   *  stream vivo (si el track cambió entre intentos, se aborta). */
+  const applyTorchWithRetry = useCallback((on: boolean) => {
+    for (const ms of [0, 250, 700]) {
+      window.setTimeout(() => {
+        const track = streamRef.current?.getVideoTracks()[0];
+        if (!track) return;
+        const caps = track.getCapabilities?.() as { torch?: boolean } | undefined;
+        if (!caps?.torch) return; // esta lente/navegador no expone torch
+        setTorchAvailable(true);
+        if (!on) return;
+        track
+          .applyConstraints({ advanced: [{ torch: true }] } as MediaTrackConstraints & {
+            advanced: unknown[];
+          })
+          .then(() => {
+            // Solo confirma si el track sigue siendo el actual.
+            if (streamRef.current?.getVideoTracks()[0] === track) {
+              torchOnRef.current = true;
+              setTorchOn(true);
+            }
+          })
+          .catch(() => undefined); // lo reintenta el siguiente timer
+      }, ms);
+    }
+  }, []);
 
   /* ── Captura ─────────────────────────────────────────────────────── */
 
@@ -704,26 +756,10 @@ export default function CameraView() {
           duration: 6000,
         });
       }
-      // Linterna: solo si el track la soporta (teléfonos reales).
-      try {
-        const track = stream.getVideoTracks()[0];
-        const caps = track?.getCapabilities?.() as { torch?: boolean } | undefined;
-        if (caps?.torch) {
-          setTorchAvailable(true);
-          // F-FLASH: re-aplica la preferencia persistida del usuario — si
-          // encendió el flash en la sesión anterior, sigue encendido.
-          if (flashRef.current) {
-            track
-              .applyConstraints({ advanced: [{ torch: true }] } as MediaTrackConstraints & {
-                advanced: unknown[];
-              })
-              .then(() => setTorchOn(true))
-              .catch(() => undefined);
-          }
-        }
-      } catch {
-        /* sin capabilities */
-      }
+      // Linterna — F-FLASH v2: re-aplica la preferencia persistida con
+      // reintentos (algunos Android solo la aceptan cuando el video ya
+      // reproduce); la disponibilidad se marca solo si caps.torch existe.
+      applyTorchWithRetry(flashRef.current);
     };
 
     /** E3: cascada de apertura — presupuesto de píxeles (ancho ideal 3840,
@@ -761,10 +797,12 @@ export default function CameraView() {
      *  todas las lentes puntuaban igual y ganaba el índice MÁS BAJO — pero
      *  en muchos Android (Samsung, Xiaomi…) camera2 0 ES la gran angular
      *  → capturas deformadas Y linterna muerta (esa lente no tiene flash).
-     *  Jerarquía "mejor candidato gana":
-     *  · 1) label — penaliza ultra/tele/macro/profundidad (cuando informa);
-     *  · 2) TORCH — el LED del flash vive en la principal: la lente que lo
-     *    soporta ES la principal (señal física, no heurística);
+     *  Jerarquía "mejor candidato gana" (v3-bugfix: TORCH PRIMERO):
+     *  · 1) TORCH — el LED del flash vive SOLO en la lente principal: quien
+     *    lo soporta ES la principal aunque su label puntúe peor (bug v3:
+     *  con labels informativos el score elegía la gran angular, que NO
+     *  tiene LED → flash muerto; señal física > heurística de texto);
+     *  · 2) label — penaliza ultra/tele/macro/profundidad (cuando informa);
      *  · 3) capabilities.maxWidth (sensor mayor = principal);
      *  · 4) ancho real negociado del track;
      *  · 5) posición del ranking (último recurso).
@@ -799,12 +837,13 @@ export default function CameraView() {
         };
       };
       /** true si `a` es estrictamente mejor lente principal que `b`.
-       *  El TORCH es el desempate de raíz: el LED del flash solo vive en la
-       *  lente principal, así que quien lo soporta gana cualquier empate
-       *  contra una lente sin él (bug v2: ganaba el índice más bajo). */
+       *  v3-bugfix: el TORCH decide ANTES que el label — el LED del flash
+       *  solo existe en la lente principal, así que la lente que lo soporta
+       *  ES la principal aunque su label puntúe mejor (con el torch detrás
+       *  del score se colaba la gran angular: flash muerto, tu reporte). */
       const betterLens = (a: Candidate, b: Candidate): boolean => {
-        if (a.score !== b.score) return a.score < b.score;
         if (a.torch !== b.torch) return a.torch;
+        if (a.score !== b.score) return a.score < b.score;
         if (a.maxWidth !== b.maxWidth) return a.maxWidth > b.maxWidth;
         if (a.width !== b.width) return a.width > b.width;
         return a.rank < b.rank;
@@ -851,6 +890,9 @@ export default function CameraView() {
           } else {
             s.getTracks().forEach((t) => t.stop());
           }
+          // Salida temprana: ya hay principal perfecta (label limpio + LED)
+          // — nada puede mejorarla, dejar de sondear.
+          if (best.score === 0 && best.torch) break;
         }
 
         const winner = best.stream ?? stream;
@@ -944,7 +986,7 @@ export default function CameraView() {
       syntheticRef.current?.stop();
       syntheticRef.current = null;
     };
-  }, []);
+  }, [applyTorchWithRetry]);
 
   // Asigna el stream al <video> (real o sintético)
   useEffect(() => {
@@ -954,7 +996,15 @@ export default function CameraView() {
     if (!video || !stream) return;
     video.srcObject = stream;
     void video.play().catch(() => undefined);
-  }, [hasStream, status]);
+    // F-FLASH v2: reintento por evento — algunos Android no aceptan el
+    // torch hasta que el video REALMENTE reproduce. Si al disparar
+    // "playing" la preferencia sigue pendiente, se vuelve a aplicar.
+    const onPlaying = () => {
+      if (flashRef.current && !torchOnRef.current) applyTorchWithRetry(true);
+    };
+    video.addEventListener("playing", onPlaying);
+    return () => video.removeEventListener("playing", onPlaying);
+  }, [hasStream, status, applyTorchWithRetry]);
 
   // Dimensiones del video (para el mapeo object-cover del overlay)
   const onVideoMeta = useCallback(() => {
@@ -1061,6 +1111,7 @@ export default function CameraView() {
       await track.applyConstraints({
         advanced: [{ torch: next }],
       } as MediaTrackConstraints & { advanced: unknown[] });
+      torchOnRef.current = next;
       setTorchOn(next);
       updateSettings({ flash: next });
       if (next) {
@@ -1628,14 +1679,12 @@ export default function CameraView() {
                   ? torchOn
                     ? "Apagar el flash"
                     : "Encender el flash"
-                  : "Flash no disponible en este dispositivo"
+                  : "Flash no disponible — toca para ver el motivo"
               }
               aria-pressed={torchOn}
               onClick={() => {
                 if (!torchAvailable) {
-                  toast("La linterna no está disponible en este dispositivo", {
-                    icon: "🔦",
-                  });
+                  toast(TORCH_HINT, { icon: "🔦", duration: 8000 });
                   return;
                 }
                 void toggleTorch();
