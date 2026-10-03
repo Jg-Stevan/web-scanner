@@ -91,6 +91,99 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+/** Tope del lado mayor para IMÁGENES IMPORTADAS (galería/cámara nativa).
+ *  Igual que PROCESSED_MAX_LONG_SIDE: 4032×3024 ≈ 12.2 MP decodifican y
+ *  dibujan bien incluso en iOS (límite de canvas ~16.7 MP). */
+const IMPORT_MAX_LONG_SIDE = 4032;
+
+/** Dibuja cualquier CanvasImageSource a un canvas topeado por su lado mayor
+ *  (sin upscalar) y lo devuelve como data URL JPEG 0.92. */
+function sourceToCappedJpegDataUrl(
+  src: CanvasImageSource,
+  sw: number,
+  sh: number,
+  maxLongSide = IMPORT_MAX_LONG_SIDE
+): Promise<string> {
+  const scale = Math.min(1, maxLongSide / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return Promise.reject(new Error("sin contexto 2d"));
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(src, 0, 0, sw, sh, 0, 0, w, h);
+  return canvasToDataURL(canvas, "image/jpeg", 0.92);
+}
+
+/**
+ * F-IMPORT — File → data URL de forma ROBUSTA. Los archivos de galería/
+ * cámara nativa llegan a 12–48 MP y con EXIF; la ruta vieja (FileReader →
+ * data URL gigante → <img>) reventaba con fotos grandes y era el origen del
+ * «No se pudo procesar la imagen».
+ *
+ * Cascada (de más barata a más costosa):
+ *  1. createImageBitmap(file, { imageOrientation:"from-image" }) — decode
+ *     NATIVO, EXIF aplicado por el navegador, sin data URL intermedia.
+ *     Si el lado mayor excede el tope → re-dibujo a canvas reducido.
+ *  2. createImageBitmap(file) a secas (navegadores que rechazan opciones).
+ *  3. objectURL → <img> (el navegador decodifica y aplica EXIF al pintar;
+ *     evita el data URL de decenas de MB de la ruta histórica).
+ *
+ * El Error resultante distingue HEIC para dar un mensaje accionable.
+ */
+export async function fileToCaptureDataUrl(file: File): Promise<string> {
+  const looksHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+
+  if (typeof createImageBitmap === "function") {
+    const attempts: Array<Promise<ImageBitmap>> = [];
+    try {
+      attempts.push(
+        createImageBitmap(file, { imageOrientation: "from-image" } as ImageBitmapOptions)
+      );
+    } catch {
+      /* opciones no soportadas */
+    }
+    attempts.push(createImageBitmap(file));
+    for (const attempt of attempts) {
+      let bm: ImageBitmap | null = null;
+      try {
+        bm = await attempt;
+        if (bm.width > 0 && bm.height > 0) {
+          return await sourceToCappedJpegDataUrl(bm, bm.width, bm.height);
+        }
+      } catch {
+        /* siguiente intento */
+      } finally {
+        try {
+          bm?.close();
+        } catch {
+          /* noop */
+        }
+      }
+    }
+  }
+
+  // 3) objectURL → <img> → canvas (re-encode JPEG normalizado).
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(objectUrl);
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (!w || !h) throw new Error("imagen sin dimensiones");
+    return await sourceToCappedJpegDataUrl(img, w, h);
+  } catch (err) {
+    throw new Error(
+      looksHeic
+        ? "HEIC no soportado por este navegador"
+        : `No se pudo decodificar la imagen${err instanceof Error ? `: ${err.message}` : ""}`
+    );
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 /** Fuente de imagen para el pipeline: data URL o elemento YA decodificado
  *  (HTMLImageElement/HTMLCanvasElement). Pasar el elemento evita re-decodificar
  *  la foto de 12 MP en cada etapa de la captura (downscale→detect→quality).

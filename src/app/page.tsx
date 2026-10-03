@@ -14,7 +14,10 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useScannerStore, ONBOARDING_STORAGE_KEY } from "@/lib/scanner/store";
 import type { ScannerView } from "@/lib/scanner/types";
-import { warmUpScannerWorker } from "@/lib/scanner/image-processor";
+import { warmUpScannerWorker, getScannerWorker } from "@/lib/scanner/image-processor";
+import {
+  ensureDeviceCapability,
+} from "@/lib/scanner/device-capability";
 import LibraryView from "@/components/scanner/LibraryView";
 import CameraView from "@/components/scanner/CameraView";
 import EditorView from "@/components/scanner/EditorView";
@@ -68,6 +71,15 @@ export default function Home() {
     }
     warmUpScannerWorker();
     void useScannerStore.getState().hydrateFromStorage();
+
+    // F-DEVBENCH — capacidad del dispositivo: mide (o lee la medición de los
+    // últimos 7 días) en idle y ajusta el TOPE del warp del worker según el
+    // tier (4032/3200/2560). Así los teléfonos modestos no se cuelgan y los
+    // potentes conservan la resolución completa del sensor.
+    void ensureDeviceCapability().then((cap) => {
+      if (!cap) return;
+      getScannerWorker()?.setWarpCap(cap.maxProcessedLongSide);
+    });
   }, []);
 
   // Previene el scroll del body en vistas de cámara (negro) para simular app nativa
@@ -116,7 +128,7 @@ export default function Home() {
     // (p.ej. data-protocompass-form de asistentes de formularios) → mismatch
     // SSR/cliente cosmético que disparaba el overlay de hidratación.
     <div
-      className="flex min-h-screen w-full items-stretch justify-center bg-[#e9e9ee] dark:bg-[#111111] sm:items-center sm:py-6"
+      className="flex min-h-dvh w-full items-stretch justify-center bg-[#e9e9ee] dark:bg-[#111111] sm:items-center sm:py-6"
       suppressHydrationWarning
     >
       <div
@@ -124,7 +136,9 @@ export default function Home() {
         suppressHydrationWarning
         className={[
           "relative flex w-full flex-col overflow-hidden bg-[#f2f2f7] dark:bg-black",
-          "h-[100svh] sm:h-[min(880px,94svh)] sm:max-w-[420px]",
+          // F-MOBILE: dvh sigue la barra dinámica del navegador (svh dejaba
+          // un hueco permanente al ocultarla) + height 100% en PWA instalada.
+          "h-dvh sm:h-[min(880px,94dvh)] sm:max-w-[420px]",
           fullBleed ? "bg-black sm:rounded-[44px]" : "sm:rounded-[44px]",
           "sm:phone-frame",
         ].join(" ")}

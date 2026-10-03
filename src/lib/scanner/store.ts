@@ -244,7 +244,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   endBatch: () => set({ batchSavedCount: 0 }),
 
   saveSessionAsDocument: async (title) => {
-    const { capturePages, settings } = get();
+    const { capturePages } = get();
     if (capturePages.length === 0) return null;
     const now = Date.now();
     const pages: ScanPage[] = [];
@@ -255,7 +255,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
-          unsharpOriginal: settings.unsharpOriginal,
         });
         processed = res.processed;
         thumbnail = res.thumbnail;
@@ -329,7 +328,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   },
 
   saveSessionToDocument: async () => {
-    const { reviewDocId, capturePages, settings } = get();
+    const { reviewDocId, capturePages } = get();
     if (!reviewDocId) return null;
     const doc = get().documents.find((d) => d.id === reviewDocId);
     if (!doc) {
@@ -349,15 +348,48 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       const prev = byId.get(p.id);
       // "Sin cambios" = mismos valores geometricos/foto → conserva la
       // procesada persistida (cero reprocesos innecesarios al salir).
-      const unchanged =
+      const geometrySame =
         prev !== undefined &&
         prev.original === p.original &&
         prev.filter === p.filter &&
         prev.rotation === p.rotation &&
         prev.quadManual === p.quadManual &&
         prev.quad.every((q, i) => q.x === p.quad[i].x && q.y === p.quad[i].y);
-      if (unchanged && prev) {
+      if (geometrySame && prev) {
         pages.push({ ...prev, ocrText: p.ocrText ?? prev.ocrText, ocrDone: p.ocrDone ?? prev.ocrDone });
+        continue;
+      }
+      // F-ROT-RAPID: la sesión trae una procesada VÁLIDA para el estado exacto
+      // (processedKey == capturePageKey, generada por la rotación rápida del
+      // editor) → NO re-procesar: se fusiona tal cual (la rotación de una
+      // procesada es píxel-idéntica al reproceso completo). Solo se corrige la
+      // precisión informativa si la rotación intercambió los ejes.
+      const processedValid = !!p.processed && p.processedKey === capturePageKey(p);
+      if (processedValid) {
+        let precision = prev?.precision;
+        if (precision && prev) {
+          const d = (((p.rotation - prev.rotation) % 360) + 360) % 360;
+          if (d === 90 || d === 270) {
+            precision = { ...precision, width: precision.height, height: precision.width };
+          } else if (d !== 0) {
+            precision = undefined;
+          }
+        }
+        pages.push({
+          id: p.id,
+          original: p.original,
+          processed: p.processed!,
+          thumbnail: p.thumbnail ?? prev?.thumbnail ?? p.original,
+          filter: p.filter,
+          quad: p.quad,
+          quadManual: p.quadManual,
+          rotation: p.rotation,
+          quality: p.quality,
+          precision,
+          ocrText: p.ocrText ?? prev?.ocrText,
+          ocrDone: p.ocrDone ?? false,
+          createdAt: prev?.createdAt ?? now,
+        });
         continue;
       }
       let processed = p.processed ?? p.original;
@@ -366,7 +398,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
-          unsharpOriginal: settings.unsharpOriginal,
         });
         processed = res.processed;
         thumbnail = res.thumbnail;
@@ -483,14 +514,12 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   },
 
   addPageToDocument: async (docId, page) => {
-    const { settings } = get();
     let processed = page.original;
     let thumbnail = page.original;
     let precision: ScanPage["precision"];
     try {
       const res = await processImage(page.original, page.quad, page.filter, page.rotation, {
         manual: page.quadManual === true,
-        unsharpOriginal: settings.unsharpOriginal,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;
@@ -607,7 +636,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   },
 
   setFilterOnPage: async (docId, pageId, filter) => {
-    const { settings } = get();
     const doc = get().documents.find((d) => d.id === docId);
     const page = doc?.pages.find((p) => p.id === pageId);
     if (!doc || !page) return;
@@ -617,7 +645,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       const res = await processImage(page.original, page.quad, filter, page.rotation, {
         manual: page.quadManual === true,
-        unsharpOriginal: settings.unsharpOriginal,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;

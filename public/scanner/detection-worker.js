@@ -264,7 +264,11 @@
   }
 
   // src/scanner/core/warp.ts
-  var WARP_MAX_LONG_SIDE = 3500;
+  // F-PERSP: 3500 → 4032 (foto completa del sensor; el enhance del cliente
+  // ya capa a 4032, así que 3500 tiraba resolución real). Ajustable EN
+  // CALIENTE por config {maxWarpLongSide} según el benchmark del dispositivo
+  // (F-DEVBENCH: 4032/3200/2560).
+  var warpMaxLongSide = 4032;
   var UNSHARP_AMOUNT = 0.5;
   var UNSHARP_RADIUS = 1.5;
   var UNSHARP_KERNEL_SIZE = Math.max(3, 2 * Math.ceil(2 * UNSHARP_RADIUS) + 1);
@@ -277,7 +281,7 @@
     if (!Number.isFinite(w0) || !Number.isFinite(h0)) {
       return { w: 1, h: 1 };
     }
-    const s = Math.max(w0, h0) > WARP_MAX_LONG_SIDE ? WARP_MAX_LONG_SIDE / Math.max(w0, h0) : 1;
+    const s = Math.max(w0, h0) > warpMaxLongSide ? warpMaxLongSide / Math.max(w0, h0) : 1;
     return {
       w: Math.max(1, Math.round(w0 * s)),
       h: Math.max(1, Math.round(h0 * s))
@@ -1009,6 +1013,20 @@
   var CANNY_LOW = 50;
   var CANNY_HIGH = 150;
   var APPROX_EPSILON_RATIO = 0.02;
+  // F-PERSP — cascada de detección: cada pasada intenta encontrar el quad
+  // con parámetros distintos ANTES de dar el frame por inválido. La 1ª es
+  // idéntica al pipeline histórico (coste cero en el caso feliz); las
+  // siguientes rescatan papeles con poco contraste (Canny suave), bordes
+  // rotos (dilate) y esquinas sobre-suavizadas (epsilon fino). Sobreviven
+  // los mismos validadores (área ≥10%, convexidad, lados ≥5%).
+  var DETECT_PASSES = [
+    { low: CANNY_LOW, high: CANNY_HIGH, dilate: 0, eps: APPROX_EPSILON_RATIO },
+    { low: CANNY_LOW, high: CANNY_HIGH, dilate: 2, eps: APPROX_EPSILON_RATIO },
+    { low: CANNY_LOW, high: CANNY_HIGH, dilate: 2, eps: APPROX_EPSILON_RATIO * 2.5 },
+    { low: 30, high: 90, dilate: 0, eps: APPROX_EPSILON_RATIO * 0.6 },
+    { low: 30, high: 90, dilate: 2, eps: APPROX_EPSILON_RATIO },
+    { low: 20, high: 60, dilate: 2, eps: APPROX_EPSILON_RATIO * 1.5 }
+  ];
   var MIN_CONTOUR_AREA_PCT = 5e-3;
   var MAX_CONTOUR_CANDIDATES = 8;
   var MIN_EDGE_POINTS = 20;
@@ -1126,7 +1144,7 @@
       hierarchy.delete();
     }
   }
-  function processFrame(cv, imageData, frameW, frameH, ts, canny = { low: CANNY_LOW, high: CANNY_HIGH }) {
+  function processFrame(cv, imageData, frameW, frameH, ts, canny = null) {
     const procW = imageData.width;
     const procH = imageData.height;
     const sx = frameW / procW;
@@ -1138,49 +1156,37 @@
       const blur = track(cv.createMat());
       cv.GaussianBlur(gray, blur, cv.createSize(5, 5), 0, 0);
       const edges = track(cv.createMat());
-      cv.Canny(blur, edges, canny.low, canny.high);
-      const profileOpts = { profile: docProfile };
-      let collected = collectQuadCandidates(
-        cv,
-        edges,
-        imageData,
-        procW,
-        procH,
-        sx,
-        sy,
-        APPROX_EPSILON_RATIO
+      const kernel = track(
+        cv.getStructuringElement(cv.MORPH_RECT, cv.createSize(3, 3))
       );
-      let quad = selectQuad(collected.polys, frameW, frameH, TOP_CONTOURS, profileOpts);
-      if (quad === null) {
-        const kernel = track(
-          cv.getStructuringElement(cv.MORPH_RECT, cv.createSize(3, 3))
-        );
-        const dilated = track(cv.createMat());
-        cv.dilate(edges, dilated, kernel, 2);
+      const dilated = track(cv.createMat());
+      const profileOpts = { profile: docProfile };
+      // F-PERSP: cascada DETECT_PASSES (ver comentario arriba). La pasada
+      // explícita `canny` (llamadores externos) se respeta como 1ª pasada.
+      const passes = canny
+        ? [{ low: canny.low, high: canny.high, dilate: 0, eps: APPROX_EPSILON_RATIO }].concat(DETECT_PASSES)
+        : DETECT_PASSES;
+      let collected = null;
+      let quad = null;
+      for (const pass of passes) {
+        cv.Canny(blur, edges, pass.low, pass.high);
+        let srcEdges = edges;
+        if (pass.dilate > 0) {
+          cv.dilate(edges, dilated, kernel, pass.dilate);
+          srcEdges = dilated;
+        }
         collected = collectQuadCandidates(
           cv,
-          dilated,
+          srcEdges,
           imageData,
           procW,
           procH,
           sx,
           sy,
-          APPROX_EPSILON_RATIO
+          pass.eps
         );
         quad = selectQuad(collected.polys, frameW, frameH, TOP_CONTOURS, profileOpts);
-        if (quad === null) {
-          collected = collectQuadCandidates(
-            cv,
-            dilated,
-            imageData,
-            procW,
-            procH,
-            sx,
-            sy,
-            APPROX_EPSILON_RATIO * 2.5
-          );
-          quad = selectQuad(collected.polys, frameW, frameH, TOP_CONTOURS, profileOpts);
-        }
+        if (quad !== null) break;
       }
       let statSrc = gray;
       if (quad !== null) {
@@ -1548,7 +1554,10 @@
   self.onmessage = (ev) => {
     const msg = ev.data;
     if (msg.type === "config") {
-      setDocProfile(msg.docProfile ?? "auto");
+      if (msg.docProfile !== void 0) setDocProfile(msg.docProfile);
+      if (Number.isFinite(msg.maxWarpLongSide) && msg.maxWarpLongSide >= 256) {
+        warpMaxLongSide = msg.maxWarpLongSide;
+      }
       return;
     }
     if (msg.type === "warp") {

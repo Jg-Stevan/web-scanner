@@ -6,9 +6,9 @@
  * calidad PDF y borrado de todos los documentos con confirmación.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, Copy, Download, FileText, Layers, Loader2, Monitor, Moon, ScanText, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
+import { Check, Copy, Download, FileText, Gauge, Layers, Loader2, Monitor, Moon, PlusSquare, ScanText, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 
@@ -21,6 +21,17 @@ import { countTagUsage } from "@/lib/scanner/tags";
 import { countWords } from "@/lib/scanner/text-export";
 import { getScannerWorker } from "@/lib/scanner/image-processor";
 import { storageAvailable } from "@/lib/scanner/page-store";
+import {
+  getCachedDeviceCapability,
+  measureDeviceCapability,
+  type DeviceCapability,
+} from "@/lib/scanner/device-capability";
+import {
+  getPwaInstallState,
+  promptInstall,
+  subscribePwaState,
+  type PwaInstallState,
+} from "@/lib/scanner/pwa";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -254,10 +265,16 @@ export default function SettingsView() {
         {/* Apariencia: tema claro/oscuro/sistema (persiste en localStorage) */}
         <AppearanceSection />
 
+        {/* F-PWA: instalación en el móvil (Android: prompt nativo · iOS: guía) */}
+        <InstallSection />
+
+        {/* F-DEVBENCH: capacidad del dispositivo (¿aguanta el procedimiento?) */}
+        <DeviceSection />
+
         <SettingsGroup label="Procesamiento" delay={0.1}>
           <SettingsRow
             title="Mejora automática"
-            subtitle="Empieza cada captura con el filtro «Texto claro» (apagado: Original puro)"
+            subtitle="Empieza cada captura con el filtro «B/N adaptativo» (apagado: Original puro)"
           >
             <Switch
               checked={settings.enhance}
@@ -821,4 +838,154 @@ function SettingsRow({
     );
   }
   return <div className={className}>{content}</div>;
+}
+
+/** F-PWA — Sección de instalación en el móvil. Android/Chrome: botón que
+ *  dispara el prompt nativo; iOS: instrucciones de "Añadir a pantalla de
+ *  inicio"; ya instalada → estado "Instalada". */
+function InstallSection() {
+  const [state, setState] = useState<PwaInstallState>(() => getPwaInstallState());
+
+  useEffect(() => subscribePwaState(setState), []);
+
+  const onInstall = async () => {
+    const outcome = await promptInstall();
+    if (outcome === "accepted") toast.success("¡App instalada!");
+    else if (outcome === "dismissed") toast("Puedes instalarla más tarde desde este mismo panel");
+    else if (state.isIos) {
+      toast("En iPhone: Compartir → «Añadir a pantalla de inicio»", { duration: 8000, icon: "📲" });
+    } else {
+      toast("Tu navegador no ofrece instalación — usa el menú del navegador", { duration: 7000 });
+    }
+  };
+
+  return (
+    <SettingsGroup label="Instalación" delay={0.12}>
+      {state.installed ? (
+        <SettingsRow title="App instalada" subtitle="Corre a pantalla completa y sin conexión">
+          <span
+            className="flex shrink-0 items-center gap-1.5 rounded-full bg-[#34c759]/12 px-2.5 py-1 text-[12px] font-semibold text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+            role="status"
+          >
+            <Check className="h-3.5 w-3.5" strokeWidth={2.6} aria-hidden="true" />
+            Instalada
+          </span>
+        </SettingsRow>
+      ) : state.isIos ? (
+        <SettingsRow
+          title="Añadir a pantalla de inicio"
+          subtitle="En iPhone: botón Compartir → «Añadir a pantalla de inicio»"
+        >
+          <button
+            type="button"
+            aria-label="Ver cómo instalar la app"
+            onClick={() =>
+              toast("Comparte esta página y elige «Añadir a pantalla de inicio»", {
+                duration: 9000,
+                icon: "📲",
+              })
+            }
+            className="shrink-0 rounded-full bg-[#007aff] px-3.5 py-1.5 text-[13px] font-semibold text-white transition-transform active:scale-95"
+          >
+            Cómo
+          </button>
+        </SettingsRow>
+      ) : (
+        <SettingsRow
+          title="Instalar app en este dispositivo"
+          subtitle="Funciona sin conexión y abre como app nativa"
+        >
+          <button
+            type="button"
+            aria-label="Instalar la app"
+            onClick={() => void onInstall()}
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-full bg-[#007aff] px-3.5 py-1.5 text-[13px] font-semibold text-white transition-transform active:scale-95",
+              !state.canPrompt && "opacity-80"
+            )}
+          >
+            <PlusSquare className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
+            Instalar
+          </button>
+        </SettingsRow>
+      )}
+    </SettingsGroup>
+  );
+}
+
+/** F-DEVBENCH — Rendimiento del dispositivo: mide CPU+canvas en idle, muestra
+ *  el tier y el tope de resolución que la app usará, con re-medición manual. */
+function DeviceSection() {
+  const [cap, setCap] = useState<DeviceCapability | null>(() => getCachedDeviceCapability());
+  const [measuring, setMeasuring] = useState(false);
+
+  const measure = useCallback(() => {
+    void measureDeviceCapability()
+      .then(setCap)
+      .catch(() => toast.error("No se pudo medir el dispositivo"))
+      .finally(() => setMeasuring(false));
+  }, []);
+
+  // Mide al entrar si aún no hay dato (cacheada 7 días). La llamada va en un
+  // timeout para no hacer setState síncrono dentro del body del effect.
+  useEffect(() => {
+    if (getCachedDeviceCapability()) return;
+    const t = window.setTimeout(measure, 0);
+    return () => window.clearTimeout(t);
+  }, [measure]);
+
+  const tierColor =
+    cap?.tier === "high"
+      ? "bg-[#34c759]/12 text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+      : cap?.tier === "medium"
+        ? "bg-[#ff9f0a]/14 text-[#a36b00] dark:text-[#ff9f0a]"
+        : "bg-[#ff3b30]/12 text-[#c0392b] dark:text-[#ff453a]";
+
+  return (
+    <SettingsGroup label="Rendimiento del dispositivo" delay={0.14}>
+      <SettingsRow title="Capacidad medida" subtitle={cap ? cap.hint : "Midiendo…"}>
+        <span
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold",
+            cap ? tierColor : "bg-[#8e8e93]/15 text-[#8e8e93]"
+          )}
+          role="status"
+        >
+          <Gauge className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
+          {cap
+            ? `${cap.tier === "high" ? "Alta" : cap.tier === "medium" ? "Media" : "Baja"} · ${cap.score}`
+            : measuring
+              ? "Midiendo"
+              : "—"}
+        </span>
+      </SettingsRow>
+      {cap && (
+        <SettingsRow title="Resolución de procesado" subtitle="Tope del lado mayor que tu dispositivo aguanta">
+          <span className="shrink-0 text-[15px] font-medium tabular-nums text-[#3c3c43] dark:text-white/85">
+            {cap.maxProcessedLongSide} px
+          </span>
+        </SettingsRow>
+      )}
+      {cap && (
+        <SettingsRow
+          title="Detalles del test"
+          subtitle={`CPU ${cap.cpuMs} ms · canvas ${cap.canvasMs} ms · ${cap.cores || "?"} núcleos${cap.deviceMemoryGB ? ` · ~${cap.deviceMemoryGB} GB RAM` : ""}`}
+        >
+          <button
+            type="button"
+            aria-label="Volver a medir la capacidad del dispositivo"
+            onClick={measure}
+            className="flex shrink-0 items-center gap-1.5 rounded-full bg-white/90 px-3.5 py-1.5 text-[13px] font-semibold text-[#007aff] ring-1 ring-inset ring-[#007aff]/25 transition-transform active:scale-95 dark:bg-[#2c2c2e]"
+          >
+            {measuring ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <Gauge className="h-3.5 w-3.5" strokeWidth={2.2} aria-hidden="true" />
+            )}
+            Medir de nuevo
+          </button>
+        </SettingsRow>
+      )}
+    </SettingsGroup>
+  );
 }

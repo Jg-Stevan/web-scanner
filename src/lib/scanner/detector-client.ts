@@ -79,6 +79,9 @@ interface EnhanceRequest {
 interface ConfigRequest {
   type: "config";
   docProfile?: DocProfile;
+  /** F-DEVBENCH: tope del lado mayor del warp según capacidad medida del
+   *  dispositivo (4032/3200/2560). El worker lo aplica en computeWarpDims. */
+  maxWarpLongSide?: number;
 }
 
 type WorkerIn = DetectRequest | WarpRequest | EnhanceRequest | ConfigRequest;
@@ -477,10 +480,11 @@ export class ScannerWorkerClient {
     });
   }
 
-  /** Config en caliente del perfil de priores de selectQuad (R4-B2). */
-  setDocProfile(profile: DocProfile): void {
+  /** F-DEVBENCH — tope del lado mayor del WARP (calidad↔memoria) según la
+   *  capacidad medida del dispositivo. Estado en el worker, sin respuesta. */
+  setWarpCap(maxLongSide: number): void {
     if (!this.worker || this.dead) return;
-    const msg: ConfigRequest = { type: "config", docProfile: profile };
+    const msg: ConfigRequest = { type: "config", maxWarpLongSide: maxLongSide };
     this.worker.postMessage(msg);
   }
 

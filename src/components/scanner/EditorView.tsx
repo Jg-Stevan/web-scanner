@@ -47,6 +47,7 @@ import {
   Copy,
   Crop,
   Eye,
+  Image as ImageIcon,
   Loader2,
   Maximize2,
   RotateCw,
@@ -61,14 +62,13 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { nextId, useScannerStore } from "@/lib/scanner/store";
+import { useScannerStore } from "@/lib/scanner/store";
 import {
   detectDocumentEdges,
-  evaluateQuality,
-  generateDemoPage,
   loadImage,
   processImage,
 } from "@/lib/scanner/image-processor";
+import { getMaxProcessedLongSide } from "@/lib/scanner/device-capability";
 import {
   FILTER_PRESETS,
   TRASH_RETENTION_DAYS,
@@ -159,6 +159,78 @@ function prettyDate(ts: number): string {
   }
 }
 
+/** Encode PNG de un canvas vía toBlob (memoria-seguro en iOS) → data URL. */
+function encodePngDataUrl(canvas: HTMLCanvasElement): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob((b) => {
+        if (!b || b.size === 0) {
+          reject(new Error("toBlob vacío"));
+          return;
+        }
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result ?? ""));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(b);
+      }, "image/png");
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error("toBlob falló"));
+    }
+  });
+}
+
+/**
+ * F-ROT-RAPID — rota una data URL en múltiplos de 90° SIN reprocesar el
+ * pipeline (warp+enhance). Matemáticamente equivalente: el warp ya ocurrió y
+ * los filtros (raw/text/bw: operaciones por píxel + gaussiano isotrópico) son
+ * conmutativos con rotaciones de 90°. Devuelve también una miniatura 160px
+ * coherente para el merge al guardar.
+ */
+async function rotateProcessedDataUrl(
+  url: string,
+  deg: number
+): Promise<{ url: string; thumb: string; w: number; h: number }> {
+  const img = await loadImage(url);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) throw new Error("imagen sin dimensiones");
+  const swapped = deg % 180 !== 0;
+  const cw = swapped ? h : w;
+  const ch = swapped ? w : h;
+  const canvas = document.createElement("canvas");
+  canvas.width = cw;
+  canvas.height = ch;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("sin contexto 2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.translate(cw / 2, ch / 2);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(img, -w / 2, -h / 2);
+  const tW = 160;
+  const tH = Math.max(1, Math.round((ch / cw) * tW));
+  const tCanvas = document.createElement("canvas");
+  tCanvas.width = tW;
+  tCanvas.height = tH;
+  const tCtx = tCanvas.getContext("2d");
+  if (tCtx) {
+    tCtx.imageSmoothingQuality = "high";
+    tCtx.drawImage(canvas, 0, 0, tW, tH);
+  }
+  const [urlOut, thumb] = await Promise.all([
+    encodePngDataUrl(canvas),
+    Promise.resolve(tCanvas.toDataURL("image/jpeg", 0.8)),
+  ]);
+  return { url: urlOut, thumb, w: cw, h: ch };
+}
+
+/** data URL → Blob (fetch soporta data URLs en todos los navegadores modernos). */
+async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  if (!blob || blob.size === 0) throw new Error("blob vacío");
+  return blob;
+}
+
 /** F-FIND — texto OCR con las coincidencias de la búsqueda resaltadas
  *  (marca amarilla #ffd60a estilo iOS, case-insensitive). Sin consulta
  *  activa se renderiza el texto plano. */
@@ -205,7 +277,6 @@ export default function EditorView() {
   const setEditingIndex = useScannerStore((s) => s.setEditingIndex);
   const updateCapturePage = useScannerStore((s) => s.updateCapturePage);
   const removeCapturePage = useScannerStore((s) => s.removeCapturePage);
-  const addCapturePage = useScannerStore((s) => s.addCapturePage);
   const setView = useScannerStore((s) => s.setView);
   const documentsCount = useScannerStore(
     (s) => s.documents.filter((d) => d.deletedAt === undefined).length
@@ -213,7 +284,6 @@ export default function EditorView() {
   const saveSessionAsDocument = useScannerStore((s) => s.saveSessionAsDocument);
   const startBatchDocument = useScannerStore((s) => s.startBatchDocument);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
-  const unsharpOriginal = useScannerStore((s) => s.settings.unsharpOriginal);
   /** F-NOVIEW — modo revisión de documento: el editor trabaja sobre las
    *  páginas de un documento guardado (cargadas como sesión con sus ids). */
   const reviewDocId = useScannerStore((s) => s.reviewDocId);
@@ -363,38 +433,6 @@ export default function EditorView() {
   // ── F-NOVIEW: la biblioteca abre el documento directamente en el editor
   // (modo revisión). La sesión llega cargada desde beginReviewDocument.
 
-  // ── Si la sesión está vacía, siembra una página de demo ──────────────────
-  // (permite ver/validar el Editor sin capturar; la cámara real la sustituye)
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (useScannerStore.getState().capturePages.length > 0) return;
-      try {
-        const src = generateDemoPage(1);
-        if (!src || cancelled) return;
-        const quad = await detectDocumentEdges(src);
-        const quality = await evaluateQuality(src);
-        if (cancelled) return;
-        if (useScannerStore.getState().capturePages.length > 0) return;
-        const id = nextId("page");
-        autoIds.current.add(id);
-        addCapturePage({
-          id,
-          original: src,
-          quad,
-          filter: "original",
-          rotation: 0,
-          quality,
-        });
-      } catch {
-        /* sin contexto de canvas: la vista muestra el estado vacío */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [addCapturePage]);
-
   // ── REVIEW: procesa la página (warp + enhance) y cachea el resultado ────
   // F-FLOW: al entrar (o al cambiar página/quad/filtro/rotación) se procesa
   // la página con el RECORTE AUTOMÁTICO y el filtro — el usuario ve el
@@ -445,16 +483,10 @@ export default function EditorView() {
     setPreviewLoading(true);
     void (async () => {
       try {
-        const res = await processImage(
-          page.original,
-          page.quad,
-          page.filter,
-          page.rotation,
-          {
-            manual: page.quadManual === true,
-            unsharpOriginal,
-          }
-        );
+        const res = await processImage(page.original, page.quad, page.filter, page.rotation, {
+          manual: page.quadManual === true,
+          maxLongSide: getMaxProcessedLongSide(),
+        });
         if (cancelled) return;
         const entry: PreviewEntry = {
           url: res.processed,
@@ -474,7 +506,7 @@ export default function EditorView() {
       cancelled = true;
     };
      
-  }, [mode, cacheKey, page?.original, unsharpOriginal, cachePreviewEntry]);
+  }, [mode, cacheKey, page?.original, cachePreviewEntry]);
 
   // ── Comparación antes/después (mantener pulsado el preview a 1×) ──────────
   const startCompareTimer = useCallback(() => {
@@ -999,10 +1031,98 @@ export default function EditorView() {
 
   // ── Acciones ─────────────────────────────────────────────────────────────
 
-  /** Rotar 90° (en review se reprocesa solo; en crop el preview rota en vivo). */
+  /** En vuelo: rotación rápida (evita doble tap concurrente). */
+  const rotatingRef = useRef(false);
+  const [exportingImg, setExportingImg] = useState(false);
+
+  /** Resuelve el PREVIEW actual de la página (cache de sesión o procesada
+   *  persistida con clave válida). null = aún no hay procesada confiable. */
+  const currentPreviewEntry = useCallback(
+    (p: CapturePage): PreviewEntry | null => {
+      const key = capturePageKey(p);
+      const cached = previewCache.current.get(key);
+      if (cached) return cached;
+      if (p.processed && p.processedKey === key) {
+        return { url: p.processed, w: 0, h: 0, engine: "canvas" };
+      }
+      return null;
+    },
+    []
+  );
+
+  /**
+   * Rotar 90° — F-ROT-RAPID: si existe la procesada del estado actual, se
+   * GIRA ESA IMAGEN (rotación de 90° = píxel-idéntica al reproceso completo,
+   * porque el filtro es por píxel y su gaussiano es isotrópico) y se guarda
+   * como `processed`+`processedKey` con la nueva rotación → el preview y el
+   * guardado NO vuelven a llamar al worker. De 2-6 s a ~0,2 s.
+   * En crop el preview rota en vivo (CSS) como antes.
+   */
   const handleRotate = () => {
-    if (!page) return;
-    updateCapturePage(page.id, { rotation: (page.rotation + 90) % 360 });
+    const p = page;
+    if (!p || rotatingRef.current) return;
+    const newRotation = (p.rotation + 90) % 360;
+    const base = currentPreviewEntry(p);
+    if (!base || !base.url) {
+      // Sin base procesable → camino histórico (cambia rotation y el efecto
+      // de preview reprocesa con el pipeline completo).
+      updateCapturePage(p.id, { rotation: newRotation });
+      return;
+    }
+    rotatingRef.current = true;
+    toast("Rotando…", { id: "rot-rapid", duration: 1500 });
+    void (async () => {
+      try {
+        const rot = await rotateProcessedDataUrl(base.url, 90);
+        const newKey = capturePageKey({ ...p, rotation: newRotation });
+        previewCache.current.set(newKey, {
+          url: rot.url,
+          w: base.h || rot.w,
+          h: base.w || rot.h,
+          engine: base.engine,
+        });
+        // Una sola actualización: el efecto de preview siembra la cache y
+        // pinta al instante (processedKey coincide); el merge al guardar no
+        // reprocesa (F-ROT-RAPID en saveSessionToDocument).
+        updateCapturePage(p.id, {
+          rotation: newRotation,
+          processed: rot.url,
+          processedKey: newKey,
+          thumbnail: rot.thumb,
+        });
+      } catch {
+        // Rotación rápida fallida (memoria, decode…): camino histórico.
+        updateCapturePage(p.id, { rotation: newRotation });
+      } finally {
+        rotatingRef.current = false;
+      }
+    })();
+  };
+
+  /** F-IMG — "Imagen": descarga la página actual procesada como imagen
+   *  (PNG sin pérdida, igual que la procesada persistida). */
+  const handleSaveImage = async () => {
+    const p = page;
+    if (!p || exportingImg) return;
+    const entry = currentPreviewEntry(p);
+    if (!entry) {
+      toast("Aún se está procesando la página…");
+      return;
+    }
+    setExportingImg(true);
+    try {
+      const blob = await dataUrlToBlob(entry.url);
+      const ext = blob.type === "image/jpeg" ? "jpg" : "png";
+      const name = sanitizeFileName(
+        `${headerTitle}-página-${activeIdx + 1}.${ext}`
+      );
+      downloadBlob(blob, name);
+      toast.success(`Imagen guardada: ${name}`);
+    } catch {
+      toast.error("No se pudo guardar la imagen");
+    } finally {
+      setExportingImg(false);
+    }
   };
 
   /** Recortar: entra al modo de ajuste manual de bordes. */
@@ -1278,7 +1398,7 @@ export default function EditorView() {
           // Procesa al vuelo (sesión de captura: aún no hay procesada).
           const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
             manual: p.quadManual === true,
-            unsharpOriginal: s.settings.unsharpOriginal,
+            maxLongSide: getMaxProcessedLongSide(),
           });
           image = res.processed;
           cachePreviewEntry(capturePageKey(p), {
@@ -2028,7 +2148,7 @@ export default function EditorView() {
         <div className="relative z-10 shrink-0 bg-black pb-safe">
           {/* Toolbar de página (estilo Adobe Scan: con "Texto" = OCR,
               como "Editar texto" del video de referencia) */}
-          <nav className="grid grid-cols-6 gap-1 px-2 pt-1" aria-label="Acciones de la página">
+          <nav className="grid grid-cols-7 gap-0.5 px-1.5 pt-1" aria-label="Acciones de la página">
             <ToolItem icon={Camera} label="Repetir" danger onClick={handleRepeat} />
             <ToolItem icon={Crop} label="Recortar" onClick={handleEnterCrop} />
             <ToolItem icon={RotateCw} label="Rotar" onClick={handleRotate} />
@@ -2042,6 +2162,12 @@ export default function EditorView() {
               label="Texto"
               active={page?.ocrDone === true}
               onClick={() => setOcrOpen(true)}
+            />
+            <ToolItem
+              icon={ImageIcon}
+              label="Imagen"
+              active={exportingImg}
+              onClick={() => void handleSaveImage()}
             />
             <ToolItem icon={Trash2} label="Eliminar" danger onClick={handleDeletePage} />
           </nav>
