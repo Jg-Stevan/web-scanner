@@ -161,47 +161,27 @@ export function capturePageKey(p: {
   return `${p.id}|${quadKey}|${p.filter}|${p.rotation}`;
 }
 
-/** Perfil de documento para los priores de detección (selectQuad del usuario):\n *  preferencia de aspecto, NUNCA rechazo — un documento fuera de perfil sigue
- *  siendo válido. Se aplica en caliente vía {type:'config'} al worker. */
-export type DocProfileId = "auto" | "pagina" | "documento-largo" | "tarjeta";
-
-export interface DocProfileOption {
-  id: DocProfileId;
-  label: string;
-  hint: string;
-}
-
-export const DOC_PROFILES: DocProfileOption[] = [
-  { id: "auto", label: "Automático", hint: "Sin prior de aspecto" },
-  { id: "pagina", label: "Página", hint: "Carta o A4 · 1.2–1.6" },
-  { id: "documento-largo", label: "Documento largo", hint: "Actas y tirillas · 1.3–4.5" },
-  { id: "tarjeta", label: "Tarjeta", hint: "Credenciales · 0.6–0.8" },
-];
-
+/** Ajustes del escáner — F-CLEAN 2026-10: se eliminaron las opciones
+ *  "Captura automática", "Flash", "Perfil de documento" y "Nitidez en
+ *  Original" (petición del usuario: controles sin efecto real que solo
+ *  abarrotaban Ajustes). La auto-captura vive ahora como control local de
+ *  la cámara y el torch arranca apagado en cada sesión.
+ *
+ *  Compatibilidad: los JSON persistidos pueden traer las claves viejas
+ *  (autoCapture/flash/docProfile/unsharpOriginal) — se IGNORAN solas al
+ *  mergear con estos defaults, sin migración. */
 export interface ScannerSettings {
-  autoCapture: boolean;
-  flash: boolean;
   enhance: boolean;
   ocrEnabled: boolean;
   exportQuality: "standard" | "alta" | "máxima";
-  /** Prior de aspecto para la detección (R4-B2 del usuario). */
-  docProfile: DocProfileId;
-  /** true = aplica unsharp (0.5/1.5) al filtro Original. Por fidelidad al
-   *  sensor el modo raw se guarda PURO (F5-RAW); este toggle añade el
-   *  enfoque del producto solo cuando el usuario lo pide. */
-  unsharpOriginal: boolean;
 }
 
 export const DEFAULT_SETTINGS: ScannerSettings = {
-  autoCapture: true,
-  flash: false,
   enhance: true,
   ocrEnabled: true,
   /** "máxima" por defecto (F-OCR): el usuario exige la mayor calidad de
    *  imagen posible para extraer bien el texto. */
   exportQuality: "máxima",
-  docProfile: "auto",
-  unsharpOriginal: false,
 };
 
 export function defaultQuad(): Quad {

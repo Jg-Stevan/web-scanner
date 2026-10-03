@@ -41,10 +41,8 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { nextId, useScannerStore } from "@/lib/scanner/store";
 import {
-  DOC_PROFILES,
   defaultQuad,
   type CapturePage,
-  type DocProfileId,
   type Quad,
 } from "@/lib/scanner/types";
 import {
@@ -373,8 +371,6 @@ export default function CameraView() {
   const setView = useScannerStore((s) => s.setView);
   const capturePages = useScannerStore((s) => s.capturePages);
   const addCapturePage = useScannerStore((s) => s.addCapturePage);
-  const settings = useScannerStore((s) => s.settings);
-  const updateSettings = useScannerStore((s) => s.updateSettings);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
 
   // ── Refs y estado ──
@@ -387,9 +383,13 @@ export default function CameraView() {
   const loopRef = useRef<CameraFrameLoop | null>(null);
   const processingRef = useRef(false);
   const cooldownRef = useRef(0);
-  const autoRef = useRef(settings.autoCapture);
-  /** F-FLASH: preferencia persistida (re-aplicada al abrir cada stream). */
-  const flashRef = useRef(settings.flash);
+  /** F-CLEAN: la auto-captura ya no vive en Ajustes — control local de la
+   *  cámara (botón de la toolbar), activada por defecto en cada sesión. */
+  const [autoCapture, setAutoCapture] = useState(true);
+  const autoRef = useRef(true);
+  /** F-FLASH: la linterna arranca APAGADA en cada sesión (el ajuste
+   *  "Flash" se eliminó); el usuario la enciende con el botón. */
+  const flashRef = useRef(false);
   /** F-FLASH v3: espejo de torchOn legible desde listeners sin re-render. */
   const torchOnRef = useRef(false);
   const lastTelemetryAt = useRef(0);
@@ -413,8 +413,7 @@ export default function CameraView() {
   /** Toast único por sesión de aviso calidad en iPhone (auto-captura = frames). */
   const iosQualityToastShownRef = useRef(false);
 
-  autoRef.current = settings.autoCapture;
-  flashRef.current = settings.flash;
+  autoRef.current = autoCapture;
   torchOnRef.current = torchOn;
 
   const pageCount = capturePages.length;
@@ -1049,12 +1048,6 @@ export default function CameraView() {
     };
   }, []);
 
-  // Perfil de documento en caliente → priores de selectQuad (R4-B2)
-  useEffect(() => {
-    const c = getScannerWorker();
-    if (c) c.setDocProfile(settings.docProfile);
-  }, [settings.docProfile, precisionReady]);
-
   /* ── FRAME LOOP REAL: detección en vivo + k-de-n ─────────────────── */
 
   useEffect(() => {
@@ -1095,8 +1088,8 @@ export default function CameraView() {
   }, [precisionLive]);
 
   // Linterna — F-FLASH v3: botón SIEMPRE activo con cámara real; la verdad
-  // se descubre al pulsar (aplicar + verificar getSettings.torch). Estado
-  // persistido en settings.flash para la próxima sesión.
+  // se descubre al pulsar (aplicar + verificar getSettings.torch). Sin
+  // ajuste persistido: cada sesión empieza con la linterna apagada.
   const toggleTorch = useCallback(async () => {
     if (status !== "live") {
       toast(TORCH_HINT, { icon: "🔦", duration: 8000 });
@@ -1105,14 +1098,13 @@ export default function CameraView() {
     const next = !torchOn;
     const applied = await setTorchState(next);
     if (applied) {
-      updateSettings({ flash: next });
       if (next) toast.success("Flash encendido", { duration: 1200 });
     } else {
       // Verificación falló: nada cambió físicamente; sincroniza y explica.
       setTorchOn((v) => v);
       toast(TORCH_HINT, { icon: "🔦", duration: 8000 });
     }
-  }, [torchOn, status, updateSettings, setTorchState]);
+  }, [torchOn, status, setTorchState]);
 
   /* ── Fallback simulado (sin worker): estabilidad + jitter ─────────── */
 
@@ -1156,7 +1148,7 @@ export default function CameraView() {
 
   // Auto-captura del fallback simulado (sin pipeline real)
   useEffect(() => {
-    if (precisionLive || !settings.autoCapture) return;
+    if (precisionLive || !autoCapture) return;
     if (!(status === "live" && stable)) return;
     if (cooldownRef.current > Date.now()) return;
     const t = window.setTimeout(() => {
@@ -1165,7 +1157,7 @@ export default function CameraView() {
       void captureSmartRef.current();
     }, 1500);
     return () => window.clearTimeout(t);
-  }, [precisionLive, status, stable, settings.autoCapture]);
+  }, [precisionLive, status, stable, autoCapture]);
 
   // Cierra el menú ⋮ con Escape
   useEffect(() => {
@@ -1263,13 +1255,13 @@ export default function CameraView() {
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            aria-label={`Captura automática: ${settings.autoCapture ? "activada" : "desactivada"}`}
-            aria-pressed={settings.autoCapture}
+            aria-label={`Captura automática: ${autoCapture ? "activada" : "desactivada"}`}
+            aria-pressed={autoCapture}
             title="Captura automática (recorte y disparo al detectar el documento)"
-            onClick={() => updateSettings({ autoCapture: !settings.autoCapture })}
+            onClick={() => setAutoCapture((v) => !v)}
             className={cn(
               "flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
-              settings.autoCapture
+              autoCapture
                 ? "bg-[#ffd60a]/18 ring-1 ring-[#ffd60a]/60"
                 : "bg-black/30"
             )}
@@ -1277,7 +1269,7 @@ export default function CameraView() {
             <Scan
               className={cn(
                 "h-5 w-5",
-                settings.autoCapture ? "text-[#ffd60a]" : "text-white/70"
+                autoCapture ? "text-[#ffd60a]" : "text-white/70"
               )}
               strokeWidth={2.2}
               aria-hidden="true"
@@ -1445,7 +1437,7 @@ export default function CameraView() {
 
         {/* Toast flotante: documento estable / listo para auto-captura */}
         <AnimatePresence>
-          {settings.autoCapture && overlayStable && !processing && (precisionLive || hasStream || status === "simulated") && (
+          {autoCapture && overlayStable && !processing && (precisionLive || hasStream || status === "simulated") && (
             <motion.div
               key="stable-toast"
               initial={{ opacity: 0, y: 10 }}
@@ -1582,36 +1574,7 @@ export default function CameraView() {
 
       {/* ── Bottom bar ── */}
       <footer className="ios-blur-bar relative z-20 shrink-0 pb-safe">
-        {/* Selector de perfil de documento (video de referencia: fila
-            "Pizarra · Libro · Documento · Tarjeta" sobre la toolbar). En
-            caliente ajusta los priores de aspecto de la detección. */}
-        <div
-          className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-0.5 pt-2"
-          role="tablist"
-          aria-label="Perfil de documento a detectar"
-        >
-          {DOC_PROFILES.map((p) => {
-            const active = settings.docProfile === p.id;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => updateSettings({ docProfile: p.id })}
-                className={cn(
-                  "shrink-0 rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold transition-all active:scale-95",
-                  active
-                    ? "bg-[#007aff] text-white shadow-[0_2px_12px_rgba(0,122,255,0.45)]"
-                    : "bg-white/10 text-white/75 ring-1 ring-inset ring-white/12"
-                )}
-              >
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center px-2 pt-2">
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center px-2 pt-3">
           {/* Zona izquierda: Importar · Páginas */}
           <div className="flex items-center justify-around">
             <button
@@ -1737,13 +1700,8 @@ export default function CameraView() {
               className="absolute right-3 max-h-[70%] w-64 overflow-y-auto rounded-2xl border border-white/10 bg-[#1c1c1e]/95 shadow-[0_12px_40px_rgba(0,0,0,0.55)] backdrop-blur-xl divide-y divide-white/[0.08]"
               role="menu"
             >
-              <MenuRow
-                icon={Scan}
-                label="Auto-captura"
-                value={settings.autoCapture ? "Sí" : "No"}
-                onClick={() => updateSettings({ autoCapture: !settings.autoCapture })}
-              />
-              {/* Linterna con botón propio en la toolbar inferior (F-SWAP). */}
+              {/* Auto-captura con botón propio en la toolbar (F-CLEAN).
+                  Linterna con botón propio en la toolbar inferior (F-SWAP). */}
               <MenuRow icon={Sparkles} label="Añadir página de demo" onClick={captureDemo} />
               <MenuRow
                 icon={Camera}
@@ -1761,22 +1719,6 @@ export default function CameraView() {
                   galleryInputRef.current?.click();
                 }}
               />
-              {/* Perfil de documento → priores de selectQuad en caliente */}
-              <div className="px-4 pb-1.5 pt-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-[#8e8e93]">
-                  Perfil de documento
-                </p>
-              </div>
-              {DOC_PROFILES.map((p) => (
-                <MenuRow
-                  key={p.id}
-                  icon={LayoutGrid}
-                  label={p.label}
-                  sublabel={p.hint}
-                  value={settings.docProfile === p.id ? "✓" : undefined}
-                  onClick={() => updateSettings({ docProfile: p.id as DocProfileId })}
-                />
-              ))}
             </motion.div>
           </motion.div>
         )}

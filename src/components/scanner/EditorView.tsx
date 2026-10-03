@@ -36,11 +36,12 @@ import type {
   PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent,
 } from "react";
-import { AnimatePresence, motion, useMotionValue } from "framer-motion";
+import { AnimatePresence, animate, motion, useMotionValue } from "framer-motion";
 import { Drawer as DrawerPrimitive } from "vaul";
 import {
   Camera,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -106,6 +107,12 @@ const LOUPE_GAP = 14;
 /** Mantener pulsado el preview (ms) antes de mostrar el original. */
 const COMPARE_HOLD_MS = 350;
 
+/** F-SWIPE — navegación de páginas deslizando el preview (a 1×):
+ *  desplazamiento horizontal mínimo (px) para cambiar de página y
+ *  desplazamiento visual máximo de la goma elástica. */
+const SWIPE_MIN_PX = 56;
+const SWIPE_RUBBER = 72;
+
 /** Preview procesado de la página en edición (modo review). */
 interface PreviewEntry {
   url: string;
@@ -162,7 +169,6 @@ export default function EditorView() {
   const saveSessionAsDocument = useScannerStore((s) => s.saveSessionAsDocument);
   const startBatchDocument = useScannerStore((s) => s.startBatchDocument);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
-  const unsharpOriginal = useScannerStore((s) => s.settings.unsharpOriginal);
   /** F-NOVIEW — modo revisión de documento: el editor trabaja sobre las
    *  páginas de un documento guardado (cargadas como sesión con sus ids). */
   const reviewDocId = useScannerStore((s) => s.reviewDocId);
@@ -175,6 +181,17 @@ export default function EditorView() {
   const page: CapturePage | undefined =
     capturePages[editingIndex] ?? capturePages[capturePages.length - 1];
   const activeIdx = page ? capturePages.indexOf(page) : -1;
+  const totalPages = capturePages.length;
+
+  /** Navegación de páginas (pill + carrusel + swipe F-SWIPE). Definida
+   *  PRONTO porque los gestos del stage la referencian en sus deps. */
+  const goToPage = useCallback(
+    (i: number) => {
+      if (i < 0 || i >= capturePages.length || i === activeIdx) return;
+      setEditingIndex(i);
+    },
+    [capturePages.length, activeIdx, setEditingIndex]
+  );
 
   // ── Modo review/crop + preview procesado (F-FLOW) ───────────────────────
   const [mode, setMode] = useState<"review" | "crop">("review");
@@ -224,6 +241,12 @@ export default function EditorView() {
 
   // ── Presentación a pantalla completa (desde el header) ───────────────────
   const [presentationOpen, setPresentationOpen] = useState(false);
+
+  // ── F-THUMBS — desplegable de miniaturas del carrusel ────────────────────
+  const [thumbsOpen, setThumbsOpen] = useState(true);
+
+  // ── F-SWIPE — eje del gesto en curso sobre el preview (a 1×) ─────────────
+  const swipeAxisRef = useRef<null | "x" | "y">(null);
 
   // ── Estado local ─────────────────────────────────────────────────────────
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
@@ -358,10 +381,7 @@ export default function EditorView() {
           page.quad,
           page.filter,
           page.rotation,
-          {
-            manual: page.quadManual === true,
-            unsharpOriginal,
-          }
+          { manual: page.quadManual === true }
         );
         if (cancelled) return;
         const entry: PreviewEntry = {
@@ -387,7 +407,7 @@ export default function EditorView() {
       cancelled = true;
     };
      
-  }, [mode, cacheKey, page?.original, unsharpOriginal]);
+  }, [mode, cacheKey, page?.original]);
 
   // ── Comparación antes/después (mantener pulsado el preview a 1×) ──────────
   const startCompareTimer = useCallback(() => {
@@ -508,6 +528,7 @@ export default function EditorView() {
           midY: mid.y,
         };
       } else if (zoomPointers.current.size === 1) {
+        swipeAxisRef.current = null;
         zoomDownAt.current = { x: e.clientX, y: e.clientY, t: performance.now() };
         zoomGesture.current = {
           type: "pan",
@@ -542,8 +563,30 @@ export default function EditorView() {
           zoomAtPoint(g.midX, g.midY, next);
         }
       } else if (g.type === "pan") {
-        // Pan solo ampliado; a 1× el arrastre no hace nada (es hold-comparar).
-        if (zoomScale.get() <= 1.01) return;
+        // F-SWIPE: a 1× el arrastre HORIZONTAL navega páginas (con goma
+        // elástica); el vertical sigue sin hacer nada (hold-comparar).
+        if (zoomScale.get() <= 1.01) {
+          const down0 = zoomDownAt.current;
+          if (!down0) return;
+          const dx = e.clientX - down0.x;
+          const dy = e.clientY - down0.y;
+          if (swipeAxisRef.current === null) {
+            if (Math.hypot(dx, dy) > TAP_SLOP) {
+              // Decide el eje UNA vez: claramente horizontal → swipe.
+              swipeAxisRef.current =
+                Math.abs(dx) > Math.abs(dy) * 1.2 ? "x" : "y";
+              if (swipeAxisRef.current === "x") endCompare();
+            }
+            return;
+          }
+          if (swipeAxisRef.current !== "x") return;
+          const canPrev = activeIdx > 0;
+          const canNext = activeIdx < capturePages.length - 1;
+          let rubber = dx;
+          if ((dx > 0 && !canPrev) || (dx < 0 && !canNext)) rubber = dx * 0.25;
+          zoomX.set(Math.max(-SWIPE_RUBBER, Math.min(SWIPE_RUBBER, rubber * 0.55)));
+          return;
+        }
         const down = zoomDownAt.current;
         if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > TAP_SLOP) {
           zoomGesture.current = { ...g, type: "pan", startX: g.startX, startY: g.startY };
@@ -553,7 +596,7 @@ export default function EditorView() {
         clampZoomPan();
       }
     },
-    [zoomAtPoint, clampZoomPan, zoomScale, zoomX, zoomY]
+    [zoomAtPoint, clampZoomPan, zoomScale, zoomX, zoomY, endCompare, activeIdx, capturePages.length]
   );
 
   const onStagePointerUp = useCallback(
@@ -585,6 +628,24 @@ export default function EditorView() {
             zoomLastTap.current = now;
           }
         }
+        // F-SWIPE: resolver el deslizamiento horizontal (solo a 1×).
+        if (swipeAxisRef.current === "x" && down && g?.type === "pan") {
+          const dx = e.clientX - down.x;
+          let nav = 0;
+          if (zoomScale.get() <= 1.01 && Math.abs(dx) >= SWIPE_MIN_PX) {
+            if (dx < 0 && activeIdx < capturePages.length - 1) nav = 1;
+            else if (dx > 0 && activeIdx > 0) nav = -1;
+          }
+          if (nav !== 0) {
+            // Página nueva: el efecto de cambio de página reinicia el zoom.
+            zoomX.set(0);
+            goToPage(activeIdx + nav);
+          } else {
+            // Sin navegación: la vista vuelve a su sitio con muelle.
+            void animate(zoomX, 0, { type: "spring", stiffness: 500, damping: 42 });
+          }
+        }
+        swipeAxisRef.current = null;
       } else if (zoomPointers.current.size === 1) {
         // Un dedo sigue en pantalla tras la pincha → pasa a pan desde aquí.
         const [a] = [...zoomPointers.current.values()];
@@ -600,7 +661,7 @@ export default function EditorView() {
         zoomDownAt.current = a ? { x: a.x, y: a.y, t: performance.now() } : null;
       }
     },
-    [clampZoomPan, endCompare, zoomRelToCenter, zoomAtPoint, resetZoom, zoomScale, zoomX, zoomY]
+    [clampZoomPan, endCompare, zoomRelToCenter, zoomAtPoint, resetZoom, zoomScale, zoomX, zoomY, activeIdx, capturePages.length, goToPage]
   );
 
   /** Rueda del ratón (escritorio): zoom anclado al cursor. */
@@ -710,7 +771,7 @@ export default function EditorView() {
     if (!root) return;
     const el = root.querySelector<HTMLElement>(`[data-idx="${activeIdx}"]`);
     el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-  }, [activeIdx, mode]);
+  }, [activeIdx, mode, thumbsOpen]);
 
   // ── Geometría del preview (modo crop) ────────────────────────────────────
   const rotation = ((page?.rotation ?? 0) % 360 + 360) % 360;
@@ -1103,7 +1164,6 @@ export default function EditorView() {
           // Procesa al vuelo (sesión de captura: aún no hay procesada).
           const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
             manual: p.quadManual === true,
-            unsharpOriginal: s.settings.unsharpOriginal,
           });
           image = res.processed;
           previewCache.current.set(capturePageKey(p), {
@@ -1162,16 +1222,6 @@ export default function EditorView() {
     });
   }, [capturePages, preview?.url]);
 
-  /** Navegación de páginas (pill + carrusel). */
-  const goToPage = useCallback(
-    (i: number) => {
-      if (i < 0 || i >= capturePages.length || i === activeIdx) return;
-      setEditingIndex(i);
-    },
-    [capturePages.length, activeIdx, setEditingIndex]
-  );
-
-  const totalPages = capturePages.length;
   const poorQuality = page?.quality?.level === "poor" || page?.quality?.level === "fair";
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -1362,7 +1412,7 @@ export default function EditorView() {
             {!zoomed && totalPages > 0 && !previewLoading && zoomHintVisible && (
               <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-6">
                 <span className="rounded-full bg-black/45 px-3 py-1 text-[10.5px] font-medium text-white/70 backdrop-blur-md">
-                  Pellizca para ampliar · mantén pulsado para ver el original
+                  Pellizca para ampliar · desliza para cambiar de página · mantén pulsado para ver el original
                 </span>
               </div>
             )}
@@ -1412,42 +1462,78 @@ export default function EditorView() {
             </div>
           )}
 
-          {/* Carrusel de miniaturas (siempre visible en review) */}
+          {/* F-THUMBS — desplegable para ocultar/mostrar las miniaturas */}
           {totalPages > 0 && (
-            <div
-              ref={carouselRef}
-              className="no-scrollbar flex shrink-0 gap-2.5 overflow-x-auto px-5 pb-2"
-              aria-label="Páginas de la sesión"
-            >
-              {capturePages.map((p, i) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  data-idx={i}
-                  aria-label={`Ir a la página ${i + 1}`}
-                  aria-current={i === activeIdx ? "true" : undefined}
-                  onClick={() => goToPage(i)}
+            <div className="relative z-10 flex shrink-0 justify-center pb-1">
+              <button
+                type="button"
+                aria-expanded={thumbsOpen}
+                aria-controls="thumbs-carousel"
+                aria-label={thumbsOpen ? "Ocultar miniaturas de páginas" : "Mostrar miniaturas de páginas"}
+                onClick={() => setThumbsOpen((v) => !v)}
+                className="flex h-7 items-center gap-1 rounded-full bg-white/10 px-3.5 text-[11px] font-semibold text-white/80 backdrop-blur-md transition-all active:scale-95"
+              >
+                Miniaturas
+                <ChevronDown
                   className={cn(
-                    "relative h-16 w-12 shrink-0 overflow-hidden rounded-lg border-2 transition-transform active:scale-95",
-                    i === activeIdx
-                      ? "border-[#007aff] shadow-[0_0_0_3px_rgba(0,122,255,0.25)]"
-                      : "border-white/15 opacity-70"
+                    "size-3.5 transition-transform duration-200",
+                    thumbsOpen && "rotate-180"
                   )}
-                >
-                  <img
-                    src={p.original}
-                    alt=""
-                    draggable={false}
-                    style={{ filter: CSS_FILTERS[p.filter] ?? "none" }}
-                    className="h-full w-full object-cover"
-                  />
-                  <span className="absolute bottom-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-[9px] font-bold text-white">
-                    {i + 1}
-                  </span>
-                </button>
-              ))}
+                  strokeWidth={2.6}
+                  aria-hidden="true"
+                />
+              </button>
             </div>
           )}
+
+          {/* Carrusel de miniaturas (colapsable con F-THUMBS) */}
+          <AnimatePresence initial={false}>
+            {totalPages > 0 && thumbsOpen && (
+              <motion.div
+                key="thumbs-carousel"
+                id="thumbs-carousel"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
+                className="shrink-0 overflow-hidden"
+              >
+                <div
+                  ref={carouselRef}
+                  className="no-scrollbar flex gap-2.5 overflow-x-auto px-5 pb-2 pt-1"
+                  aria-label="Páginas de la sesión"
+                >
+                  {capturePages.map((p, i) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      data-idx={i}
+                      aria-label={`Ir a la página ${i + 1}`}
+                      aria-current={i === activeIdx ? "true" : undefined}
+                      onClick={() => goToPage(i)}
+                      className={cn(
+                        "relative h-16 w-12 shrink-0 overflow-hidden rounded-lg border-2 transition-transform active:scale-95",
+                        i === activeIdx
+                          ? "border-[#007aff] shadow-[0_0_0_3px_rgba(0,122,255,0.25)]"
+                          : "border-white/15 opacity-70"
+                      )}
+                    >
+                      <img
+                        src={p.original}
+                        alt=""
+                        draggable={false}
+                        style={{ filter: CSS_FILTERS[p.filter] ?? "none" }}
+                        className="h-full w-full object-cover"
+                      />
+                      <span className="absolute bottom-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-[9px] font-bold text-white">
+                        {i + 1}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
       ) : (
         /* ── CROP: editor de perspectiva clásico (pantalla 2 del usuario) ── */

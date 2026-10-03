@@ -44,6 +44,14 @@ export const UNSHARP_AMOUNT = 0.5;
 export const UNSHARP_RADIUS = 1.5;
 export const UNSHARP_KERNEL = 7;
 
+// ─── F-TEXT-SMOOTH (píxeles feos del "Texto claro") ─────────────────────────
+/** Tope de la ganancia por píxel (ink/src) del modo text: en papeles con
+ *  ruido, una sola muestra oscura producía un punto brillante/coloreado. */
+export const TEXT_GAIN_MAX = 4;
+/** Tope del factor TOTAL (modelo de sombra × ganancia) al aplicarse al RGBA:
+ *  amortigua outliers extremos sin tocar el look del filtro. */
+export const APPLY_FACTOR_MAX = 8;
+
 // ─── Utilidades básicas ─────────────────────────────────────────────────────
 
 /** Luma entera: (R·77 + G·150 + B·29) >> 8 — idéntica al worker. */
@@ -396,7 +404,10 @@ export function estimateShadowModel(
   return { gains, xMap, yMap, mw };
 }
 
-/** Aplica el modelo de sombra al gris. */
+/** Aplica el modelo de sombra al gris — F-TEXT-SMOOTH: muestreo BILINEAR
+ *  del mapa de ganancias (antes nearest: cada celda del mapa (~800 px del
+ *  lado largo) era un bloque de ~5 px con ganancia saltante → píxeles feos
+ *  en el papel). Bilinear = iluminación pareja y continua. */
 export function correctedGrayWithModel(
   gray: Uint8ClampedArray,
   model: ShadowModel,
@@ -404,18 +415,47 @@ export function correctedGrayWithModel(
   h: number
 ): Uint8ClampedArray {
   const out = new Uint8ClampedArray(w * h);
+  const mw = model.mw > 0 ? model.mw : 1;
+  const mh = Math.max(1, Math.floor(model.gains.length / mw));
+  const gains = model.gains;
+  // Precomputa el muestreo horizontal por columna (fx, x0, x1, tx).
+  const x0Arr = new Int32Array(w);
+  const x1Arr = new Int32Array(w);
+  const txArr = new Float64Array(w);
+  for (let x = 0; x < w; x++) {
+    const fx = (x * mw) / w;
+    const x0 = Math.min(mw - 1, Math.floor(fx));
+    x0Arr[x] = x0;
+    x1Arr[x] = x0 + 1 < mw ? x0 + 1 : x0;
+    txArr[x] = Math.min(1, Math.max(0, fx - x0));
+  }
   for (let y = 0; y < h; y++) {
-    const row = model.yMap[y]! * model.mw;
+    const fy = (y * mh) / h;
+    const y0 = Math.min(mh - 1, Math.floor(fy));
+    const y1 = y0 + 1 < mh ? y0 + 1 : y0;
+    const ty = Math.min(1, Math.max(0, fy - y0));
+    const r0 = y0 * mw;
+    const r1 = y1 * mw;
+    const rowOut = y * w;
     for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const mx = model.xMap[x]!;
-      out[i] = gray[i]! * model.gains[row + mx]!;
+      const x0 = x0Arr[x]!;
+      const x1 = x1Arr[x]!;
+      const tx = txArr[x]!;
+      const g00 = gains[r0 + x0]!;
+      const g01 = gains[r0 + x1]!;
+      const g10 = gains[r1 + x0]!;
+      const g11 = gains[r1 + x1]!;
+      const top = g00 + (g01 - g00) * tx;
+      const bottom = g10 + (g11 - g10) * tx;
+      out[rowOut + x] = gray[rowOut + x]! * (top + (bottom - top) * ty);
     }
   }
   return out;
 }
 
-/** Ganancia por píxel conservando croma (look "papel blanco, tinta dominante"). */
+/** Ganancia por píxel conservando croma (look "papel blanco, tinta dominante")
+ *  — F-TEXT-SMOOTH: bilinear (ver correctedGrayWithModel) + tope del factor
+ *  total (APPLY_FACTOR_MAX) para amortiguar outliers de ruido. */
 export function applyModelAndGainToRgba(
   data: Uint8ClampedArray,
   model: ShadowModel,
@@ -424,13 +464,42 @@ export function applyModelAndGainToRgba(
   h: number
 ): Uint8ClampedArray {
   const out = new Uint8ClampedArray(w * h * 4);
+  const mw = model.mw > 0 ? model.mw : 1;
+  const mh = Math.max(1, Math.floor(model.gains.length / mw));
+  const gains = model.gains;
+  const x0Arr = new Int32Array(w);
+  const x1Arr = new Int32Array(w);
+  const txArr = new Float64Array(w);
+  for (let x = 0; x < w; x++) {
+    const fx = (x * mw) / w;
+    const x0 = Math.min(mw - 1, Math.floor(fx));
+    x0Arr[x] = x0;
+    x1Arr[x] = x0 + 1 < mw ? x0 + 1 : x0;
+    txArr[x] = Math.min(1, Math.max(0, fx - x0));
+  }
   for (let y = 0; y < h; y++) {
-    const row = model.yMap[y]! * model.mw;
+    const fy = (y * mh) / h;
+    const y0 = Math.min(mh - 1, Math.floor(fy));
+    const y1 = y0 + 1 < mh ? y0 + 1 : y0;
+    const ty = Math.min(1, Math.max(0, fy - y0));
+    const r0 = y0 * mw;
+    const r1 = y1 * mw;
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       const o = i * 4;
-      const mx = model.xMap[x]!;
-      const factor = model.gains[row + mx]! * gain[i]!;
+      const x0 = x0Arr[x]!;
+      const x1 = x1Arr[x]!;
+      const tx = txArr[x]!;
+      const g00 = gains[r0 + x0]!;
+      const g01 = gains[r0 + x1]!;
+      const g10 = gains[r1 + x0]!;
+      const g11 = gains[r1 + x1]!;
+      const top = g00 + (g01 - g00) * tx;
+      const bottom = g10 + (g11 - g10) * tx;
+      const factor = Math.min(
+        APPLY_FACTOR_MAX,
+        Math.max(0, (top + (bottom - top) * ty) * gain[i]!)
+      );
       out[o] = data[o]! * factor;
       out[o + 1] = data[o + 1]! * factor;
       out[o + 2] = data[o + 2]! * factor;
@@ -610,7 +679,9 @@ export function enhanceToRgba(
   }
   for (let i = 0; i < n; i++) {
     const src = grayS[i]!;
-    gainW[i] = src > 0 ? ink[i]! / src : 1;
+    // F-TEXT-SMOOTH: tope por píxel — una muestra oscura del papel ya no
+    // se convierte en un punto brillante (ruido amplificado).
+    gainW[i] = src > 0 ? Math.min(TEXT_GAIN_MAX, ink[i]! / src) : 1;
   }
   return applyModelAndGainToRgba(data, shadow, gainW, w, h);
 }

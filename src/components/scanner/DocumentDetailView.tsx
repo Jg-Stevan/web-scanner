@@ -410,7 +410,6 @@ export default function DocumentDetailView() {
   const setFilterOnPage = useScannerStore((s) => s.setFilterOnPage);
   const setOcrText = useScannerStore((s) => s.setOcrText);
   const exportQuality = useScannerStore((s) => s.settings.exportQuality);
-  const unsharpOriginal = useScannerStore((s) => s.settings.unsharpOriginal);
   /** E2c: reabrir el editor de bordes manual sobre esta página guardada. */
   const beginEditSavedPage = useScannerStore((s) => s.beginEditSavedPage);
 
@@ -783,7 +782,6 @@ export default function DocumentDetailView() {
       try {
         const res = await processImage(page.original, page.quad, page.filter, rotation, {
           manual: page.quadManual === true,
-          unsharpOriginal,
         });
         processed = res.processed;
         thumbnail = res.thumbnail;
@@ -806,9 +804,7 @@ export default function DocumentDetailView() {
       let thumbnail = page.thumbnail;
       let precision = page.precision;
       try {
-        const res = await processImage(page.original, quad, page.filter, page.rotation, {
-          unsharpOriginal,
-        });
+        const res = await processImage(page.original, quad, page.filter, page.rotation, {});
         processed = res.processed;
         thumbnail = res.thumbnail;
         precision = res.precision;

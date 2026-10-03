@@ -8,11 +8,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, Copy, Download, FileText, Layers, Loader2, ScanText, Star, Tags, Trash2, HardDrive } from "lucide-react";
+import { Copy, Download, FileText, Layers, Loader2, ScanText, Star, Tags, Trash2, HardDrive } from "lucide-react";
 import { toast } from "sonner";
 
 import { useScannerStore } from "@/lib/scanner/store";
-import { DOC_PROFILES, type DocProfileId, type ScannerSettings } from "@/lib/scanner/types";
+import type { ScannerSettings } from "@/lib/scanner/types";
 import { dataUrlBytes, formatBytes } from "@/lib/scanner/format";
 import { countTagUsage } from "@/lib/scanner/tags";
 import { getScannerWorker } from "@/lib/scanner/image-processor";
@@ -212,48 +212,6 @@ export default function SettingsView() {
           </div>
         </section>
 
-        <SettingsGroup label="Captura" delay={0.05}>
-          <SettingsRow title="Perfil de documento" subtitle="Prior de aspecto para la detección" />
-          <div className="flex flex-wrap gap-2 px-4 pb-3.5 pt-1">
-            {DOC_PROFILES.map((p) => {
-              const active = settings.docProfile === p.id;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  aria-pressed={active}
-                  aria-label={`Perfil ${p.label}: ${p.hint}`}
-                  onClick={() => updateSettings({ docProfile: p.id as DocProfileId })}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-medium transition-all duration-200 active:scale-95",
-                    active
-                      ? "border-[#007aff] bg-[#007aff]/10 text-[#007aff] shadow-[0_2px_8px_rgba(0,122,255,0.18)]"
-                      : "border-[#e5e5ea] bg-[#f2f2f7] text-[#3c3c43]"
-                  )}
-                >
-                  {active && <Check className="h-3.5 w-3.5" strokeWidth={2.6} aria-hidden="true" />}
-                  {p.label}
-                </button>
-              );
-            })}
-          </div>
-          <SettingsRow title="Captura automática" subtitle="Escanea al detectar documento estable">
-            <Switch
-              checked={settings.autoCapture}
-              onCheckedChange={(v) => updateSettings({ autoCapture: v })}
-              aria-label="Captura automática"
-              className={SWITCH_IOS}
-            />
-          </SettingsRow>
-          <SettingsRow title="Flash">
-            <Switch
-              checked={settings.flash}
-              onCheckedChange={(v) => updateSettings({ flash: v })}
-              aria-label="Flash"
-              className={SWITCH_IOS}
-            />
-          </SettingsRow>
-        </SettingsGroup>
 
         <SettingsGroup label="Procesamiento" delay={0.1}>
           <SettingsRow title="Mejora automática" subtitle="Aplica el mejor filtro">
@@ -261,17 +219,6 @@ export default function SettingsView() {
               checked={settings.enhance}
               onCheckedChange={(v) => updateSettings({ enhance: v })}
               aria-label="Mejora automática"
-              className={SWITCH_IOS}
-            />
-          </SettingsRow>
-          <SettingsRow
-            title="Nitidez en Original"
-            subtitle="Aplica unsharp 0.5/1.5 al filtro Original (se guarda puro por fidelidad al sensor)"
-          >
-            <Switch
-              checked={settings.unsharpOriginal}
-              onCheckedChange={(v) => updateSettings({ unsharpOriginal: v })}
-              aria-label="Nitidez en Original"
               className={SWITCH_IOS}
             />
           </SettingsRow>

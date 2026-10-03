@@ -221,7 +221,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       await processImage(page.original, page.quad, page.filter, page.rotation, {
         manual: page.quadManual === true,
-        unsharpOriginal: settings.unsharpOriginal,
       });
     } catch {
       /* noop */
@@ -240,8 +239,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
-          unsharpOriginal: settings.unsharpOriginal,
-        });
+          });
         processed = res.processed;
         thumbnail = res.thumbnail;
         precision = res.precision;
@@ -351,8 +349,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
-          unsharpOriginal: settings.unsharpOriginal,
-        });
+          });
         processed = res.processed;
         thumbnail = res.thumbnail;
         precision = res.precision;
@@ -434,7 +431,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       const res = await processImage(page.original, page.quad, page.filter, page.rotation, {
         manual: page.quadManual === true,
-        unsharpOriginal: settings.unsharpOriginal,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;
@@ -560,7 +556,6 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       const res = await processImage(page.original, page.quad, filter, page.rotation, {
         manual: page.quadManual === true,
-        unsharpOriginal: settings.unsharpOriginal,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;
