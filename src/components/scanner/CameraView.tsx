@@ -463,10 +463,42 @@ export default function CameraView() {
 
   /* ── Captura ─────────────────────────────────────────────────────── */
 
-  /** Pipeline tras obtener la imagen (FLUJO ADOBE SCAN — F-FLOW):
-   *  flash → bordes → calidad → store → EDITOR DIRECTO. Tras la captura
-   *  (manual o auto) se navega inmediatamente al modo revisión con el
-   *  recorte automático y el filtro ya aplicados. */
+  /** F-DEFER-CROP v6.2 — resuelve el quad EN BACKGROUND. Se invoca DESPUÉS
+   *  de abrir el editor: la captura ya no espera al OpenCV del worker (en
+   *  gama baja eran segundos mirando el spinner de la cámara). Guardas al
+   *  aterrizar: la página debe seguir existiendo (Repetir/limpiar la
+   *  eliminan) y el usuario NO debe haber recortado a mano (quadManual).
+   *  Si la detección falla se libera el pill y queda el marco provisional
+   *  (ajustable en «Recortar»). La calidad del texto NO se toca: la foto
+   *  sigue siendo full-sensor y el enhance no cambia. */
+  const applyAutoQuad = useCallback(
+    async (pageId: string, src: HTMLImageElement | HTMLCanvasElement) => {
+      const apply = (patch: Partial<CapturePage>) =>
+        useScannerStore.getState().updateCapturePage(pageId, patch);
+      try {
+        const detected = await detectDocumentEdges(src);
+        const page = useScannerStore
+          .getState()
+          .capturePages.find((p) => p.id === pageId);
+        if (!page) return; // página eliminada mientras volaba → nada que hacer
+        if (page.quadManual) {
+          apply({ autoQuadPending: false });
+          return;
+        }
+        apply({ quad: detected, autoQuadPending: false });
+      } catch {
+        apply({ autoQuadPending: false });
+      }
+    },
+    []
+  );
+
+  /** Pipeline tras obtener la imagen (FLUJO ADOBE SCAN + F-DEFER-CROP v6.2):
+   *  flash → decode → downscale → calidad → store → EDITOR INMEDIATO.
+   *  El editor abre con un marco provisional y la detección de bordes
+   *  aterriza en background (pill «Ajustando recorte…» → preview se
+   *  re-procesa solo). En gama baja esto convierte una espera de segundos
+   *  frente a la cámara en una revisión instantánea. */
   const handleCaptureDataUrl = useCallback(
     async (rawDataUrl: string) => {
       if (processingRef.current) return;
@@ -483,7 +515,7 @@ export default function CameraView() {
       try {
         // Decode ÚNICO de la captura (antes: downscale + detect + quality
         // decodificaban la misma foto de 12 MP tres veces). El elemento se
-        // reutiliza en las tres etapas; solo se re-decodifica si hubo que
+        // reutiliza en las etapas; solo se re-decodifica si hubo que
         // re-escalar una imagen de galería más grande que el sensor.
         const decoded = await loadImage(rawDataUrl);
         const scaledUrl = await downscaleImage(decoded);
@@ -491,14 +523,17 @@ export default function CameraView() {
         const source: HTMLImageElement | HTMLCanvasElement = scaledUrl
           ? await loadImage(scaledUrl)
           : decoded;
-        const [detectedQuad, quality] = await Promise.all([
-          detectDocumentEdges(source),
-          evaluateQuality(source),
-        ]);
+        // F-DEFER-CROP v6.2: la detección de bordes SALE del camino crítico
+        // (corre en background tras abrir el editor). La calidad sí se mide
+        // aquí: es barata (canvas de ≤400 px) y alimenta el badge de calidad.
+        const quality = await evaluateQuality(source);
         const page: CapturePage = {
           id: nextId("page"),
           original: dataUrl,
-          quad: detectedQuad,
+          // Marco provisional (vista completa): el quad real llega en
+          // background vía applyAutoQuad, sin bloquear la revisión.
+          quad: defaultQuad(),
+          autoQuadPending: true,
           // F-DEFAULT-BW: «Mejora automática» (Ajustes › Procesamiento) decide
           // el filtro por defecto de cada captura — ON = B/N adaptativo (lo que
           // pidió el usuario), OFF = Original puro. Cambiable en el editor.
@@ -509,6 +544,9 @@ export default function CameraView() {
         addCapturePage(page);
         // F-FLOW: directo al editor (modo revisión) — igual que Adobe Scan.
         setView("editor");
+        // La detección vuela en background; cuando aterrice, el preview se
+        // re-procesa solo (cambia el quad → capturePageKey → cache miss).
+        void applyAutoQuad(page.id, source);
       } catch {
         toast.error("No se pudo procesar la imagen");
       } finally {
@@ -516,7 +554,7 @@ export default function CameraView() {
         setProcessing(false);
       }
     },
-    [addCapturePage, setView]
+    [addCapturePage, setView, applyAutoQuad]
   );
 
   /** Blob → data URL (para el takePhoto hi-res). */

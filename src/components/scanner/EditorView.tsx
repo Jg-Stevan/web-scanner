@@ -2163,6 +2163,31 @@ export default function EditorView() {
         )}
       </AnimatePresence>
 
+      {/* ── F-DEFER-CROP v6.2: pill mientras la detección de bordes vuela ──
+          La captura abre el editor al instante con un marco provisional; el
+          quad real aterriza en background (worker) y el preview se re-procesa
+          solo. Pill en 176px para no chocar con el pill de OCR si ambos
+          coinciden (OCR automático re-activado por el usuario). */}
+      <AnimatePresence>
+        {page?.autoQuadPending === true && mode === "review" && (
+          <motion.div
+            key="auto-quad-pill"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="pointer-events-none absolute inset-x-0 bottom-[176px] z-30 flex justify-center px-6"
+          >
+            <div className="flex items-center gap-2 rounded-full bg-[#1c1c1e]/92 px-4 py-2 shadow-[0_4px_16px_rgba(0,0,0,0.35)] ring-1 ring-inset ring-white/10 backdrop-blur-xl">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[#007aff]" />
+              <span className="text-[12.5px] font-medium text-white/85">
+                Ajustando recorte…
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {mode === "review" && (
         /* ── Bottom bar de REVIEW: toolbar + acciones principales ─────────── */
         <div className="relative z-10 shrink-0 bg-black pb-safe">

@@ -168,6 +168,12 @@ export interface CapturePage {
   /** OCR (editor): texto reconocido en la página en edición. */
   ocrText?: string;
   ocrDone?: boolean;
+  /** F-DEFER-CROP v6.2: la detección de bordes corre EN background DESPUÉS
+   *  de abrir el editor (captura fluida — el usuario ya ve su página).
+   *  true = detección aún en vuelo (pill «Ajustando recorte…»). Al resolver
+   *  se aplica el quad SOLO si el usuario no recortó a mano (quadManual).
+   *  Runtime-only: no se persiste ni viaja a ScanPage. */
+  autoQuadPending?: boolean;
 }
 
 /** Clave de cache/estado de una página en sesión (id|quad|filtro|rotación).
