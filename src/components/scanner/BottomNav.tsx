@@ -49,7 +49,7 @@ export default function BottomNav() {
             >
               <ScanLine className="h-7 w-7" strokeWidth={2.2} />
             </span>
-            <span className="text-[10px] font-semibold tracking-wide text-[#8e8e93]">
+            <span className="text-[10px] font-semibold tracking-wide text-[#6d6d72] dark:text-[#8e8e93]">
               Escanear
             </span>
           </button>
@@ -86,7 +86,7 @@ function NavTab({
     >
       <span className="relative">
         <Icon
-          className={cn("h-6 w-6", active ? "text-[#007aff]" : "text-[#8e8e93]")}
+          className={cn("h-6 w-6", active ? "text-[#007aff]" : "text-[#6d6d72] dark:text-[#8e8e93]")}
           strokeWidth={active ? 2.2 : 1.8}
         />
         {typeof tab.badge === "number" && tab.id === "library" && tab.badge > 0 && (
@@ -98,7 +98,7 @@ function NavTab({
       <span
         className={cn(
           "text-[10px] font-semibold tracking-wide",
-          active ? "text-[#007aff]" : "text-[#8e8e93]"
+          active ? "text-[#007aff]" : "text-[#6d6d72] dark:text-[#8e8e93]"
         )}
       >
         {tab.label}

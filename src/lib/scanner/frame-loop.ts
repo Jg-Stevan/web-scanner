@@ -38,6 +38,7 @@ import {
   shouldTriggerShutter,
   CAPTURE_COOLDOWN_MS,
   NO_DETECT_TIMEOUT_MS,
+  MAX_NO_DETECT_NOTICES,
   SHUTTER_SCORE,
   type QuadSample,
   type QualityScore,
@@ -83,6 +84,10 @@ export class CameraFrameLoop {
   private scoreHistory: ScoreSample[] = [];
   private firstAttemptMs = 0;
   private lastNoDetectNotice = 0;
+  // B9: tope de avisos «No detecto el documento» por sesión de loop —
+  // antes sonaba cada 8 s INDEFINIDAMENTE porque firstAttemptMs solo se
+  // fijaba en start() y nunca se re-armaba tras una detección exitosa.
+  private noDetectNotices = 0;
   private lastTriggerMs = 0;
 
   private processed = 0;
@@ -119,6 +124,7 @@ export class CameraFrameLoop {
     // instante.
     this.rearmNeeded = false;
     this.lastNoDetectNotice = 0;
+    this.noDetectNotices = 0;
     this.running = true;
     // Precalienta OpenCV si aún no está (la primera detección tarda más).
     void this.client?.waitReady().then((ok) => {
@@ -282,14 +288,20 @@ export class CameraFrameLoop {
       this.emit(null, null);
       if (
         this.firstAttemptMs &&
+        this.noDetectNotices < MAX_NO_DETECT_NOTICES &&
         detectionTimedOut(this.firstAttemptMs, now) &&
         now - this.lastNoDetectNotice > NO_DETECT_TIMEOUT_MS
       ) {
         this.lastNoDetectNotice = now;
+        this.noDetectNotices += 1;
         cb.onNoDetectTimeout();
       }
       return;
     }
+
+    // B9: hay detección → re-arra el reloj del aviso (si el papel se retira
+    // más tarde, el timeout cuenta desde la ÚLTIMA detección, no del start).
+    this.firstAttemptMs = now;
 
     // Quad en px de proceso (contrato de stability: 400-clase).
     const quadPx: Quad = [

@@ -102,9 +102,17 @@ export function registerServiceWorker(): void {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
   if (window.location.protocol !== "https:") return; // GitHub Pages es https; localhost dev se salta
   const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-  window.addEventListener("load", () => {
+  const register = () => {
     navigator.serviceWorker.register(`${base}/sw.js`).catch(() => {
       /* sin SW la app funciona igual (solo pierde el offline) */
     });
-  });
+  };
+  // B15: el listener "load" vive dentro de un efecto — si la hidratación
+  // llega DESPUÉS del evento load (gama baja / red lenta), nunca dispara y
+  // la app se queda sin offline. Si ya cargó, registrar inmediatamente.
+  if (document.readyState === "complete") {
+    register();
+  } else {
+    window.addEventListener("load", register, { once: true });
+  }
 }

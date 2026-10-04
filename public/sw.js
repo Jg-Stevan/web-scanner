@@ -12,10 +12,13 @@
  * Al activar una versión nueva, limpia TODAS las cachés antiguas y llama a
  * clients.claim() — la pestaña abierta salta a la nueva versión al navegar.
  */
-const VERSION = "escaner-v5";
+const VERSION = "escaner-v6";
 const CORE_CACHE = `${VERSION}-core`;
 const STATIC_CACHE = `${VERSION}-static`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
+// A6: tope de entradas del caché runtime — antes crecía sin límite (llegó a
+// cachear el ZIP de descarga y cualquier GET del mismo origen).
+const RUNTIME_CACHE_MAX = 80;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -78,8 +81,12 @@ self.addEventListener("fetch", (event) => {
       (async () => {
         try {
           const fresh = await fetch(req);
-          const cache = await caches.open(CORE_CACHE);
-          cache.put("./", fresh.clone()).catch(() => undefined);
+          // A7: solo cachear navegaciones VÁLIDAS (un 404 como fallback
+          // offline dejaba la app rota sin conexión).
+          if (fresh && fresh.ok) {
+            const cache = await caches.open(CORE_CACHE);
+            cache.put("./", fresh.clone()).catch(() => undefined);
+          }
           return fresh;
         } catch {
           const cached =
@@ -112,6 +119,8 @@ self.addEventListener("fetch", (event) => {
   }
 
   // 3) Resto del mismo origen → STALE-WHILE-REVALIDATE.
+  // A6: /downloads/ (ZIP de varios MB) y dominios grandes NO se cachean.
+  if (url.pathname.includes("/downloads/")) return;
   event.respondWith(
     (async () => {
       const cache = await caches.open(RUNTIME_CACHE);
@@ -120,6 +129,13 @@ self.addEventListener("fetch", (event) => {
         .then((fresh) => {
           if (fresh && fresh.status === 200) {
             cache.put(req, fresh.clone()).catch(() => undefined);
+            // A6: purga FIFO cuando el caché runtime supera el tope.
+            cache.keys().then((keys) => {
+              if (keys.length <= RUNTIME_CACHE_MAX) return;
+              for (const k of keys.slice(0, keys.length - RUNTIME_CACHE_MAX)) {
+                cache.delete(k).catch(() => undefined);
+              }
+            }).catch(() => undefined);
           }
           return fresh;
         })

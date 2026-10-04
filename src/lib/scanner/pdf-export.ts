@@ -1,11 +1,11 @@
 /**
  * Exportación PDF adaptativa (§8 del usuario) — lib compartida.
  *
- * Extraída de DocumentDetailView para reutilizarla en:
- *  · Detalle del documento  → PDF de UN documento (presupuesto §8).
- *  · Biblioteca             → PDF de TODA la biblioteca (multi-documento con
- *                             outline/marcadores por documento y presupuesto
- *                             global escalado).
+ * Consumidores:
+ *  · EditorView           → PDF de UN documento (presupuesto §8).
+ *  · LibraryView          → PDF de TODA la biblioteca (multi-documento con
+ *                           outline/marcadores por documento y presupuesto
+ *                           global escalado).
  *
  * Reglas §8 intactas:
  *  · PNG (filtros sin pérdida raw|text|bw) se embebe SIN re-encode.
@@ -53,6 +53,30 @@ export function attemptsFor(quality: ExportQuality): readonly ExportAttempt[] {
 /** Lado mayor (mm) de la página PDF — tamaño adaptativo por página (§8). */
 export const PDF_LONG_SIDE_MM = 297;
 
+/** C8: canvas → data URL JPEG vía toBlob (ASÍNCRONO, no bloquea el hilo —
+ *  regla propia “error #22”) con toDataURL de respaldo si toBlob falla. */
+async function canvasToJpegDataUrl(
+  canvas: HTMLCanvasElement,
+  quality: number
+): Promise<string> {
+  try {
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((b) => resolve(b), "image/jpeg", quality)
+    );
+    if (blob && blob.size > 0) {
+      return await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(blob);
+      });
+    }
+  } catch {
+    /* respaldo abajo */
+  }
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
 /** Re-encode JPEG de una página a los parámetros del intento (lado 0 = tamaño
  *  original). Devuelve el data URL y las dimensiones reales. */
 export async function toJpegAt(
@@ -73,7 +97,9 @@ export async function toJpegAt(
   ctx.fillRect(0, 0, width, height);
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(img, 0, 0, width, height);
-  return { dataUrl: canvas.toDataURL("image/jpeg", quality), width, height };
+  // C8: encode asíncrono (toBlob) — antes toDataURL síncrono sobre canvas
+  // grandes (riesgo de memoria/jank en Safari).
+  return { dataUrl: await canvasToJpegDataUrl(canvas, quality), width, height };
 }
 
 /**
@@ -103,7 +129,8 @@ export async function toJpeg(
   ctx.fillRect(0, 0, width, height);
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(img, 0, 0, width, height);
-  return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), width, height };
+  // C8: encode asíncrono (toBlob) — ver toJpegAt.
+  return { dataUrl: await canvasToJpegDataUrl(canvas, 0.92), width, height };
 }
 
 export function sanitizeFileName(title: string): string {

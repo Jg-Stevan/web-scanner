@@ -25,6 +25,8 @@ jobs:
       BUILD_STATIC: "1"
       # GitHub Pages sirve este repo bajo /web-scanner/
       NEXT_PUBLIC_BASE_PATH: /web-scanner
+      # A2: el OCR local (Tesseract) sin intento de fetch a /api (inexistente en Pages)
+      NEXT_PUBLIC_STATIC: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +36,11 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # Nota: el gate `bunx tsc --noEmit` se dejó FUERA a propósito para que la
+      # migración por pasos (subir código nuevo y borrar legado después) nunca
+      # produzca un deploy rojo intermedio. Reactivarlo cuando el repo esté
+      # limpio es una mejora futura de un solo paso.
 
       # Los route handlers (src/app/api) requieren servidor Node y son
       # incompatibles con el export estático. Se excluyen SOLO del build
@@ -45,7 +52,7 @@ jobs:
         run: bunx next build
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: ./out
 

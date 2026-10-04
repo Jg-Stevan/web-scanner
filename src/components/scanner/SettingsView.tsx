@@ -56,11 +56,13 @@ import {
 const SWITCH_IOS =  "h-[31px] w-[51px] data-[state=checked]:bg-[#007aff] data-[state=unchecked]:bg-[#e9e9ea] dark:data-[state=unchecked]:bg-[#39393d] [&_[data-slot=switch-thumb]]:size-[25px]";
 
 /** Snapshot del repositorio — nombre estable servido desde /downloads
- *  (archivo estático en public/, funciona en CUALQUIER despliegue) y vía
- *  /api/download (ruta de servidor, siempre la versión más fresca). */
+ *  (archivo estático en public/, funciona en CUALQUIER despliegue).
+ *  A1: en GitHub Pages la app vive bajo /web-scanner/ → sin el basePath
+ *  el enlace caía en la raíz del dominio y daba 404. Se elimina la vía
+ *  /api/download (ruta de servidor muerta, ver D4). */
 const PROJECT_ZIP_NAME = "web-scanner-repo.zip";
-const PROJECT_ZIP_STATIC = `/downloads/${PROJECT_ZIP_NAME}`;
-const PROJECT_ZIP_API = `/api/download?file=${encodeURIComponent(PROJECT_ZIP_NAME)}`;
+const PROJECT_ZIP_BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const PROJECT_ZIP_STATIC = `${PROJECT_ZIP_BASE}/downloads/${PROJECT_ZIP_NAME}`;
 
 /** Atajos de teclado de escritorio (mostrados en Acerca de). */
 const SHORTCUTS: { action: string; keys: string[]; hint?: string }[] = [
@@ -489,7 +491,7 @@ function ProjectDownloadRow() {
     // simplemente no se muestra el tamaño — la fila sigue activa.
     let stop = false;
     void (async () => {
-      for (const url of [PROJECT_ZIP_API, PROJECT_ZIP_STATIC]) {
+      for (const url of [PROJECT_ZIP_STATIC]) {
         try {
           const ctl = new AbortController();
           const r = await fetch(url, { signal: ctl.signal, cache: "no-store" });
@@ -521,9 +523,9 @@ function ProjectDownloadRow() {
     if (busy) return;
     setBusy(true);
     try {
-      // Capa 1 — fetch → blob → <a download> programático (API → estático).
+      // Capa 1 — fetch → blob → <a download> programático (estático).
       let blob: Blob | null = null;
-      for (const url of [PROJECT_ZIP_API, PROJECT_ZIP_STATIC]) {
+      for (const url of [PROJECT_ZIP_STATIC]) {
         try {
           const r = await fetch(url, { cache: "no-store" });
           if (r.ok) {

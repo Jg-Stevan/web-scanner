@@ -330,6 +330,10 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   saveSessionToDocument: async () => {
     const { reviewDocId, capturePages } = get();
     if (!reviewDocId) return null;
+    // B4: snapshot de ids a fusionar ANTES de los awaits — si el usuario
+    // captura una página nueva mientras el merge corre (processImage es
+    // async), NO debe borrarse con el vaciado final.
+    const mergedIds = new Set(capturePages.map((p) => p.id));
     const doc = get().documents.find((d) => d.id === reviewDocId);
     if (!doc) {
       set({ capturePages: [], editingIndex: 0, reviewDocId: null });
@@ -427,7 +431,9 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     const updated: ScanDocument = { ...doc, pages, updatedAt: now };
     set((s) => ({
       documents: s.documents.map((d) => (d.id === reviewDocId ? updated : d)),
-      capturePages: [],
+      // B4: solo se limpian las páginas fusionadas — las capturadas durante
+      // el merge (ids no en el snapshot) sobreviven.
+      capturePages: s.capturePages.filter((p) => !mergedIds.has(p.id)),
       editingIndex: 0,
       reviewDocId: null,
     }));

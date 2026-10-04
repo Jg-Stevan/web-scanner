@@ -201,6 +201,10 @@ function useLongPress(onLongPress: () => void, ms = 450) {
     () => ({
       onPointerDown: (e: React.PointerEvent) => {
         if (e.pointerType === "mouse" && e.button !== 0) return;
+        // B11: si el down cae sobre un botón (estrella, menú ⋯, asa ⠿, etc.)
+        // el hold NO arranca — antes entrar en selección Y marcaba favorito
+        // a la vez (doble acción contradictoria).
+        if ((e.target as HTMLElement | null)?.closest?.("button")) return;
         clear();
         startRef.current = { x: e.clientX, y: e.clientY };
         timerRef.current = window.setTimeout(() => {
@@ -288,6 +292,23 @@ export default function LibraryView() {
   const setPendingFindQuery = useScannerStore((s) => s.setPendingFindQuery);
 
   const [query, setQuery] = useState("");
+  // C5: la búsqueda normaliza (NFD) TODO el corpus OCR en cada pulsación
+  // (×2: ocrMatches + visible) → tartamudeo con bibliotecas grandes.
+  // Debounce de 200 ms + caché del texto normalizado por página.
+  const [searchQuery, setSearchQuery] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setSearchQuery(query), 200);
+    return () => window.clearTimeout(t);
+  }, [query]);
+  const normCacheRef = useRef(new Map<string, { src: string; norm: string }>());
+  const normOcr = useCallback((pageKey: string, text: string) => {
+    if (!text) return "";
+    const hit = normCacheRef.current.get(pageKey);
+    if (hit && hit.src === text) return hit.norm;
+    const norm = normalizeText(text);
+    normCacheRef.current.set(pageKey, { src: text, norm });
+    return norm;
+  }, []);
   const [sort, setSort] = useState<SortMode>("recientes");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -343,31 +364,31 @@ export default function LibraryView() {
 
   /** Documentos con coincidencias en el texto OCR (para el badge de la card). */
   const ocrMatches = useMemo(() => {
-    const q = normalizeText(query.trim());
+    const q = normalizeText(searchQuery.trim());
     if (!q) return new Set<string>();
     const ids = new Set<string>();
     for (const d of liveDocs) {
       if (normalizeText(d.title).includes(q)) continue; // solo destacado de matches "ocultos"
-      if (d.pages.some((p) => p.ocrText && normalizeText(p.ocrText).includes(q))) {
+      if (d.pages.some((p) => p.ocrText && normOcr(p.id, p.ocrText).includes(q))) {
         ids.add(d.id);
       }
     }
     return ids;
-  }, [liveDocs, query]);
+  }, [liveDocs, searchQuery, normOcr]);
 
   /** Etiquetas de la biblioteca con conteo de uso (chips de filtro). */
   const allTags = useMemo(() => countTagUsage(liveDocs), [liveDocs]);
 
   const visible = useMemo(() => {
     let docs = liveDocs;
-    const q = normalizeText(query.trim());
+    const q = normalizeText(searchQuery.trim());
     if (q) {
       // Busca en títulos, etiquetas Y en el texto reconocido por OCR.
       docs = docs.filter(
         (d) =>
           normalizeText(d.title).includes(q) ||
           docTags(d).some((t) => normalizeText(t).includes(q)) ||
-          d.pages.some((p) => p.ocrText && normalizeText(p.ocrText).includes(q))
+          d.pages.some((p) => p.ocrText && normOcr(p.id, p.ocrText).includes(q))
       );
     }
     if (tagFilter) {
@@ -388,7 +409,7 @@ export default function LibraryView() {
       sorted.sort((a, b) => b.updatedAt - a.updatedAt);
     }
     return sorted;
-  }, [liveDocs, query, sort, tagFilter]);
+  }, [liveDocs, searchQuery, sort, tagFilter, normOcr]);
 
   /** ¿El modo manual admite arrastre aquí? (vista lista, sin selección,
    *  sin búsqueda ni etiqueta — con filtros el subconjunto se reordena raro). */

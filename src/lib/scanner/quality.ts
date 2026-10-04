@@ -60,6 +60,10 @@ export const SHUTTER_SPAN_MS = 1200;
 /** Sin detección >8s → escape a captura manual. */
 export const NO_DETECT_TIMEOUT_MS = 8000;
 
+/** B9: máximo de avisos «No detecto el documento» por sesión (antes sonaba
+ *  cada 8 s toda la sesión; con tope 2 deja de ser ruido). */
+export const MAX_NO_DETECT_NOTICES = 2;
+
 /** Cooldown post-captura anti doble-disparo (ms). */
 export const CAPTURE_COOLDOWN_MS = 1500;
 

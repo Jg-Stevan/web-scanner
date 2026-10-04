@@ -103,7 +103,7 @@ export default function OnboardingView() {
     >
       {/* ── Barra superior: app + Omitir ─────────────────────────────── */}
       <header className="flex shrink-0 items-center justify-between px-4 pb-1 pt-safe">
-        <span className="text-[15px] font-semibold text-[#8e8e93]">
+        <span className="text-[15px] font-semibold text-[#6d6d72] dark:text-[#8e8e93]">
           Escáner de Documentos
         </span>
         <button
@@ -161,7 +161,7 @@ export default function OnboardingView() {
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.18, duration: 0.32, ease: "easeOut" }}
-                className="text-[15px] leading-[1.5] text-[#8e8e93]"
+                className="text-[15px] leading-[1.5] text-[#6d6d72] dark:text-[#8e8e93]"
               >
                 {Current.text}
               </motion.p>
@@ -212,7 +212,7 @@ export default function OnboardingView() {
         >
           {isLast ? "Comenzar a escanear" : "Continuar"}
         </motion.button>
-        <p className="mt-3 text-center text-[12px] text-[#8e8e93]">
+        <p className="mt-3 text-center text-[12px] text-[#6d6d72] dark:text-[#8e8e93]">
           Desliza para explorar los pasos
         </p>
       </div>

@@ -118,34 +118,60 @@ function sourceToCappedJpegDataUrl(
 }
 
 /**
- * F-IMPORT — File → data URL de forma ROBUSTA. Los archivos de galería/
- * cámara nativa llegan a 12–48 MP y con EXIF; la ruta vieja (FileReader →
- * data URL gigante → <img>) reventaba con fotos grandes y era el origen del
- * «No se pudo procesar la imagen».
- *
- * Cascada (de más barata a más costosa):
- *  1. createImageBitmap(file, { imageOrientation:"from-image" }) — decode
- *     NATIVO, EXIF aplicado por el navegador, sin data URL intermedia.
- *     Si el lado mayor excede el tope → re-dibujo a canvas reducido.
- *  2. createImageBitmap(file) a secas (navegadores que rechazan opciones).
- *  3. objectURL → <img> (el navegador decodifica y aplica EXIF al pintar;
- *     evita el data URL de decenas de MB de la ruta histórica).
- *
- * El Error resultante distingue HEIC para dar un mensaje accionable.
+ * F-HEIC — decodificador HEIC/HEIF en cliente (libheif vía heic2any).
+ * Chrome/Android NO decodifica HEIC nativamente (las fotos de iPhone pasadas
+ * por WhatsApp/Drive/copys fallaban con «No se pudo procesar la imagen»).
+ * El chunk pesa ~1,4 MB así que se importa DINÁMICAMENTE: solo se descarga
+ * la primera vez que una imagen realmente necesita el rescate (un JPG normal
+ * nunca lo toca). heic2any empaqueta libheif inline — sin .wasm externo,
+ * funciona igual en GitHub Pages.
  */
-export async function fileToCaptureDataUrl(file: File): Promise<string> {
-  const looksHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+type Heic2Any = (opts: {
+  blob: Blob;
+  toType?: string;
+  quality?: number;
+}) => Promise<Blob | Blob[]>;
 
+let heic2anyFn: Heic2Any | null = null;
+let heic2anyPromise: Promise<Heic2Any> | null = null;
+
+function loadHeic2Any(): Promise<Heic2Any> {
+  if (heic2anyFn) return Promise.resolve(heic2anyFn);
+  if (!heic2anyPromise) {
+    heic2anyPromise = import("heic2any")
+      .then((mod) => {
+        heic2anyFn = mod.default as Heic2Any;
+        return heic2anyFn;
+      })
+      .catch((err) => {
+        heic2anyPromise = null; // permite reintentar (p.ej. red recuperada)
+        throw err;
+      });
+  }
+  return heic2anyPromise;
+}
+
+/** HEIC/HEIF (o .jpg con contenido HEIC) → JPEG decodificable. */
+async function convertHeicToJpegBlob(source: Blob): Promise<Blob> {
+  const convert = await loadHeic2Any();
+  const out = await convert({ blob: source, toType: "image/jpeg", quality: 0.92 });
+  return Array.isArray(out) ? out[0] : out;
+}
+
+/** Intenta decodificar un Blob con la cascada NATIVA del navegador y
+ *  devolver un data URL JPEG topeado. Devuelve null si nada funciona
+ *  (HEIC en Android llega aquí y devuelve null → activa el rescate F-HEIC). */
+async function nativeDecodeToCappedDataUrl(blob: Blob): Promise<string | null> {
   if (typeof createImageBitmap === "function") {
     const attempts: Array<Promise<ImageBitmap>> = [];
     try {
       attempts.push(
-        createImageBitmap(file, { imageOrientation: "from-image" } as ImageBitmapOptions)
+        createImageBitmap(blob, { imageOrientation: "from-image" } as ImageBitmapOptions)
       );
     } catch {
       /* opciones no soportadas */
     }
-    attempts.push(createImageBitmap(file));
+    attempts.push(createImageBitmap(blob));
     for (const attempt of attempts) {
       let bm: ImageBitmap | null = null;
       try {
@@ -165,23 +191,60 @@ export async function fileToCaptureDataUrl(file: File): Promise<string> {
     }
   }
 
-  // 3) objectURL → <img> → canvas (re-encode JPEG normalizado).
-  const objectUrl = URL.createObjectURL(file);
+  // objectURL → <img> → canvas (el navegador decodifica y aplica EXIF al pintar).
+  const objectUrl = URL.createObjectURL(blob);
   try {
     const img = await loadImage(objectUrl);
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-    if (!w || !h) throw new Error("imagen sin dimensiones");
+    if (!w || !h) return null;
     return await sourceToCappedJpegDataUrl(img, w, h);
-  } catch (err) {
-    throw new Error(
-      looksHeic
-        ? "HEIC no soportado por este navegador"
-        : `No se pudo decodificar la imagen${err instanceof Error ? `: ${err.message}` : ""}`
-    );
+  } catch {
+    return null;
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
+}
+
+/**
+ * F-IMPORT — File → data URL de forma ROBUSTA. Los archivos de galería/
+ * cámara nativa llegan a 12–48 MP y con EXIF; la ruta vieja (FileReader →
+ * data URL gigante → <img>) reventaba con fotos grandes y era el origen del
+ * «No se pudo procesar la imagen».
+ *
+ * Cascada (de más barata a más costosa):
+ *  1. Decodificación NATIVA (createImageBitmap con EXIF → bitmap a secas →
+ *     <img> vía objectURL) — ver nativeDecodeToCappedDataUrl.
+ *  2. F-HEIC: si lo nativo falla, conversión con libheif (heic2any) y se
+ *     repite la cascada sobre el JPEG resultante. Cubre HEIC/HEIF real y
+ *     también los «.jpg» que en realidad traen contenido HEIC (típico al
+ *     pasar fotos de iPhone por apps de mensajería/nube). libheif rechaza
+ *     en milisegundos archivos que no sean HEIF (firma ftyp), así que
+ *     intentarlo con un JPEG corrupto no cuesta nada.
+ */
+export async function fileToCaptureDataUrl(file: File): Promise<string> {
+  const looksHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+
+  // 1) Ruta nativa (rápida; iOS decodifica HEIC aquí mismo).
+  const direct = await nativeDecodeToCappedDataUrl(file);
+  if (direct) return direct;
+
+  // 2) Rescate F-HEIC: decodificar con libheif y reintentar sobre el JPEG.
+  let heicConversionAttempted = false;
+  try {
+    const jpeg = await convertHeicToJpegBlob(file);
+    heicConversionAttempted = true;
+    const decoded = await nativeDecodeToCappedDataUrl(jpeg);
+    if (decoded) return decoded;
+  } catch {
+    /* no era HEIC o falló la conversión → error abajo */
+  }
+
+  throw new Error(
+    looksHeic || heicConversionAttempted
+      ? "No se pudo convertir la imagen HEIC"
+      : "No se pudo decodificar la imagen (formato no soportado o archivo corrupto)"
+  );
 }
 
 /** Fuente de imagen para el pipeline: data URL o elemento YA decodificado

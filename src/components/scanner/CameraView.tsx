@@ -220,10 +220,12 @@ function jitteredQuad(): Quad {
  *  4032×3024 ≈ 12.2 MP, aún lejos del límite de canvas de iOS.
  *  Recibe el elemento YA decodificado (decode único de la captura) y devuelve
  *  null si no hace falta re-escalar. */
-function downscaleImage(
+/** C13: ahora ASÍNCRONA con toBlob (no bloquea el hilo ~1 s con imports de
+ *  48 MP — mismo patrón canvasToDataUrl de más abajo). */
+async function downscaleImage(
   img: HTMLImageElement,
   max = 4032
-): string | null {
+): Promise<string | null> {
   const big = Math.max(img.naturalWidth || 0, img.naturalHeight || 0);
   if (big <= max || !big) return null;
   const scale = max / big;
@@ -234,6 +236,21 @@ function downscaleImage(
   if (!ctx) return null;
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  try {
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((b) => resolve(b), "image/jpeg", 0.95)
+    );
+    if (blob && blob.size > 0) {
+      return await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(blob);
+      });
+    }
+  } catch {
+    /* respaldo abajo */
+  }
   try {
     return canvas.toDataURL("image/jpeg", 0.95);
   } catch {
@@ -400,6 +417,14 @@ export default function CameraView() {
   const lastTelemetryAt = useRef(0);
 
   const [status, setStatus] = useState<CameraStatus>("idle");
+  // B2: aviso persistente cuando el permiso de cámara fue DENEGADO — la app
+  // cae al modo simulado (como siempre), pero ahora con overlay + CTA
+  // «Activar cámara» en vez de dejar al usuario creer que escanea de verdad.
+  const [camNotice, setCamNotice] = useState<null | "denied">(null);
+  // B3: nonce para re-arrancar el efecto de arranque cuando el track muere
+  // (permiso revocado, otra app roba la cámara) — antes el preview quedaba
+  // congelado sin recuperación.
+  const [camRestartNonce, setCamRestartNonce] = useState(0);
   const [stable, setStable] = useState(false); // solo fallback simulado
   const [quad, setQuad] = useState<Quad>(() => defaultQuad());
   const [processing, setProcessing] = useState(false);
@@ -509,7 +534,7 @@ export default function CameraView() {
         // reutiliza en las tres etapas; solo se re-decodifica si hubo que
         // re-escalar una imagen de galería más grande que el sensor.
         const decoded = await loadImage(rawDataUrl);
-        const scaledUrl = downscaleImage(decoded);
+        const scaledUrl = await downscaleImage(decoded);
         const dataUrl = scaledUrl ?? rawDataUrl;
         const source: HTMLImageElement | HTMLCanvasElement = scaledUrl
           ? await loadImage(scaledUrl)
@@ -635,7 +660,11 @@ export default function CameraView() {
     /** Mejor frame por lapVar → encode SOLO del ganador → dispatch. */
     const dispatchBestFrame = async (framesRaw: Array<BurstFrame | null>) => {
       const frames = framesRaw.filter((f): f is BurstFrame => f !== null);
-      if (frames.length === 0) return;
+      if (frames.length === 0) {
+        // B8: el disparo no debe perderse en silencio.
+        toast.error("No se pudo capturar", { description: "Inténtalo de nuevo." });
+        return;
+      }
       const measured = frames.filter((f) => f.m !== null);
       const winner =
         measured.length === 0
@@ -643,7 +672,12 @@ export default function CameraView() {
           : measured.reduce((a, b) => (b.m!.lapVar > a.m!.lapVar ? b : a));
       const url = await canvasToDataUrl(winner.canvas);
       for (const f of frames) releaseFrame(f);
-      if (url) void handleCaptureDataUrl(url);
+      if (url) {
+        void handleCaptureDataUrl(url);
+      } else {
+        // B8: encode falló → feedback en vez de descartar el disparo.
+        toast.error("No se pudo capturar", { description: "Inténtalo de nuevo." });
+      }
     };
 
     // §5.4 — frame A ANTES de la foto: si takePhoto cuelga 5 s y cae,
@@ -753,10 +787,11 @@ export default function CameraView() {
     captureInputRef.current?.click();
   }, [hasStream, status, captureSmart, captureDemo]);
 
-  // F-IMPORT (robusto): el File se decodifica NATIVAMENTE con
-  // createImageBitmap (aplica orientación EXIF y soporta imágenes enormes
-  // sin pasar por data URL de decenas de MB). Fallbacks en cascada dentro
-  // de fileToCaptureDataUrl; el mensaje de error distingue formato.
+  // F-IMPORT (robusto) + F-HEIC: el File se decodifica con la cascada nativa
+  // (createImageBitmap con EXIF → <img>) y, si el navegador no abre el formato
+  // (HEIC en Android/Chrome, o «.jpg» con contenido HEIC), se convierte con
+  // libheif (heic2any) dentro de fileToCaptureDataUrl. La conversión puede
+  // tardar unos segundos en fotos de 12 MP → toast de progreso.
   const onFilePicked = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -767,16 +802,25 @@ export default function CameraView() {
         toast.error("El archivo seleccionado no es una imagen");
         return;
       }
+      const looksHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+      // Heurística: los «.jpg» de iPhone transportados por apps pueden traer
+      // contenido HEIC; si la decodificación nativa falla también irán al
+      // rescate, pero no podemos saberlo de antemano → toast solo si es HEIC.
+      const toastId = looksHeic
+        ? toast.loading("Convirtiendo HEIC… (puede tardar unos segundos)")
+        : undefined;
       void (async () => {
         try {
           const dataUrl = await fileToCaptureDataUrl(file);
+          if (toastId !== undefined) toast.success("Imagen lista", { id: toastId, duration: 1500 });
           await handleCaptureDataUrl(dataUrl);
         } catch (err) {
           const msg = err instanceof Error ? err.message : "";
+          if (toastId !== undefined) toast.dismiss(toastId);
           if (/heic|heif/i.test(msg)) {
-            toast.error("Tu navegador no abre este formato (HEIC). Conviértelo a JPG e inténtalo de nuevo.", { duration: 7000 });
+            toast.error("No se pudo convertir el HEIC", { description: "El archivo parece dañado o protegido. Prueba con otro." });
           } else {
-            toast.error("No se pudo procesar la imagen", { description: "Prueba con un JPG o PNG más pequeño." });
+            toast.error("No se pudo procesar la imagen", { description: "El archivo puede estar corrupto o ser un formato no soportado." });
           }
         }
       })();
@@ -828,6 +872,22 @@ export default function CameraView() {
       }
       streamRef.current = stream;
       setStatus("live");
+      setCamNotice(null); // B2: si había aviso de permiso, ya no aplica
+      // B3: si el track muere (permiso revocado a mitad de sesión, otra app
+      // roba la cámara, desconexión de webcam) → re-arranca el flujo completo
+      // (sondas incluidas) en vez de dejar el preview negro/congelado.
+      // NOTA: track.stop() NO dispara "ended" — no hay bucle con el cleanup.
+      const endedTrack = stream.getVideoTracks()[0];
+      if (endedTrack) {
+        endedTrack.onended = () => {
+          if (cancelled) return;
+          toast.error("Se perdió la cámara", {
+            description: "Reconectando…",
+            duration: 4000,
+          });
+          setCamRestartNonce((n) => n + 1);
+        };
+      }
       // §5.2 — Safari/iOS NO implementa ImageCapture en NINGUNA versión:
       // el shutter manual abrirá la cámara nativa y la auto-captura usará
       // frames de video (≤ 1080p). Toast único por sesión (§5.2).
@@ -845,6 +905,12 @@ export default function CameraView() {
       setTorchAvailable(true);
       if (flashRef.current) applySavedTorchWithRetry();
     };
+
+    /** B2: ¿el error es de PERMISO denegado (a diferencia de “no hay
+     *  cámara” NotFoundError u “ocupada” NotReadableError)? */
+    const isPermError = (e: unknown): boolean =>
+      e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError");
+    let permissionDenied = false;
 
     /** E3: cascada de apertura — presupuesto de píxeles (ancho ideal 3840,
      *  SIN alto ni ratio). F-LENS: el primer intento fuerza EXACT la trasera
@@ -869,7 +935,8 @@ export default function CameraView() {
       for (const c of attempts) {
         try {
           return await media.getUserMedia(c);
-        } catch {
+        } catch (err) {
+          if (isPermError(err)) permissionDenied = true;
           /* siguiente nivel */
         }
       }
@@ -891,7 +958,8 @@ export default function CameraView() {
       try {
         const unlock = await media.getUserMedia({ video: true, audio: false });
         unlock.getTracks().forEach((t) => t.stop());
-      } catch {
+      } catch (err) {
+        if (isPermError(err)) permissionDenied = true;
         /* sin permiso: los probes fallarán y se cae al cascade */
       }
       // 2) Sondeo secuencial: cada cámara se ABRE, se MIDE y se CIERRA.
@@ -976,7 +1044,8 @@ export default function CameraView() {
             /* solo telemetría */
           }
           return stream;
-        } catch {
+        } catch (err) {
+          if (isPermError(err)) permissionDenied = true;
           /* siguiente nivel */
         }
       }
@@ -989,6 +1058,9 @@ export default function CameraView() {
       let stream = await openMainCamera();
       if (!stream) stream = await openWithCascade();
       if (!stream) {
+        // B2: permiso denegado explícitamente → aviso con CTA (el modo
+        // simulado sigue activo debajo para no dejar la pantalla muerta).
+        if (!cancelled && permissionDenied) setCamNotice("denied");
         if (!cancelled) void startSynthetic();
         return;
       }
@@ -1014,12 +1086,16 @@ export default function CameraView() {
 
     return () => {
       cancelled = true;
-      streamRef.current?.getTracks().forEach((t) => t.stop());
+      // B3: desuscribir el listener del track antes de pararlo (stop() no
+      // dispara "ended", pero evitamos cualquier callback rezagado).
+      const t = streamRef.current?.getVideoTracks()[0];
+      if (t) t.onended = null;
+      streamRef.current?.getTracks().forEach((st) => st.stop());
       streamRef.current = null;
       syntheticRef.current?.stop();
       syntheticRef.current = null;
     };
-  }, [applySavedTorchWithRetry]);
+  }, [applySavedTorchWithRetry, camRestartNonce]);
 
   // Asigna el stream al <video> (real o sintético)
   useEffect(() => {
@@ -1038,6 +1114,39 @@ export default function CameraView() {
     video.addEventListener("playing", onPlaying);
     return () => video.removeEventListener("playing", onPlaying);
   }, [hasStream, status, applySavedTorchWithRetry]);
+
+  // B2 — CTA «Activar cámara»: reintenta getUserMedia; si el usuario concedió
+  // el permiso en ajustes del navegador, adopta el stream real en caliente
+  // (mismas transiciones que applyStream: status live + torch + canvas).
+  const retryRealCamera = useCallback(async () => {
+    const media = navigator.mediaDevices;
+    if (!media || typeof media.getUserMedia !== "function") return;
+    try {
+      const stream = await media.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false,
+      });
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      syntheticRef.current?.stop();
+      syntheticRef.current = null;
+      const endedTrack = stream.getVideoTracks()[0];
+      if (endedTrack) {
+        endedTrack.onended = () => setCamRestartNonce((n) => n + 1);
+      }
+      streamRef.current = stream;
+      setCamNotice(null);
+      setStatus("live");
+      canTakePhotoRef.current = typeof ImageCapture !== "undefined";
+      setTorchAvailable(true);
+      if (flashRef.current) applySavedTorchWithRetry();
+    } catch {
+      toast.error("Sigue sin permiso", {
+        description:
+          "Toca el candado 🔒 en la barra de direcciones › Permisos › Cámara › Permitir, y vuelve a intentar.",
+        duration: 9000,
+      });
+    }
+  }, [applySavedTorchWithRetry]);
 
   // Dimensiones del video (para el mapeo object-cover del overlay)
   const onVideoMeta = useCallback(() => {
@@ -1470,6 +1579,50 @@ export default function CameraView() {
               <div className="flex items-center gap-2 rounded-full bg-black/60 px-3.5 py-1.5 backdrop-blur-sm">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-[#007aff]" aria-hidden="true" />
                 <p className="text-[12px] font-medium text-white/85">Buscando documento…</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* B2 — aviso de permiso de cámara denegado (modo simulado debajo) */}
+        <AnimatePresence>
+          {camNotice === "denied" && (
+            <motion.div
+              key="cam-denied"
+              initial={{ opacity: 0, y: -12, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -12, scale: 0.97 }}
+              transition={{ duration: 0.22 }}
+              role="alert"
+              className="absolute inset-x-4 top-[calc(env(safe-area-inset-top)+60px)] z-40 rounded-2xl bg-[#1c1c1e]/95 p-4 shadow-[0_8px_32px_rgba(0,0,0,0.45)] ring-1 ring-white/10 backdrop-blur-md"
+            >
+              <div className="flex items-start gap-3">
+                <span aria-hidden="true" className="text-[22px] leading-none">📷</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[15px] font-semibold text-white">
+                    Sin acceso a la cámara
+                  </p>
+                  <p className="mt-1 text-[13px] leading-snug text-white/70">
+                    Permiso denegado: lo que ves es un modo simulado. Toca el candado
+                    🔒 en la barra de direcciones › Permisos › Cámara › Permitir.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void retryRealCamera()}
+                      className="flex h-9 items-center justify-center rounded-full bg-[#007aff] px-4 text-[13.5px] font-semibold text-white transition-all active:scale-95"
+                    >
+                      Activar cámara
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCamNotice(null)}
+                      className="flex h-9 items-center justify-center rounded-full bg-white/10 px-4 text-[13.5px] font-semibold text-white/80 ring-1 ring-inset ring-white/15 transition-all active:scale-95"
+                    >
+                      Ocultar
+                    </button>
+                  </div>
+                </div>
               </div>
             </motion.div>
           )}

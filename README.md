@@ -2,9 +2,24 @@
 
 Aplicación web de digitalización de documentos con estética **pixel-perfect de iOS**, construida como reproducción fiel de 4 diseños originales (Cámara, Editor de perspectiva, Digitalización y Biblioteca). Toda la interfaz está en **español**.
 
-![Versión](https://img.shields.io/badge/versión-3.0.0-007AFF)
+![Versión](https://img.shields.io/badge/versión-5.0.0-007AFF)
 ![Framework](https://img.shields.io/badge/Next.js-16-black)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-34C759)
+
+---
+
+## 🆕 Novedades v5.0.0
+
+- **PWA instalable**: «Instalar app» desde Ajustes (Android/Chrome: prompt nativo · iOS: guía de «Añadir a pantalla de inicio»), Service Worker network-first (sin caché vieja al actualizar) y funcionar **sin conexión**
+- **Benchmark del dispositivo**: Ajustes › Rendimiento del dispositivo mide CPU/canvas y ajusta la resolución de procesado (4032/3200/2560 px) para que ningún teléfono se cuelgue
+- **Perspectiva mejorada**: cascada de detección multi-umbral (papeles con poco contraste y bordes rotos ya se detectan) y warp a resolución completa del sensor (4032)
+- **Rotación instantánea** (~0,2 s): rotar ya NO reprocesa el documento completo
+- **Guardar como imagen**: botón «Imagen» en el editor descarga la página actual en PNG
+- **Importación robusta**: las fotos de galería/cámara nativa (12–48 MP, EXIF, HEIC) ya no fallan con «No se pudo procesar la imagen»
+- **Soporte HEIC completo**: las fotos HEIC/HEIF de iPhone se convierten solas en el navegador (libheif embebido, descarga bajo demanda) — también en Android/Chrome y en los «.jpg» que en realidad traen contenido HEIC
+- **Filtro por defecto «B/N adaptativo»** en cada captura nueva
+- **Ajustes simplificados**: sin perfiles de documento (detección siempre automática) y sin la página de demo en el editor
+- **Dimensiones móviles**: viewport-fit=cover + dvh (sin huecos con las barras del navegador ni recortes en la PWA instalada)
 
 ---
 
@@ -29,7 +44,7 @@ Aplicación web de digitalización de documentos con estética **pixel-perfect d
 - Badge de calidad (nitidez Laplaciano + contraste + brillo), stats de tamaño/páginas
 - **Miniaturas desplegables** (mostrar/ocultar) y **navegación deslizando** horizontalmente entre páginas
 - Carrusel de miniaturas + "Añadir página", acciones Recortar / Rotar / **Filtros** / Eliminar
-- 7 filtros reales: Automático, Grises, B/N (Otsu), Whiteboard, Documento, Color, Original — con suavizado bilineal del mapa de iluminación (sin píxeles saltantes en «Texto claro»)
+- 3 filtros reales: **Original**, **Texto claro** y **B/N adaptativo** (por defecto en cada captura nueva) — con suavizado bilineal del mapa de iluminación (sin píxeles saltantes en «Texto claro»); los 8 filtros históricos se migran automáticamente al abrir documentos viejos
 - **Zoom por pinza/doble-toque** y **comparación antes/después**: mantén pulsada la imagen para ver el original
 - Modo presentación a pantalla completa con gestos (pinza, pan, doble-tap)
 
@@ -100,7 +115,7 @@ Abre <http://localhost:3000> en el navegador.
 | `bun run lint` | ESLint |
 | `bun run db:push` | Sincronizar el schema de Prisma con SQLite *(no requerido por el escáner)* |
 
-> **Nota sobre el OCR:** la app intenta primero `/api/ocr` (modelo de visión, disponible en desarrollo/servidor). Si el despliegue es estático (GitHub Pages) o el servidor falla, **funciona igual con Tesseract.js local** (spa+eng, ~3 MB descargados la primera vez). Filtros, detección de bordes, recorte y PDF son 100 % locales en el navegador.
+> **Nota sobre el OCR:** en desarrollo con servidor la app puede usar `/api/ocr` (modelo de visión). En el despliegue estático de GitHub Pages **funciona 100 % con Tesseract.js local** (spa+eng, ~3 MB descargados la primera vez) sin intentar la ruta de servidor. Filtros, detección de bordes, recorte, rotación y PDF son 100 % locales en el navegador: **ni tus documentos ni tus fotos salen de tu dispositivo**.
 
 ---
 
@@ -113,11 +128,8 @@ Abre <http://localhost:3000> en el navegador.
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx                  # Shell con phone-frame (única ruta visible)
-│   │   ├── layout.tsx                # Metadata + tema
-│   │   ├── globals.css               # Sistema de diseño iOS (#007AFF, #F2F2F7…)
-│   │   └── api/
-│   │       ├── ocr/route.ts          # OCR con glm-4.6v
-│   │       └── scan/process/route.ts # Pipeline de precisión server-side
+│   │   ├── layout.tsx                # Metadata + PWA (manifest, iconos, safe-areas)
+│   │   └── globals.css               # Sistema de diseño iOS (#007AFF, #F2F2F7…)
 │   ├── components/
 │   │   ├── scanner/                  # Vistas (Camera, Editor, Library, Onboarding, Settings…)
 │   │   └── ui/                       # shadcn/ui
@@ -125,10 +137,12 @@ Abre <http://localhost:3000> en el navegador.
 │       ├── types.ts                  # Tipos del dominio (ScanPage, Quad, filtros…)
 │       ├── store.ts                  # Store Zustand de la app (+ papelera)
 │       ├── page-store.ts             # Persistencia IndexedDB
-│       ├── image-processor.ts        # Filtros, recorte, rotación, calidad (hasta 4032 px)
+│       ├── image-processor.ts        # Filtros, recorte, rotación, calidad (hasta 4032 px) + importación robusta (HEIC incluido)
 │       ├── detector-client.ts        # Cliente del Web Worker de detección
+│       ├── device-capability.ts      # Benchmark del dispositivo (F-DEVBENCH)
+│       ├── pwa.ts                    # Registro del Service Worker + prompt de instalación
 │       ├── image-modes.ts            # Filtros por píxel (Texto claro con suavizado bilineal)
-│       ├── ocr.ts                    # OCR dual (servidor → Tesseract local)
+│       ├── ocr.ts                    # OCR local (Tesseract) con salvavidas de servidor
 │       ├── text-export.ts            # Exportar/copiar/compartir texto OCR
 │       ├── quality.ts                # Métricas de calidad de captura
 │       ├── pdf-export.ts             # Exportación PDF (jsPDF)

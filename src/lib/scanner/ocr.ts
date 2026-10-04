@@ -1,8 +1,10 @@
 /**
- * OCR compartido — helpers cliente para el endpoint /api/ocr.
+ * OCR compartido — motor local Tesseract.js (spa+eng) con salvavidas de
+ * servidor: si existe /api/ocr (deploy con backend) se usa primero; en
+ * despliegues estáticos (GitHub Pages) corre 100% en el dispositivo.
  *
- * Extraídos de DocumentDetailView para reutilizarlos en:
- *  · DocumentDetailView  → OCR de una página / de todo el documento.
+ * Consumidores:
+ *  · EditorView          → OCR de una página / de todo el documento.
  *  · LibraryView         → OCR por lotes sobre la selección múltiple.
  */
 
@@ -126,9 +128,16 @@ async function runOcrLocal(
   }
 }
 
-/** Intento por el endpoint del servidor (vision-model). Lanza si falla. */
+/** Intento por el endpoint del servidor (vision-model). Lanza si falla.
+ *  A2: en build estático (Pages) ni se intenta — el fetch absoluto
+ *  "/api/ocr" provocaba un round-trip 404 antes de CADA OCR. Y si hay
+ *  servidor, se prefija el basePath (necesario bajo /web-scanner/). */
 async function requestOcrServer(image: string): Promise<string> {
-  const res = await fetch("/api/ocr", {
+  if (process.env.NEXT_PUBLIC_STATIC === "1") {
+    throw new Error("despliegue estático: OCR local");
+  }
+  const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  const res = await fetch(`${base}/api/ocr`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image }),

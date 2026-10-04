@@ -614,9 +614,13 @@ export default function EditorView() {
       const el = zoomStageRef.current;
       if (!el) return;
       // F-NAV (lección de la presentación): solo capturar cuando el down cae
-      // en el propio stage — si cae en un hijo (chip de zoom) su click debe
-      // vivir (setPointerCapture en el ancestro se lo roba).
-      if (e.target === e.currentTarget) {
+      // en el propio stage — si cae en un hijo interactivo (botón/chip) su
+      // click debe vivir. B1: el guard anterior (target === currentTarget)
+      // NUNCA se cumplía (el stage siempre está cubierto por hijos: degradado
+      // inset-0 + wrapper de imagen) → ni setPointerCapture (el swipe se
+      // cortaba al salir del stage) ni compare funcionaban.
+      const onInteractive = !!(e.target as HTMLElement | null)?.closest?.("button");
+      if (!onInteractive) {
         try {
           el.setPointerCapture(e.pointerId);
         } catch {
@@ -651,8 +655,13 @@ export default function EditorView() {
         };
         // F-ZOOM: a escala 1× el "mantener pulsado" compara ORIGINAL vs
         // procesado (como Fotos de iOS); ampliado, el mismo dedo hace PAN.
-        if (zoomScale.get() <= 1.01 && (e.button === 0 || e.pointerType !== "mouse")) {
-          if (e.target === e.currentTarget) startCompareTimer();
+        // B1: activar salvo que el toque sea sobre un botón.
+        if (
+          zoomScale.get() <= 1.01 &&
+          (e.button === 0 || e.pointerType !== "mouse") &&
+          !onInteractive
+        ) {
+          startCompareTimer();
         }
       }
     },
@@ -776,7 +785,7 @@ export default function EditorView() {
 
   /** Rueda del ratón (escritorio): zoom anclado al cursor. */
   const onStageWheel = useCallback(
-    (e: ReactWheelEvent<HTMLDivElement>) => {
+    (e: WheelEvent) => {
       if (!e.deltaY) return;
       e.preventDefault();
       const p = zoomRelToCenter(e.clientX, e.clientY);
@@ -785,6 +794,16 @@ export default function EditorView() {
     },
     [zoomRelToCenter, zoomAtPoint, zoomScale]
   );
+
+  // B10: el `onWheel` de React es PASIVO (preventDefault = no-op) y el zoom
+  // del navegador se colaba detrás del stage. Listener nativo {passive:false},
+  // igual que hace PresentationView.
+  useEffect(() => {
+    const el = zoomStageRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", onStageWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onStageWheel);
+  }, [onStageWheel]);
 
   const zoomed = zoomPct > 101;
 
@@ -1567,7 +1586,9 @@ export default function EditorView() {
         id: p.id,
         original: p.original,
         processed: url ?? p.processed ?? p.original,
-        thumbnail: p.original,
+        // C3: miniatura REAL (~160 px, coherente con la procesada) — pasar el
+        // original hacía decodificar N fotos completas para pintar pies de 40×52.
+        thumbnail: p.thumbnail ?? p.original,
         filter: p.filter,
         quad: p.quad,
         quadManual: p.quadManual,
@@ -1685,7 +1706,6 @@ export default function EditorView() {
             onPointerUp={onStagePointerUp}
             onPointerLeave={onStagePointerUp}
             onPointerCancel={onStagePointerUp}
-            onWheel={onStageWheel}
             onContextMenu={(e) => e.preventDefault()}
           >
             <div
@@ -1893,7 +1913,7 @@ export default function EditorView() {
                   )}
                 >
                   <img
-                    src={p.original}
+                    src={p.thumbnail ?? p.original}
                     alt=""
                     draggable={false}
                     style={{ filter: CSS_FILTERS[p.filter] ?? "none" }}
