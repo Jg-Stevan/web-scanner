@@ -21,6 +21,12 @@ Aplicación web de digitalización de documentos con estética **pixel-perfect d
 - **Ajustes simplificados**: sin perfiles de documento (detección siempre automática) y sin la página de demo en el editor
 - **Dimensiones móviles**: viewport-fit=cover + dvh (sin huecos con las barras del navegador ni recortes en la PWA instalada)
 
+## 🆕 Novedades v6.1
+
+- **Prioridad de resolución en la captura (gama baja)**: la foto a resolución del sensor SIEMPRE gana — un fotograma de vista previa de 720p/1080p ya no puede sustituirla (antes, en teléfonos de entrada, la imagen guardada quedaba ilegible). Si la foto del sensor tarda demasiado (>8 s) se avisa y el fotograma se usa solo como último recurso
+- **OCR bajo demanda**: el reconocimiento automático al capturar se apaga por defecto (Ajustes › OCR automático) para ahorrar memoria y batería; el texto se extrae cuando quieras con el botón «Texto» del editor
+- **Procesado mínimo de 3200 px también en gama baja**: más lento en dispositivos de entrada, pero el texto nunca deja de ser legible
+
 ---
 
 ## ✨ Funcionalidades

@@ -8,7 +8,8 @@
  *
  *   high   → 4032 px (foto completa del sensor)
  *   medium → 3200 px
- *   low    → 2560 px (evita jetsam/OOM en gama baja)
+ *   low    → 3200 px (F-RES-PRIORITY v6.1: antes 2560 — la legibilidad del
+ *            texto es intocable; con el OCR manual la presión de memoria baja)
  *
  * El resultado se cachea 7 días en localStorage (localStorage disponible
  * siempre que exista window; en SSR/privado falla en silencio) y se puede
@@ -57,8 +58,8 @@ const TIER_META: Record<DeviceTier, { label: string; hint: string; cap: number }
   },
   low: {
     label: "Baja",
-    hint: "Dispositivo ajustado: se procesa a 2560 px para que la app no se cuelgue.",
-    cap: 2560,
+    hint: "Dispositivo ajustado: 3200 px, más lento pero el texto siempre es legible.",
+    cap: 3200,
   },
 };
 

@@ -286,13 +286,13 @@ export default function SettingsView() {
             />
           </SettingsRow>
           <SettingsRow
-            title="Reconocimiento OCR"
-            subtitle="Extrae el texto de cada página en segundo plano al capturar"
+            title="OCR automático"
+            subtitle="Reconoce el texto al capturar. Apagado por defecto para ahorrar memoria: usa el botón «Texto» del editor cuando lo necesites"
           >
             <Switch
               checked={settings.ocrEnabled}
               onCheckedChange={(v) => updateSettings({ ocrEnabled: v })}
-              aria-label="Reconocimiento OCR"
+              aria-label="OCR automático"
               className={SWITCH_IOS}
             />
           </SettingsRow>

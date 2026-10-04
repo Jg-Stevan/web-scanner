@@ -52,7 +52,6 @@ import {
   getScannerWorker,
   loadImage,
 } from "@/lib/scanner/image-processor";
-import { BLUR_THRESHOLD } from "@/lib/scanner/quality";
 import {
   CameraFrameLoop,
   SyntheticCamera,
@@ -274,13 +273,6 @@ interface BurstFrame {
   m: BurstMeasures | null;
 }
 
-/** Candidata del ranking §5.4: frame de video o foto ya convertida. */
-interface BurstCand {
-  m: BurstMeasures | null;
-  frame: BurstFrame | null;
-  photoUrl: string | null;
-}
-
 /** Laplaciano 3×3 (varianza) + histograma de exposición (under < 30,
  *  over > 225) sobre la luma de un canvas de ≤ 400 px — la misma
  *  matemática del motor (quality.ts) que exige §5.4. */
@@ -329,46 +321,6 @@ function measurePixels(src: CanvasImageSource, sw: number, sh: number): BurstMea
     gray[j] = 0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!;
   }
   return measureGray(gray, w, h);
-}
-
-/** Mide el blob de la foto (takePhoto) por ruta NATIVA: createImageBitmap
- *  → 400 px → medidas → bitmap.close() INMEDIATO (R-14). El decode lo hace
- *  el navegador (sin data-URL ni <img>: la versión anterior decodificaba la
- *  foto de 12 MP DOS veces y costaba ~0.5 s por captura). Si conocemos el
- *  aspecto del track (la foto comparte el del sensor) se pide el decode YA
- *  escalado a ~400 px — escalado DCT del decoder, ~5-10× más rápido que
- *  decodificar los 12 MP completos. LapVar y exposición son invariantes a
- *  rotación/EXIF y al reescalado suave → medición equivalente a §5.4. */
-async function measureBlobFast(
-  blob: Blob,
-  trackAspect?: number
-): Promise<BurstMeasures | null> {
-  try {
-    if (typeof createImageBitmap !== "function") return null;
-    let bitmap: ImageBitmap;
-    if (trackAspect && trackAspect > 0.05) {
-      // Lado mayor = 400 px, aspect del track (±delta no afecta el gate:
-      // lapVar/exposición son robustas al reescalado suave).
-      const w = Math.round(400 * Math.min(1, trackAspect));
-      const h = Math.round(w / trackAspect);
-      try {
-        bitmap = await createImageBitmap(blob, {
-          resizeWidth: Math.max(1, w),
-          resizeHeight: Math.max(1, h),
-          resizeQuality: "low",
-        });
-      } catch {
-        bitmap = await createImageBitmap(blob);
-      }
-    } else {
-      bitmap = await createImageBitmap(blob);
-    }
-    const m = measurePixels(bitmap, bitmap.width, bitmap.height);
-    bitmap.close();
-    return m;
-  } catch {
-    return null;
-  }
 }
 
 /** R-14 — suelta YA el backing store del canvas perdedor (no espera al GC;
@@ -592,7 +544,7 @@ export default function CameraView() {
       const blob = await Promise.race([
         capture.takePhoto(),
         new Promise<never>((_, reject) =>
-          window.setTimeout(() => reject(new Error("takePhoto timeout")), 5000)
+          window.setTimeout(() => reject(new Error("takePhoto timeout 8s")), 8000)
         ),
       ]);
       return blob && blob.size > 0 ? blob : null;
@@ -640,22 +592,19 @@ export default function CameraView() {
     return { canvas, m: measurePixels(canvas, canvas.width, canvas.height) };
   }, []);
 
-  /** Captura inteligente (E3 + §5.4) — CAMINO FELIZ = velocidad v12:
-   *  1. Frame A: solo píxeles + medidas (sin JPEG, sin decode extra).
-   *  2. Foto hi-res (blob) → medición NATIVA ‖ data URL en PARALELO.
-   *  3. La foto pasa (lapVar ≥ 100 ∧ exposure ≥ 0.5) → dispatch YA:
-   *     cero encodes de frames, cero decodes extra de la foto.
-   *  Solo si la foto cae o NO pasa: burst completo (A, foto, B), ranking
-   *  por lapVar — ganador = photoPass ?? best (§5.4) — y se encodea
-   *  ÚNICAMENTE el ganador; los perdedores se liberan al instante (R-14).
-   *  Cooldown anti doble-disparo 1500 ms (§5.2). */
+  /** Captura inteligente (E3 + F-RES-PRIORITY v6.1) — la FOTO MANDA:
+   *  1. Frame A: solo píxeles + medidas (respaldo sin coste).
+   *  2. Foto hi-res del sensor (takePhoto, carrera de 8 s) → data URL.
+   *  3. Si hay foto → dispatch YA (los frames se descartan, R-14).
+   *  Los frames de video SOLO se guardan si takePhoto no existe o colgó:
+   *  nunca reemplazan una foto existente (el gate de nitidez de v5 hacía
+   *  que en gama baja un frame de 720p «nítido» sustituyera a la foto de
+   *  3264 px → texto ilegible). Cooldown anti doble-disparo 1500 ms (§5.2). */
   const captureSmart = useCallback(async () => {
     if (processingRef.current) return;
     if (cooldownRef.current > Date.now()) return;
     loopRef.current?.notifyCaptured();
     cooldownRef.current = Date.now() + 1500;
-
-    const EXPOSURE_MIN = 0.5;
 
     /** Mejor frame por lapVar → encode SOLO del ganador → dispatch. */
     const dispatchBestFrame = async (framesRaw: Array<BurstFrame | null>) => {
@@ -680,11 +629,19 @@ export default function CameraView() {
       }
     };
 
-    // §5.4 — frame A ANTES de la foto: si takePhoto cuelga 5 s y cae,
+    // §5.4 — frame A ANTES de la foto: si takePhoto cuelga y cae (8 s),
     // ya queda un candidato válido medido.
     const snapA = snapshotVideo();
     const photoBlob = canTakePhotoRef.current ? await takePhotoBlob() : null;
     if (!photoBlob) {
+      // takePhoto colgó (> 8 s) o no existe: avisamos solo con stream real —
+      // el fotograma de preview (720p/1080p) es un recurso, no el estándar.
+      if (status === "live") {
+        toast.warning("Cámara lenta: baja resolución esta vez", {
+          description:
+            "La foto de alta resolución no respondió; se guardó el fotograma de vista previa.",
+        });
+      }
       await dispatchBestFrame([snapA, snapshotVideo()]);
       return;
     }
@@ -692,60 +649,26 @@ export default function CameraView() {
     // Bracket §5.4: frame B justo después de la foto (solo píxeles).
     const snapB = snapshotVideo();
 
-    // Aspecto del track → decode escalado de la medición (la foto comparte
-    // el aspecto del sensor; si difiere, el gate sigue siendo válido).
-    const trackSettings = streamRef.current?.getVideoTracks()[0]?.getSettings();
-    const trackAspect =
-      trackSettings?.width && trackSettings?.height
-        ? trackSettings.width / trackSettings.height
-        : undefined;
-
-    let photoM: BurstMeasures | null = null;
+    // F-RES-PRIORITY v6.1 — la foto full-sensor SIEMPRE gana. Antes, si la
+    // foto no pasaba el gate de nitidez (óptica blanda + ruido en gama
+    // baja), el ranking del burst podía preferir un frame de preview MÁS
+    // NÍTIDO pero de 720p/1080p → texto ilegible. La resolución es
+    // intocable: una foto algo blanda a 3264 px siempre supera a un frame
+    // perfecto de 720p (el enhance afina; retomar cuesta un toque).
     let photoUrl: string | null = null;
     try {
-      [photoM, photoUrl] = await Promise.all([
-        measureBlobFast(photoBlob, trackAspect),
-        blobToDataUrl(photoBlob),
-      ]);
+      photoUrl = await blobToDataUrl(photoBlob);
     } catch {
       photoUrl = null; // FileReader falló (rarísimo) → burst de frames
     }
-    if (!photoUrl) {
-      await dispatchBestFrame([snapA, snapB]);
-      return;
-    }
-
-    const photoPass =
-      photoM !== null && photoM.lapVar >= BLUR_THRESHOLD && photoM.exposure >= EXPOSURE_MIN;
-    if (photoPass || photoM === null) {
-      // Camino del ~95 %: la foto pasa el gate (o sin telemetría → la foto
-      // full-sensor es la apuesta del producto) → dispatch INMEDIATO y
-      // frames descartados (R-14). Latencia ≈ v12 (foto → editor).
+    if (photoUrl) {
       releaseFrame(snapA);
       releaseFrame(snapB);
       void handleCaptureDataUrl(photoUrl);
       return;
     }
-
-    // La foto NO pasa (borrosa / mal expuesta) → ranking §5.4 con los tres
-    // medidos; se encodea SOLO el ganador.
-    const cands: BurstCand[] = [];
-    if (snapA) cands.push({ m: snapA.m, frame: snapA, photoUrl: null });
-    cands.push({ m: photoM, frame: null, photoUrl });
-    if (snapB) cands.push({ m: snapB.m, frame: snapB, photoUrl: null });
-    const measuredC = cands.filter((c) => c.m !== null);
-    if (measuredC.length === 0) {
-      releaseFrame(snapA);
-      releaseFrame(snapB);
-      void handleCaptureDataUrl(photoUrl);
-      return;
-    }
-    const bestC = measuredC.reduce((a, b) => (b.m!.lapVar > a.m!.lapVar ? b : a));
-    const url = bestC.frame ? await canvasToDataUrl(bestC.frame.canvas) : photoUrl;
-    releaseFrame(snapA);
-    releaseFrame(snapB);
-    if (url) void handleCaptureDataUrl(url);
-  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl]);
+    await dispatchBestFrame([snapA, snapB]);
+  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status]);
 
   const captureSmartRef = useRef(captureSmart);
   captureSmartRef.current = captureSmart;

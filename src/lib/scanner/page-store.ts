@@ -24,6 +24,10 @@ const SETTINGS_KEY = "escaner-settings-v1";
  *  instalaciones creadas antes del cambio de calidad por defecto (F-OCR).
  *  Si el usuario elige otro valor DESPUÉS de migrar, se respeta siempre. */
 const SETTINGS_MIGRATION_KEY = "escaner-settings-v2-maxq";
+/** F-OCR-MANUAL v6.1: clave aparte para que la migración del OCR corra una
+ *  vez en TODAS las instalaciones (la clave v2-maxq ya está escrita en las
+ *  anteriores y no volvería a ejecutarse). */
+const SETTINGS_MIGRATION_KEY_OCR_OFF = "escaner-settings-v3-ocr-manual";
 
 /** Registro persistido: igual que ScanPage pero con las imágenes como Blob. */
 interface StoredPage extends Omit<ScanPage, "original" | "processed" | "thumbnail"> {
@@ -298,6 +302,13 @@ export function loadSettings(): ScannerSettings {
     if (!localStorage.getItem(SETTINGS_MIGRATION_KEY)) {
       if (parsed.exportQuality === "alta") merged.exportQuality = "máxima";
       localStorage.setItem(SETTINGS_MIGRATION_KEY, "1");
+    }
+    // Migración one-time v6.1: OCR automático → OFF (bajo demanda, botón
+    // «Texto» del editor). Tras esta única pasada el valor persistido
+    // vuelve a ser sagrado: si el usuario lo re-activa, se respeta.
+    if (!localStorage.getItem(SETTINGS_MIGRATION_KEY_OCR_OFF)) {
+      merged.ocrEnabled = false;
+      localStorage.setItem(SETTINGS_MIGRATION_KEY_OCR_OFF, "1");
     }
     return merged;
   } catch {

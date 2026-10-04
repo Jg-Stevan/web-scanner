@@ -191,7 +191,11 @@ export interface ScannerSettings {
 
 export const DEFAULT_SETTINGS: ScannerSettings = {
   enhance: true,
-  ocrEnabled: true,
+  // F-OCR-MANUAL v6.1: el reconocimiento pasa a BAJO DEMANDA (botón «Texto»
+  // del editor) — el auto-OCR consumía memoria/CPU justo en los dispositivos
+  // que menos tienen. La migración one-time en loadSettings fuerza el cambio
+  // también en instalaciones previas.
+  ocrEnabled: false,
   /** "máxima" por defecto (F-OCR): el usuario exige la mayor calidad de
    *  imagen posible para extraer bien el texto. */
   exportQuality: "máxima",
