@@ -58,12 +58,21 @@ import {
   type FrameLoopTelemetry,
 } from "@/lib/scanner/frame-loop";
 import { SHUTTER_SCORE } from "@/lib/scanner/quality";
+import {
+  buildCappedPhotoSettings,
+  clampBlobToSafeCap,
+  getSensorSafeCap,
+  profileSensor,
+  type SensorProfile,
+} from "@/lib/scanner/sensor-profiler";
 
 type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
 
 /* ── Lecciones de compatibilidad del producto (ARQUITECTURA §4) ──────────
- *  E3: presupuesto de píxeles — SOLO ancho ideal 3840, sin alto ni ratio
- *      (el alto lo negocia el navegador; over-constraining = fallos).
+ *  E3: presupuesto de píxeles — SOLO anchos/altos IDEAL, sin exact/min ni
+ *      ratio (ideal nunca rechaza getUserMedia; over-constraining = fallos).
+ *      DUAL PIPELINE v7: el PREVIEW pide 1280×720 (fluido, ~90% menos GPU
+ *      en gama baja) y la CAPTURA va a resolución de SENSOR vía takePhoto().
  *  E4: facingMode NO es confiable en iPhone (puede ganar la frontal o
  *      ignorarse) → tras permiso se re-selecciona por LABEL + deviceId
  *      exact, con facingMode como constrain inicial únicamente.
@@ -81,7 +90,29 @@ type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
  *         reportara torch; hay Chrome que NO lo anuncian pero SÍ lo
  *         aplican → ahora el botón está habilitado en cámara real y la
  *         verdad se descubre APLICANDO y leyendo getSettings().torch. */
-const IDEAL_CAPTURE_WIDTH = 3840;
+// ❌ ANTES: const IDEAL_CAPTURE_WIDTH = 3840 — forzaba el stream de la
+//    vista en vivo a 4K y congelaba gama baja (el <video> continuo a 4K
+//    derrocha GPU: el loop de detección solo procesa a 400 px).
+// ✅ AHORA — ARQUITECTURA DUAL PIPELINE (v2: preview qHD 960×540 + 30 FPS):
+// 1. PREVIEW aún más ligero. Bajar de 720p a 540p NO toca ni el análisis
+//    ni la foto:
+//    · El loop de detección remuestrea SIEMPRE a 400 px
+//      (createImageBitmap resize) → el análisis ve lo mismo desde 540p.
+//    · Los frames del video (ring ZSL / snapshot) son SOLO fallback
+//      cuando no existe ImageCapture → 960 px sigue siendo sobrado.
+//    · La foto real sale del sensor vía takePhoto() (pilar 2, abajo).
+//    Neto: ~44% menos píxeles por frame de decodificado/composición y
+//    tope suave de 30 FPS (el visor no aprovecha 60) → menos calor y
+//    más fluido en gama baja.
+const IDEAL_PREVIEW_WIDTH = 960;
+const IDEAL_PREVIEW_HEIGHT = 540;
+/** Tope suave de FPS del preview: «ideal» NO rechaza cámaras que solo
+ *  ofrecen 60, solo evita negociar 60 cuando el hardware lo permite. */
+const IDEAL_PREVIEW_FPS = 30;
+// 2. LA CAPTURA EN EXCELENTE RESOLUCIÓN (3840px / 12–48 MP) la hace
+//    ImageCapture.takePhoto(), que NO DEPENDE de la resolución del
+//    <video>: dispara directo al sensor físico a la máxima resolución
+//    de la lente (4000×3000 / 3840×2160…) — ver takePhotoBlob().
 const BACK_CAMERA_RE = /back|rear|environment|trasera|posterior|arri[eè]re/i;
 const FRONT_CAMERA_RE = /front|delantera|anterior|face|facial|selfie/i;
 
@@ -214,9 +245,10 @@ function jitteredQuad(): Quad {
 /** Reduce imágenes enormes de galería para no reventar la memoria del store.
  *  4032 (bug v3 de CALIDAD: estaba en 3400 y re-escalaba la foto nativa del
  *  iPhone de 4032px, añadiendo un re-encode JPEG extra — codigo-test guarda
- *  la foto full-res con una sola compresión). Con el tope en la resolución
- *  completa del sensor ya no hay downscale en el flujo normal de captura;
- *  4032×3024 ≈ 12.2 MP, aún lejos del límite de canvas de iOS.
+ *  la foto full-res con una sola compresión). Con el Dual Pipeline ya no hay
+ *  downscale en capturas de GAMAS ALTAS (4032×3024 ≈ 12.2 MP, lejos del
+ *  límite de canvas de iOS); en media/baja el F-SENSOR-PROFILER pide 3200 px
+ *  al sensor y ESTE tope es la segunda red de seguridad (imports incluidos).
  *  Recibe el elemento YA decodificado (decode único de la captura) y devuelve
  *  null si no hace falta re-escalar. */
 /** C13: ahora ASÍNCRONA con toBlob (no bloquea el hilo ~1 s con imports de
@@ -367,6 +399,16 @@ export default function CameraView() {
   /** F-FLASH v3: espejo de torchOn legible desde listeners sin re-render. */
   const torchOnRef = useRef(false);
   const lastTelemetryAt = useRef(0);
+  // F-ZSL — buffer circular Best-Shot: los últimos 8 fotogramas medidos del
+  // <video>. En captura MANUAL el ganador (mayor lapVar) entre 80 y 450 ms
+  // ANTES del tap sustituye a la foto del instante del impacto (el tap shock
+  // sacude mecánicamente el teléfono → foto borrosa; el frame pre-tap ya
+  // está estable y nítido — patrón Zero Shutter Lag de las cámaras nativas).
+  const bestShotRingRef = useRef<
+    Array<{ canvas: HTMLCanvasElement; lapVar: number; timestamp: number }>
+  >([]);
+  const lastRingFeedAt = useRef(0);
+  const ringScratchRef = useRef<HTMLCanvasElement | null>(null);
 
   const [status, setStatus] = useState<CameraStatus>("idle");
   // B2: aviso persistente cuando el permiso de cámara fue DENEGADO — la app
@@ -392,8 +434,24 @@ export default function CameraView() {
    *  Android). En Safari/iOS es false SIEMPRE → el shutter manual abre la
    *  cámara NATIVA (input capture=environment) — HQ-iOS, error #5. */
   const canTakePhotoRef = useRef(false);
+  /** F-SENSOR-PROFILER (PASO 2): perfil del sensor de FOTO del track vivo
+   *  (resolución nativa vía getPhotoCapabilities + tope seguro 4032/3200 px
+   *  según la gama medida). null = aún sin sondear. */
+  const sensorProfileRef = useRef<SensorProfile | null>(null);
   /** Toast único por sesión de aviso calidad en iPhone (auto-captura = frames). */
   const iosQualityToastShownRef = useRef(false);
+
+  /** F-SENSOR-PROFILER: sondea el sensor del stream REAL una vez por
+   *  apertura (getPhotoCapabilities → nativa + tope por gama). Falla en
+   *  silencio (Safari) → takePhoto dispara a secas y el clamp post-decode
+   *  protege la RAM. La Sonda de QA expone el perfil en __sensorProfile. */
+  const profileActiveSensor = useCallback((stream: MediaStream): void => {
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    void profileSensor(track).then((p) => {
+      sensorProfileRef.current = p;
+    });
+  }, []);
 
   autoRef.current = autoCapture;
   flashRef.current = flashOn;
@@ -518,7 +576,13 @@ export default function CameraView() {
         // reutiliza en las etapas; solo se re-decodifica si hubo que
         // re-escalar una imagen de galería más grande que el sensor.
         const decoded = await loadImage(rawDataUrl);
-        const scaledUrl = await downscaleImage(decoded);
+        // F-SENSOR-PROFILER: el tope del downscale sigue la GAMA medida
+        // (4032 alta / 3200 media-baja) — segunda red de seguridad por si
+        // la foto llegó por encima del tope (photoSettings no aplicado).
+        const scaledUrl = await downscaleImage(
+          decoded,
+          sensorProfileRef.current?.safeCapPx ?? getSensorSafeCap()
+        );
         const dataUrl = scaledUrl ?? rawDataUrl;
         const source: HTMLImageElement | HTMLCanvasElement = scaledUrl
           ? await loadImage(scaledUrl)
@@ -547,7 +611,8 @@ export default function CameraView() {
         // La detección vuela en background; cuando aterrice, el preview se
         // re-procesa solo (cambia el quad → capturePageKey → cache miss).
         void applyAutoQuad(page.id, source);
-      } catch {
+      } catch (err) {
+        console.error("handleCaptureDataUrl falló:", err);
         toast.error("No se pudo procesar la imagen");
       } finally {
         processingRef.current = false;
@@ -569,23 +634,47 @@ export default function CameraView() {
     []
   );
 
-  /** E3b — Captura a RESOLUCIÓN DEL SENSOR como Blob (aún SIN convertir a
-   *  data URL): la medición §5.4 (createImageBitmap nativo) y la conversión
-   *  corren EN PARALELO — nunca en serie. Carrera de 5 s (takePhoto puede
-   *  colgarse — error #29); null → el llamador cae a los frames del video.
-   *  La orientación EXIF la aplica el pipeline al decodificar (loadImage). */
+  /** DUAL PIPELINE (pilar 2) — Captura a RESOLUCIÓN DEL SENSOR como Blob
+   *  (aún SIN convertir a data URL): takePhoto() IGNORA la resolución del
+   *  <video> de 540p y dispara directo al sensor físico (12–48 MP, p.ej.
+   *  4000×3000). La medición §5.4 (createImageBitmap nativo) y la
+   *  conversión corren EN PARALELO — nunca en serie. Carrera de 8 s
+   *  (takePhoto puede colgarse — error #29); null → el llamador cae al
+   *  fallback ZSL pre-tap y a los frames del video. La orientación EXIF
+   *  la aplica el pipeline al decodificar (loadImage). */
   const takePhotoBlob = useCallback(async (): Promise<Blob | null> => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track || typeof ImageCapture === "undefined") return null;
     try {
       const capture = new ImageCapture(track);
-      const blob = await Promise.race([
-        capture.takePhoto(),
-        new Promise<never>((_, reject) =>
-          window.setTimeout(() => reject(new Error("takePhoto timeout 8s")), 8000)
-        ),
-      ]);
-      return blob && blob.size > 0 ? blob : null;
+      // Dispara a resolución completa del hardware (4000×3000 / 3840×2160):
+      // sin photoConstraints — el sensor manda, el preview no limita...
+      // EXCEPTO cuando el sensor excede el tope seguro (48/108 MP): el
+      // F-SENSOR-PROFILER pide al ISP una foto dentro del tope EN la captura
+      // (capa 1) y el blob del gigante jamás llega a decodificarse.
+      const profile = sensorProfileRef.current;
+      const settings = profile ? buildCappedPhotoSettings(profile) : undefined;
+      const attempt = async (ps?: PhotoSettings): Promise<Blob | null> => {
+        try {
+          const blob = await Promise.race([
+            capture.takePhoto(ps),
+            new Promise<never>((_, reject) =>
+              window.setTimeout(() => reject(new Error("takePhoto timeout 8s")), 8000)
+            ),
+          ]);
+          return blob && blob.size > 0 ? blob : null;
+        } catch {
+          return null;
+        }
+      };
+      let blob = await attempt(settings);
+      // Reintento sin photoSettings si el ajuste del profiler fue rechazado
+      // (hardware exótico): mejor foto sin tope que perder la captura.
+      if (!blob && settings) blob = await attempt(undefined);
+      if (!blob) return null;
+      // Capa 2 — red de seguridad post-decode (solo recorta si el blob
+      // excede el tope; si no, el blob original pasa intacto).
+      return await clampBlobToSafeCap(blob, profile?.safeCapPx ?? getSensorSafeCap());
     } catch {
       return null;
     }
@@ -615,6 +704,53 @@ export default function CameraView() {
     [blobToDataUrl]
   );
 
+  /** F-ZSL — Buffer circular ZSL en CameraView: copia el fotograma al ring
+   *  (máx 8) y suelta YA el backing store del expulsado (no espera al GC;
+   *  disciplina de memoria iOS, error #22). */
+  const pushRingFrame = useCallback(
+    (canvas: HTMLCanvasElement, lapVar: number) => {
+      const ring = bestShotRingRef.current;
+      const copy = document.createElement("canvas");
+      copy.width = canvas.width;
+      copy.height = canvas.height;
+      copy.getContext("2d")?.drawImage(canvas, 0, 0);
+      ring.push({ canvas: copy, lapVar, timestamp: performance.now() });
+      if (ring.length > 8) {
+        const old = ring.shift();
+        if (old) {
+          old.canvas.width = 0;
+          old.canvas.height = 0;
+        }
+      }
+    },
+    []
+  );
+
+  /** F-ZSL — alimenta el ring desde el <video> vivo a ~5 Hz (mín 200 ms
+   *  entre feeds): garantiza que el buffer SIEMPRE cubra la ventana pre-tap
+   *  de 80–450 ms. Se invoca desde onFrame del loop (ya throttleado por el
+   *  control de cadencia adaptativo de frame-loop.ts — no reintroduce el
+   *  stuttering de gama baja). Reutiliza UN scratch canvas: coste por feed
+   *  ≈ 1 drawImage + 1 copia + 1 medición a 400 px. */
+  const feedRingFromVideo = useCallback((): void => {
+    const now = performance.now();
+    if (now - lastRingFeedAt.current < 200) return;
+    lastRingFeedAt.current = now;
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) return;
+    if (!ringScratchRef.current) ringScratchRef.current = document.createElement("canvas");
+    const scratch = ringScratchRef.current;
+    if (scratch.width !== video.videoWidth || scratch.height !== video.videoHeight) {
+      scratch.width = video.videoWidth;
+      scratch.height = video.videoHeight;
+    }
+    const ctx = scratch.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    const m = measurePixels(scratch, scratch.width, scratch.height);
+    pushRingFrame(scratch, m?.lapVar ?? 0);
+  }, [pushRingFrame]);
+
   /** Instantánea del <video> a resolución del track + medidas §5.4 sobre
    *  ESA MISMA imagen (par píxel-idéntico). Sincronónica (~10 ms) y SIN
    *  encodear JPEG: el encode solo ocurre si el frame gana el burst. */
@@ -627,22 +763,59 @@ export default function CameraView() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0);
-    return { canvas, m: measurePixels(canvas, canvas.width, canvas.height) };
-  }, []);
+    const m = measurePixels(canvas, canvas.width, canvas.height);
+    // F-ZSL: alimenta el buffer Best-Shot con este fotograma medido.
+    pushRingFrame(canvas, m?.lapVar ?? 0);
+    return { canvas, m };
+  }, [pushRingFrame]);
 
-  /** Captura inteligente (E3 + F-RES-PRIORITY v6.1) — la FOTO MANDA:
+  /** Captura inteligente (E3 + DUAL PIPELINE + F-RES-PRIORITY v6.1) —
+   *  la FOTO FULL-SENSOR MANDA (12–48 MP vía takePhoto, independiente
+   *  del preview de 540p):
    *  1. Frame A: solo píxeles + medidas (respaldo sin coste).
    *  2. Foto hi-res del sensor (takePhoto, carrera de 8 s) → data URL.
    *  3. Si hay foto → dispatch YA (los frames se descartan, R-14).
-   *  Los frames de video SOLO se guardan si takePhoto no existe o colgó:
-   *  nunca reemplazan una foto existente (el gate de nitidez de v5 hacía
-   *  que en gama baja un frame de 720p «nítido» sustituyera a la foto de
-   *  3264 px → texto ilegible). Cooldown anti doble-disparo 1500 ms (§5.2). */
+   *  Fallback premium si takePhoto no existe o cuelga: el ganador ZSL
+   *  pre-tap (80–450 ms antes del disparo, anti tap-shock) del buffer
+   *  Best-Shot compite por lapVar con snapA/snapB — antes el fallback
+   *  era un frame capturado EN el instante del tap (sacudido).
+   *  Nunca un frame reemplaza una foto existente (el gate de nitidez de
+   *  v5 hacía que un 720p «nítido» sustituyera a una foto de 3264 px →
+   *  texto ilegible). Cooldown anti doble-disparo 1500 ms (§5.2). */
   const captureSmart = useCallback(async () => {
     if (processingRef.current) return;
     if (cooldownRef.current > Date.now()) return;
     loopRef.current?.notifyCaptured();
     cooldownRef.current = Date.now() + 1500;
+
+    /** F-ZSL — recupera el ganador pre-tap del buffer Best-Shot (mayor
+     *  lapVar entre 80 y 450 ms antes del disparo: el impacto del dedo
+     *  sacude mecánicamente el teléfono, el frame PRE-tap ya está
+     *  estable) y VACÍA el ring. Frame listo para el burst o null. */
+    const takeZslFallback = (): BurstFrame | null => {
+      const nowMs = performance.now();
+      const inWindow = bestShotRingRef.current.filter((f) => {
+        const age = nowMs - f.timestamp;
+        return age >= 80 && age <= 450;
+      });
+      const winner =
+        inWindow.length > 0
+          ? inWindow.reduce((a, b) => (b.lapVar > a.lapVar ? b : a))
+          : null;
+      // El disparo se atiende: libera el ring (disciplina RAM) EXCEPTO el
+      // canvas del ganador — su propiedad pasa al burst (releaseFrame lo
+      // suelta al terminar el dispatch). Ponerlo a 0 aquí rompería el
+      // encode (canvas 0×0 → toBlob null / toDataURL InvalidStateError).
+      for (const f of bestShotRingRef.current) {
+        if (f === winner) continue;
+        f.canvas.width = 0;
+        f.canvas.height = 0;
+      }
+      bestShotRingRef.current = [];
+      if (!winner) return null;
+      // El canvas del ring ya es una copia dedicada: entrega directo.
+      return { canvas: winner.canvas, m: { lapVar: winner.lapVar, exposure: 0 } };
+    };
 
     /** Mejor frame por lapVar → encode SOLO del ganador → dispatch. */
     const dispatchBestFrame = async (framesRaw: Array<BurstFrame | null>) => {
@@ -673,14 +846,17 @@ export default function CameraView() {
     const photoBlob = canTakePhotoRef.current ? await takePhotoBlob() : null;
     if (!photoBlob) {
       // takePhoto colgó (> 8 s) o no existe: avisamos solo con stream real —
-      // el fotograma de preview (720p/1080p) es un recurso, no el estándar.
+      // el fotograma de preview (540p/720p) es un recurso, no el estándar.
       if (status === "live") {
         toast.warning("Cámara lenta: baja resolución esta vez", {
           description:
             "La foto de alta resolución no respondió; se guardó el fotograma de vista previa.",
         });
       }
-      await dispatchBestFrame([snapA, snapshotVideo()]);
+      // DUAL PIPELINE — fallback: el ganador ZSL pre-tap (estable, anti
+      // tap-shock) compite por lapVar con snapA y el frame actual.
+      const zsl = takeZslFallback();
+      await dispatchBestFrame([zsl, snapA, snapshotVideo()]);
       return;
     }
 
@@ -853,6 +1029,9 @@ export default function CameraView() {
       // el shutter manual abrirá la cámara nativa y la auto-captura usará
       // frames de video (≤ 1080p). Toast único por sesión (§5.2).
       canTakePhotoRef.current = typeof ImageCapture !== "undefined";
+      // F-SENSOR-PROFILER (PASO 2): mide la nativa de FOTO del sensor y
+      // fija el tope seguro (4032/3200 px) para takePhotoBlob.
+      profileActiveSensor(stream);
       if (!canTakePhotoRef.current && autoRef.current && !iosQualityToastShownRef.current) {
         iosQualityToastShownRef.current = true;
         toast("En iPhone: para máxima calidad dispara manualmente (foto nativa)", {
@@ -873,21 +1052,30 @@ export default function CameraView() {
       e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError");
     let permissionDenied = false;
 
-    /** E3: cascada de apertura — presupuesto de píxeles (ancho ideal 3840,
-     *  SIN alto ni ratio). F-LENS: el primer intento fuerza EXACT la trasera
-     *  (en algunos móviles "environment" a secas negocia la gran angular);
+    /** E3 + DUAL PIPELINE: cascada de apertura — el PREVIEW pide 960×540
+     *  ideal + 30 FPS (fluido en gama baja; la captura hi-res va por
+     *  takePhoto al sensor). F-LENS: el primer intento fuerza EXACT la
+     *  trasera (en algunos móviles "environment" a secas negocia la gran
+     *  angular);
      *  si el exact falla se relaja a ideal → {video:true}. */
     const openWithCascade = async (): Promise<MediaStream | null> => {
       const attempts: MediaStreamConstraints[] = [
         {
           video: {
             facingMode: { exact: "environment" },
-            width: { ideal: IDEAL_CAPTURE_WIDTH },
+            width: { ideal: IDEAL_PREVIEW_WIDTH },
+            height: { ideal: IDEAL_PREVIEW_HEIGHT },
+            frameRate: { ideal: IDEAL_PREVIEW_FPS },
           },
           audio: false,
         },
         {
-          video: { facingMode: "environment", width: { ideal: IDEAL_CAPTURE_WIDTH } },
+          video: {
+            facingMode: "environment",
+            width: { ideal: IDEAL_PREVIEW_WIDTH },
+            height: { ideal: IDEAL_PREVIEW_HEIGHT },
+            frameRate: { ideal: IDEAL_PREVIEW_FPS },
+          },
           audio: false,
         },
         { video: { facingMode: "environment" }, audio: false },
@@ -911,7 +1099,8 @@ export default function CameraView() {
      *     Android la 2ª apertura lanza NotReadableError y NADA cambiaba);
      *  3) elige la principal con la regla D3/D6 (autofocus real → mayor
      *     resolución; torch desempata; sin AF → label más simple);
-     *  4) abre SOLO la ganadora con presupuesto de píxeles (3840 ideal).
+     *  4) abre SOLO la ganadora con el preview ligero (960×540 ideal —
+     *     DUAL PIPELINE; la captura hi-res va por takePhoto al sensor).
      *  Devuelve el stream de la principal o null (→ cascade/sintética). */
     const openMainCamera = async (): Promise<MediaStream | null> => {
       // 1) Desbloqueo de etiquetas (F1-a de codigo-test): sin permiso previo
@@ -940,12 +1129,16 @@ export default function CameraView() {
       // 3) Elección de la principal (D3: AF real → mayor resolución).
       const main = chooseMainProbe(probes);
       // 4) Apertura SOLO de la ganadora (con fallbacks en cascada).
+      // DUAL PIPELINE: preview 540p en vivo; el sensor completo solo
+      // despierta en el instante de la captura (takePhoto).
       const attempts: MediaStreamConstraints[] = main
         ? [
             {
               video: {
                 deviceId: { exact: main.deviceId },
-                width: { ideal: IDEAL_CAPTURE_WIDTH },
+                width: { ideal: IDEAL_PREVIEW_WIDTH }, // 540p en vivo
+                height: { ideal: IDEAL_PREVIEW_HEIGHT },
+                frameRate: { ideal: IDEAL_PREVIEW_FPS }, // tope suave: menos ISP/GPU
               },
               audio: false,
             },
@@ -1084,7 +1277,12 @@ export default function CameraView() {
     if (!media || typeof media.getUserMedia !== "function") return;
     try {
       const stream = await media.getUserMedia({
-        video: { facingMode: "environment" },
+        video: {
+          facingMode: "environment",
+          width: { ideal: IDEAL_PREVIEW_WIDTH }, // DUAL PIPELINE: preview 540p
+          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          frameRate: { ideal: IDEAL_PREVIEW_FPS },
+        },
         audio: false,
       });
       streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -1098,6 +1296,7 @@ export default function CameraView() {
       setCamNotice(null);
       setStatus("live");
       canTakePhotoRef.current = typeof ImageCapture !== "undefined";
+      profileActiveSensor(stream); // F-SENSOR-PROFILER: tope 4032/3200 px
       setTorchAvailable(true);
       if (flashRef.current) applySavedTorchWithRetry();
     } catch {
@@ -1165,6 +1364,9 @@ export default function CameraView() {
     loop.start(video, {
       onFrame: (t) => {
         window.__cameraTelemetry = t;
+        // F-ZSL: alimenta el buffer Best-Shot (~5 Hz) — cubre la ventana
+        // pre-tap de 80–450 ms para la captura manual sin tap shock.
+        feedRingFromVideo();
         const now = performance.now();
         if (now - lastTelemetryAt.current < 100) return; // throttle UI ~10 Hz
         lastTelemetryAt.current = now;
@@ -1190,8 +1392,14 @@ export default function CameraView() {
     return () => {
       loop.stop();
       loopRef.current = null;
+      // F-ZSL: libera el buffer Best-Shot al cerrar la sesión de cámara.
+      for (const f of bestShotRingRef.current) {
+        f.canvas.width = 0;
+        f.canvas.height = 0;
+      }
+      bestShotRingRef.current = [];
     };
-  }, [precisionLive]);
+  }, [precisionLive, feedRingFromVideo]);
 
   // Linterna — F-FLASH v3: botón SIEMPRE activo con cámara real; la verdad
   // se descubre al pulsar (aplicar + verificar getSettings.torch). El deseo

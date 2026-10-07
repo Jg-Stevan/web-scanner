@@ -21,6 +21,7 @@
  */
 
 import type { Quad } from "./types";
+import { MotionStabilizer } from "./motion-stabilizer";
 import {
   computeProcessDims,
   getScannerWorker,
@@ -80,6 +81,15 @@ export class CameraFrameLoop {
   private vfcHandle = 0;
   private rafHandle = 0;
 
+  // F-STAB — estabilizador de inercia (DeviceMotion) + compuerta de quietud:
+  // bloquea la auto-captura mientras la mano se acomoda o tiembla (4–8 Hz).
+  private stabilizer = new MotionStabilizer();
+  // F-PERF — control de cadencia adaptativo: en gama baja el tick puede
+  // saturar el hilo principal (getImageData continuo); el throttle dinámico
+  // empieza en ~15 FPS y se relaja hasta ~5 FPS (200 ms) bajo presión.
+  private lastTickMs = 0;
+  private dynamicThrottleMs = 65; // ~15 FPS en gama alta, hasta 200ms (~5 FPS) en gama baja
+
   private quadHistory: QuadSample[] = [];
   private scoreHistory: ScoreSample[] = [];
   private firstAttemptMs = 0;
@@ -125,6 +135,9 @@ export class CameraFrameLoop {
     this.rearmNeeded = false;
     this.lastNoDetectNotice = 0;
     this.noDetectNotices = 0;
+    // F-PERF: estado del throttle adaptativo limpio en cada sesión de cámara.
+    this.lastTickMs = 0;
+    this.dynamicThrottleMs = 65;
     this.running = true;
     // Precalienta OpenCV si aún no está (la primera detección tarda más).
     void this.client?.waitReady().then((ok) => {
@@ -148,6 +161,8 @@ export class CameraFrameLoop {
       cancelAnimationFrame(this.rafHandle);
       this.rafHandle = 0;
     }
+    // F-STAB: limpia el listener de DeviceMotion al detener el bucle.
+    this.stabilizer.destroy();
     this.video = null;
     this.cb = null;
   }
@@ -175,6 +190,16 @@ export class CameraFrameLoop {
 
   private tick(): void {
     if (!this.running || !this.video || !this.cb) return;
+    const now = performance.now();
+
+    // F-PERF — Throttling dinámico adaptativo: evita saturar el hilo
+    // principal con getImageData() continuo (stuttering en gama baja).
+    if (now - this.lastTickMs < this.dynamicThrottleMs) {
+      this.scheduleNext();
+      return;
+    }
+    this.lastTickMs = now;
+
     const video = this.video;
     if (video.readyState < 2 || !video.videoWidth) {
       this.scheduleNext();
@@ -188,10 +213,17 @@ export class CameraFrameLoop {
     // en hardware real (detección 50–100 ms vs 30 fps de frames).
     if (!client || !client.isReady || client.busy) {
       this.dropped += 1;
+      // F-PERF: en gama baja con saturación, aumenta el tiempo de descanso
+      // dinámico (hasta 200 ms ≈ 5 FPS) para devolver aire al hilo principal.
+      this.dynamicThrottleMs = Math.min(200, this.dynamicThrottleMs + 15);
       this.scheduleNext();
       return;
     }
-    const now = performance.now();
+
+    // F-PERF: si el cliente procesa rápido, reduce suavemente el throttle
+    // (mínimo 65 ms ≈ 15 FPS — suficiente para el disparo k-de-n).
+    this.dynamicThrottleMs = Math.max(65, this.dynamicThrottleMs - 3);
+
     const w = video.videoWidth;
     const h = video.videoHeight;
     const dims = computeProcessDims(w, h);
@@ -353,6 +385,14 @@ export class CameraFrameLoop {
       now - this.lastTriggerMs > CAPTURE_COOLDOWN_MS &&
       shouldTriggerShutter(this.scoreHistory)
     ) {
+      // F-STAB: Verificar quietud del dispositivo mediante el estabilizador.
+      // Bloquear auto-captura si el dispositivo todavía está en movimiento
+      // (la mano se acomoda / temblor muscular 4–8 Hz) — el trigger se
+      // re-evalúa en el siguiente frame sin consumir el historial.
+      const motion = this.stabilizer.isDeviceStable(280);
+      if (!motion.stable) {
+        return;
+      }
       this.lastTriggerMs = now;
       this.scoreHistory = [];
       this.rearmNeeded = true;

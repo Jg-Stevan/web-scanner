@@ -57,6 +57,11 @@ export const SHUTTER_K = 4;
 export const SHUTTER_N = 6;
 export const SHUTTER_SPAN_MS = 1200;
 
+/** F-STAB — ventana sostenida mínima entre la primera y la última muestra del
+ *  conjunto k-de-n: si las muestras llegaron más rápido, el teléfono aún se
+ *  está acomodando (falso positivo por alta velocidad) y NO se dispara. */
+export const SHUTTER_SUSTAIN_MS = 260;
+
 /** Sin detección >8s → escape a captura manual. */
 export const NO_DETECT_TIMEOUT_MS = 8000;
 
@@ -238,6 +243,16 @@ export function shouldTriggerShutter(history: ScoreSample[]): boolean {
   if (last.score <= SHUTTER_SCORE) return false;
   const inSpan = sorted.filter((s) => s.t >= now - SHUTTER_SPAN_MS);
   const lastN = inSpan.slice(-SHUTTER_N);
+  if (lastN.length < SHUTTER_K) return false;
+
+  // F-STAB: Compuerta de tiempo sostenido para evitar falsos positivos por
+  // alta velocidad (la mano aún acomodando el teléfono).
+  const firstSampleTime = lastN[0]!.t;
+  const windowDurationMs = now - firstSampleTime;
+  if (windowDurationMs < SHUTTER_SUSTAIN_MS) {
+    return false; // La muestra fue demasiado rápida; el usuario aún está acomodando
+  }
+
   let good = 0;
   for (const s of lastN) if (s.score > SHUTTER_SCORE) good++;
   return good >= SHUTTER_K;

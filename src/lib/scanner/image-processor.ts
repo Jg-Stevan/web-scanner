@@ -788,7 +788,8 @@ async function cropQuad(
  * Aplica el filtro a una imagen ya rectificada — fallback canvas con la
  * MISMA matemática del motor (contrato §4.2: funciones puras COMPARTIDAS de
  * image-modes.ts; PROHIBIDO Otsu global u otra matemática — error #7).
- * Unsharp (0.5/1.5/k7) ANTES del filtro en todo modo ≠ raw (§8).
+ * Unsharp (0.5/1.5/k7) ANTES del filtro en todo modo ≠ raw/text (§8):
+ * "text" afila por bordes internamente (edgeAwareSharpenGray) — F-TEXT-CLEAN.
  */
 export function applyFilterToCanvas(
   canvas: HTMLCanvasElement,
@@ -801,8 +802,8 @@ export function applyFilterToCanvas(
   const mode = filterToSharedMode(filter);
   const image = ctx.getImageData(0, 0, W, H);
   let d: Uint8ClampedArray = image.data;
-  if (mode !== "raw") {
-    d = unsharpRgba(d, W, H); // §8: unsharp ANTES del filtro, mode ≠ raw
+  if (mode !== "raw" && mode !== "text") {
+    d = unsharpRgba(d, W, H); // §8: unsharp ANTES del filtro, mode ≠ raw/text
   }
   const out = enhanceToRgba(d, W, H, mode);
   const dest = ctx.createImageData(W, H);

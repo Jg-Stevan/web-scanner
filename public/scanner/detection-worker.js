@@ -435,10 +435,12 @@
   }
 
   // src/scanner/core/imageModes.ts
-  var TEXT_CLARO_WHITE_PCT = 0.85;
-  var TEXT_CLARO_CONTRAST = 1.8;
-  var TEXT_CLARO_PIVOT = 0.72;
-  var TEXT_CLARO_BLACK_POINT = 0.2;
+  // F-TEXT-CLEAN — valores estabilizados (el 0.85/1.8/0.72/0.2 moteaba el
+  // papel y amplificaba ruido vía la ganancia ink/src).
+  var TEXT_CLARO_WHITE_PCT = 0.95;
+  var TEXT_CLARO_CONTRAST = 1.45;
+  var TEXT_CLARO_PIVOT = 0.82;
+  var TEXT_CLARO_BLACK_POINT = 0.15;
   var JPEG_QUALITY = 0.9;
   var ILLUM_MAP_LONG_SIDE = 800;
   var BW_WINDOW_RATIO = 1 / 12;
@@ -618,6 +620,129 @@
     }
     return out;
   }
+
+  // ─── F-TEXT-CLEAN (pipeline estabilizado del "Texto claro") ───────────────
+  // Espejo EXACTO de las funciones puras de src/lib/scanner/image-modes.ts —
+  // worker y fallback comparten la MISMA matemática (contrato §4.2).
+
+  /** LUT 256 del mapeo sigmoidal tinta/fondo: wp es entero 0-255 → misma
+   *  matemática que el cálculo por píxel con 256 Math.pow en vez de w·h.
+   *  Papel (v ≥ pivot): smoothstep a blanco (≥ 0.92 → 255). Tinta:
+   *  (v/pivot)^contrast·pivot con rodilla cuadrática en el black point. */
+  function textTargetLumaLut(contrast = TEXT_CLARO_CONTRAST, pivot = TEXT_CLARO_PIVOT, bp = TEXT_CLARO_BLACK_POINT) {
+    const lut = new Uint8ClampedArray(256);
+    const p = Math.min(0.99, Math.max(0.01, pivot));
+    const knee = Math.min(p, Math.max(0, bp));
+    for (let idx = 0; idx < 256; idx++) {
+      const v = idx / 255;
+      if (v >= p) {
+        const t = (v - p) / (1 - p);
+        const smooth = p + (1 - p) * (t * t * (3 - 2 * t));
+        lut[idx] = smooth > 0.92 ? 255 : Math.round(smooth * 255);
+      } else {
+        let inkVal = Math.pow(v / p, contrast) * p;
+        if (inkVal < knee) inkVal = Math.max(0, inkVal * (inkVal / knee));
+        lut[idx] = Math.round(inkVal * 255);
+      }
+    }
+    return lut;
+  }
+  var TEXT_EDGE_GRADIENT = 25;
+  var TEXT_EDGE_AMOUNT = 0.75;
+
+  /** Afilado selectivo SOLO en bordes de tinta (1 pasada, máscara Laplaciana
+   *  con grad > 25 y luma < 240): el papel plano nunca se afila, así el
+   *  grano del sensor no se convierte en motas — por eso el modo text ya no
+   *  necesita el unsharp global previo. Márgenes de 1 px sin procesar. */
+  function edgeAwareSharpenGray(src, w, h) {
+    const n = w * h;
+    const out = new Uint8ClampedArray(n);
+    if (!(n > 0) || src.length < n) return out;
+    for (let y = 1; y < h - 1; y++) {
+      const row = y * w;
+      for (let x = 1; x < w - 1; x++) {
+        const idx = row + x;
+        const c = src[idx];
+        const grad = Math.abs(src[idx + 1] - src[idx - 1]) + Math.abs(src[idx + w] - src[idx - w]);
+        if (grad > TEXT_EDGE_GRADIENT && c < 240) {
+          const lap = (src[idx - 1] + src[idx + 1] + src[idx - w] + src[idx + w]) * 0.25 - c;
+          out[idx] = Math.max(0, Math.min(255, Math.round(c - lap * TEXT_EDGE_AMOUNT)));
+        } else {
+          out[idx] = c;
+        }
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      out[x] = src[x];
+      out[(h - 1) * w + x] = src[(h - 1) * w + x];
+    }
+    for (let y = 0; y < h; y++) {
+      out[y * w] = src[y * w];
+      out[y * w + w - 1] = src[y * w + w - 1];
+    }
+    return out;
+  }
+
+  var TEXT_WHITE_TARGET = 253;
+  var TEXT_NEUTRAL_INK = 45;
+  var TEXT_CHROMA_FADE_START = 200;
+  var TEXT_CHROMA_MAX_GAIN = 1.5;
+
+  /** Reconstrucción RGBA con preservación de croma: escala UNIFORME de los
+   *  3 canales por tgt/luma_original ⇒ el tono de la tinta se preserva
+   *  (antes el clamp por canal viraba a amarillo/magenta). tgt ≥ 253 ⇒
+   *  blanco inmaculado; tgt < 45 ⇒ convergencia a negro neutro; tgt > 200 ⇒
+   *  croma desvanecido a neutro y amplificación de croma topeada a ×1.5
+   *  (sin fosforitos ni en la frontera del papel ni en sombra profunda). */
+  function rebuildRgbaWithChroma(data, gray, targetLuma, w, h) {
+    const n = w * h;
+    const out = new Uint8ClampedArray(n * 4);
+    if (!(n > 0) || data.length < n * 4 || gray.length < n || targetLuma.length < n) return out;
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      const tgt = targetLuma[i];
+      const srcL = gray[i];
+      if (tgt >= TEXT_WHITE_TARGET) {
+        out[o] = 255;
+        out[o + 1] = 255;
+        out[o + 2] = 255;
+      } else {
+        const scale = srcL > 5 ? tgt / srcL : 1;
+        let r = Math.min(255, Math.round(data[o] * scale));
+        let g = Math.min(255, Math.round(data[o + 1] * scale));
+        let b = Math.min(255, Math.round(data[o + 2] * scale));
+        if (tgt > TEXT_CHROMA_FADE_START) {
+          // Zona papel: croma → neutro al acercarse al blanco (el ruido ISO
+          // amplificado por la escala no genera halos en la frontera).
+          const keep = Math.max(0, (TEXT_WHITE_TARGET - tgt) / (TEXT_WHITE_TARGET - TEXT_CHROMA_FADE_START));
+          r = Math.round(tgt + (r - tgt) * keep);
+          g = Math.round(tgt + (g - tgt) * keep);
+          b = Math.round(tgt + (b - tgt) * keep);
+        }
+        if (scale > TEXT_CHROMA_MAX_GAIN) {
+          // Sombra profunda: la desviación de croma (data_c − luma) no se
+          // amplifica con la escala — solo la luma objetivo crece.
+          const dKeep = TEXT_CHROMA_MAX_GAIN / scale;
+          r = Math.round(tgt + (r - tgt) * dKeep);
+          g = Math.round(tgt + (g - tgt) * dKeep);
+          b = Math.round(tgt + (b - tgt) * dKeep);
+        }
+        if (tgt < TEXT_NEUTRAL_INK) {
+          const blend = tgt / TEXT_NEUTRAL_INK;
+          out[o] = Math.round(r * blend + tgt * (1 - blend));
+          out[o + 1] = Math.round(g * blend + tgt * (1 - blend));
+          out[o + 2] = Math.round(b * blend + tgt * (1 - blend));
+        } else {
+          out[o] = r;
+          out[o + 1] = g;
+          out[o + 2] = b;
+        }
+      }
+      out[o + 3] = 255;
+    }
+    return out;
+  }
+
   function enhanceMime(mode) {
     return mode === "raw" || mode === "text" || mode === "bw" ? "image/png" : "image/jpeg";
   }
@@ -968,26 +1093,24 @@
       return grayToRgba(whitePointStretchPct(grayS, opts.grayWhitePct ?? 0.97), w, h);
     }
     if (mode === "text") {
+      // F-TEXT-CLEAN — pipeline estabilizado SIN división singular (gainW =
+      // ink/src amplificaba ruido ×4-8), SIN clamp asimétrico por canal
+      // (viraje amarillo/magenta) y SIN unsharp global previo (grano en el
+      // papel). Espejo de src/lib/scanner/image-modes.ts.
       const grayS = correctedGrayWithModel(gray, shadow, w, h);
       const wp = whitePointStretchPct(grayS, opts.textWhitePct ?? TEXT_CLARO_WHITE_PCT);
-      const ink = textClaroContrast(wp, opts.textContrast, opts.textPivot);
-      const bp = opts.textBlackPoint ?? TEXT_CLARO_BLACK_POINT;
-      const gainW = new Float32Array(n);
-      if (bp > 0) {
-        const k = 1 / (1 - bp);
-        for (let i = 0; i < n; i++) {
-          const v = ink[i] / 255;
-          const lv = v <= bp ? 0 : (v - bp) * k;
-          ink[i] = lv * 255;
-        }
-      }
-      for (let i = 0; i < n; i++) {
-        const src = grayS[i];
-        // F-TEXT-SMOOTH: tope por píxel — una muestra oscura del papel ya
-        // no se convierte en un punto brillante (ruido amplificado).
-        gainW[i] = src > 0 ? Math.min(4, ink[i] / src) : 1;
-      }
-      return applyModelAndGainToRgba(data, shadow, gainW, w, h);
+      // 1. Mapeo sigmoidal de tinta y fondo vía LUT (O(256), no O(n)).
+      const lut = textTargetLumaLut(
+        opts.textContrast ?? TEXT_CLARO_CONTRAST,
+        opts.textPivot ?? TEXT_CLARO_PIVOT,
+        opts.textBlackPoint ?? TEXT_CLARO_BLACK_POINT
+      );
+      const targetLuma = new Uint8ClampedArray(n);
+      for (let i = 0; i < n; i++) targetLuma[i] = lut[wp[i]];
+      // 2. Afilado selectivo SOLO en bordes de tinta (1 pasada).
+      const sharpLuma = edgeAwareSharpenGray(targetLuma, w, h);
+      // 3. Reconstrucción RGBA con preservación de croma.
+      return rebuildRgbaWithChroma(data, gray, sharpLuma, w, h);
     }
     if (mode === "natural") {
       const grayS = correctedGrayWithModel(gray, shadow, w, h);
@@ -1703,7 +1826,10 @@
       ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, 0, 0, tw, th);
       const imageData = ctx.getImageData(0, 0, tw, th);
       let src = imageData.data;
-      if (msg.mode !== "raw") {
+      // F-TEXT-CLEAN: el modo "text" hace afilado selectivo por bordes
+      // internamente (edgeAwareSharpenGray) — el unsharp global previo
+      // amplificaba el grano del sensor sobre el papel plano.
+      if (msg.mode !== "raw" && msg.mode !== "text") {
         try {
           const sharp = unsharpRgba(cvApi, imageData);
           if (sharp.data.length === src.length) src = sharp.data;
