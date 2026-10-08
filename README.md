@@ -2,7 +2,7 @@
 
 Aplicación web de digitalización de documentos con estética **pixel-perfect de iOS**, construida como reproducción fiel de 4 diseños originales (Cámara, Editor de perspectiva, Digitalización y Biblioteca). Toda la interfaz está en **español**.
 
-![Versión](https://img.shields.io/badge/versión-5.0.0-007AFF)
+![Versión](https://img.shields.io/badge/versión-6.3.0-007AFF)
 ![Framework](https://img.shields.io/badge/Next.js-16-black)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-34C759)
 
@@ -31,14 +31,26 @@ Aplicación web de digitalización de documentos con estética **pixel-perfect d
 
 - **Captura fluida (F-DEFER-CROP)**: el editor abre AL INSTANTE tras capturar — la detección de bordes ya no bloquea la revisión. Un pill «Ajustando recorte…» indica que el recorte automático aterriza en segundo plano y el preview se actualiza solo; si ajustas el recorte a mano, tu decisión manda. En gama baja esto elimina los segundos de espera frente a la cámara sin sacrificar el recorte automático ni la calidad
 
+## 🆕 Novedades v6.3
+
+- **Dual Pipeline de cámara**: el preview pide 960×540 @ 30 FPS (tope suave) para un visor fluido y sin calentamiento en gama baja, mientras la FOTO sale a resolución completa del sensor vía `ImageCapture.takePhoto()` (12–48 MP) — el análisis de bordes sigue viendo lo mismo (remuestreo a 400 px)
+- **Sensor Profiler (F-SENSOR-PROFILER)**: mide la resolución nativa del sensor y, en cámaras de 48/108 MP, pide al ISP la foto dentro de un tope seguro por gama (4032 px alta · 3200 px media/baja) — el blob gigante jamás se decodifica y la pestaña ya no crashea; red de seguridad adicional post-decode
+- **Estabilizador de quietud (F-STAB)**: la auto-captura exige 280 ms de quietud medida con el sensor inercial (`DeviceMotion`: aceleración ≤ 1.25 m/s², rotación ≤ 14 °/s) más una ventana sostenida del disparo k-de-n — adiós a los disparos mientras acomodas el teléfono (en desktop, y en iOS sin permiso de motion, degrada con elegancia: la auto-captura sigue funcionando)
+- **Captura anti tap-shock (F-ZSL)**: buffer Best-Shot de los últimos 8 fotogramas — si la foto de alta resolución no responde, el frame más nítido capturado 80–450 ms ANTES de tu toque sustituye a la foto sacudida por el impacto del dedo (patrón Zero Shutter Lag de las cámaras nativas)
+- **Throttling adaptativo (F-PERF)**: el bucle de detección empieza a ~15 FPS y se relaja hasta ~5 FPS si el hilo principal satura (y se recupera solo) — menos stuttering y menos calor en gama baja
+- **Filtro «Texto claro» reconstruido (F-TEXT-CLEAN)**: nuevo pipeline con LUT sigmoidal, afilado solo en bordes de tinta (el papel nunca se toca) y reconstrucción cromática que PRESERVA el color de la tinta (bolígrafos azules y sellos rojos ya no se aplastan a negro) — cero píxeles fosforitos y sin halos de croma en la frontera del papel; worker y fallback comparten la misma matemática exacta
+- **Limpieza**: eliminado artefacto ZIP de 6.5 MB committeado por error (`public/downloads/`)
+
 ---
 
 ## ✨ Funcionalidades
 
 ### 📷 Captura (Pantalla 1)
-- Cámara **en vivo** con `getUserMedia`: selección automática de la lente trasera con enfoque real y **linterna (torch)** con reintento y verificación (sondas secuenciales compatibles con Android)
-- **Detección de bordes en tiempo real** en un Web Worker (`public/scanner/detection-worker.js`, motor propio Sobel/DFS con motor OpenCV opcional)
-- Marco azul de detección con handles en las esquinas, indicador de estabilidad y **auto-captura** (k-de-n frames estables)
+- Cámara **en vivo** con `getUserMedia` — **Dual Pipeline**: preview ligero 960×540 @ 30 FPS + foto a resolución del sensor vía `ImageCapture.takePhoto()` con tope seguro por gama (Sensor Profiler)
+- Selección automática de la lente trasera con enfoque real y **linterna (torch)** con reintento y verificación (sondas secuenciales compatibles con Android)
+- **Detección de bordes en tiempo real** en un Web Worker (`public/scanner/detection-worker.js`, motor propio Sobel/DFS con motor OpenCV opcional) con **throttling adaptativo** contra la saturación de gama baja
+- Marco azul de detección con handles en las esquinas, indicador de estabilidad y **auto-captura** (k-de-n frames estables + **compuerta de quietud** por sensor inercial)
+- **Captura manual con buffer ZSL**: si la foto del sensor no responde, el frame pre-toque más nítido (anti tap-shock) entra como fallback premium
 - Sesión **multi-página** con contador, importación desde galería y página de demo
 
 ### ✂️ Editor de perspectiva (Pantalla 2)
@@ -54,7 +66,7 @@ Aplicación web de digitalización de documentos con estética **pixel-perfect d
 - Badge de calidad (nitidez Laplaciano + contraste + brillo), stats de tamaño/páginas
 - **Miniaturas desplegables** (mostrar/ocultar) y **navegación deslizando** horizontalmente entre páginas
 - Carrusel de miniaturas + "Añadir página", acciones Recortar / Rotar / **Filtros** / Eliminar
-- 3 filtros reales: **Original**, **Texto claro** y **B/N adaptativo** (por defecto en cada captura nueva) — con suavizado bilineal del mapa de iluminación (sin píxeles saltantes en «Texto claro»); los 8 filtros históricos se migran automáticamente al abrir documentos viejos
+- 3 filtros reales: **Original**, **Texto claro** y **B/N adaptativo** (por defecto en cada captura nueva) — «Texto claro» usa el pipeline F-TEXT-CLEAN: papel blanco limpio sin ruido amplificado, tinta de color preservada (sin aplastar bolígrafos/sellos a negro) y sin halos de croma; los 8 filtros históricos se migran automáticamente al abrir documentos viejos
 - **Zoom por pinza/doble-toque** y **comparación antes/después**: mantén pulsada la imagen para ver el original
 - Modo presentación a pantalla completa con gestos (pinza, pan, doble-tap)
 
@@ -151,10 +163,12 @@ Abre <http://localhost:3000> en el navegador.
 │       ├── detector-client.ts        # Cliente del Web Worker de detección
 │       ├── device-capability.ts      # Benchmark del dispositivo (F-DEVBENCH)
 │       ├── pwa.ts                    # Registro del Service Worker + prompt de instalación
-│       ├── image-modes.ts            # Filtros por píxel (Texto claro con suavizado bilineal)
+│       ├── image-modes.ts            # Filtros por píxel (Texto claro: pipeline F-TEXT-CLEAN)
 │       ├── ocr.ts                    # OCR local (Tesseract) con salvavidas de servidor
 │       ├── text-export.ts            # Exportar/copiar/compartir texto OCR
-│       ├── quality.ts                # Métricas de calidad de captura
+│       ├── quality.ts                # Métricas de calidad + compuerta sostenida del disparo
+│       ├── motion-stabilizer.ts      # Compuerta de quietud por DeviceMotion (F-STAB)
+│       ├── sensor-profiler.ts        # Tope seguro de captura por gama (F-SENSOR-PROFILER)
 │       ├── pdf-export.ts             # Exportación PDF (jsPDF)
 │       └── tags.ts / format.ts / mock-data.ts
 ├── design-specs.md                   # Especificación de los 4 diseños originales
