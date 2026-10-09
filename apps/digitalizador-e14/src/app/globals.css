@@ -1,0 +1,208 @@
+@import "tailwindcss";
+
+/* ============================================================
+   PRECISION MONITOR — tokens del tema (DESIGN.md / SPEC §5)
+   ============================================================ */
+@theme inline {
+  /* Superficies (charcoal por capas) */
+  --color-bg: #0e1414;
+  --color-surface-1: #121919;
+  --color-surface-2: #171d1d;
+  --color-surface-3: #1b2121;
+  --color-surface-4: #252b2b;
+  --color-surface-5: #303636;
+  --color-hover: #1a2323;
+  /* Texto */
+  --color-ink: #dee4e3;
+  --color-ink-dim: #bbcbb8;
+  --color-ink-faint: #869583;
+  /* Líneas */
+  --color-line: #242e2e;
+  --color-outline: #869583;
+  --color-outline-dim: #3c4a3c;
+  /* Estados */
+  --color-ok: #00c853;
+  --color-ok-tint: #3fe56c;
+  --color-ok-ink: #003912;
+  --color-warn: #ffd600;
+  --color-warn-ink: #3a3000;
+  --color-crit: #ff5252;
+  --color-crit-tint: #ff8d87;
+  --color-crit-ink: #690005;
+  --color-crit-deep: #93000a;
+  /* Tipos */
+  --font-sans: var(--font-hanken);
+  --font-mono: var(--font-jbmono);
+  /* Forma */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 8px;
+}
+
+/* ============================================================
+   Utilidades del design system (definir UNA vez — SPEC §5)
+   ============================================================ */
+@utility font-data {
+  font-family: var(--font-jbmono);
+}
+
+@utility label-caps {
+  font-family: var(--font-hanken);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@utility stats-number {
+  font-family: var(--font-jbmono);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+@utility headline-lg {
+  font-family: var(--font-hanken);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 32px;
+  letter-spacing: -0.02em;
+}
+
+/* Safe areas (PWA / iOS notch) */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Scrollbar fina para listas largas (SPEC §7.7) */
+@utility thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-5) transparent;
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--color-surface-5);
+    border-radius: 2px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+html,
+body {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+}
+
+body {
+  overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: var(--color-ok-tint);
+  color: var(--color-ok-ink);
+}
+
+/* ============================================================
+   Animaciones y efectos (de los code.html del zip)
+   ============================================================ */
+
+/* Latido sutil de indicadores en vivo */
+@keyframes pulse-subtle {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.65;
+    transform: scale(1.08);
+  }
+}
+@utility animate-pulse-sync {
+  animation: pulse-subtle 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Línea de escaneo del ANALIZANDO */
+@keyframes scan-sweep {
+  0% {
+    transform: translateY(-56px);
+  }
+  100% {
+    transform: translateY(56px);
+  }
+}
+@utility animate-scan-sweep {
+  animation: scan-sweep 1.4s ease-in-out infinite alternate;
+}
+
+/* Transición entre vistas del shell (150 ms) */
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@utility animate-view-enter {
+  animation: view-enter 150ms ease-out;
+}
+
+/* Entrada de notificaciones flotantes */
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@utility animate-banner-in {
+  animation: banner-in 220ms ease-out;
+}
+
+/* Patrón de código de barras del acta (code.html) */
+@utility barcode-lines {
+  background: repeating-linear-gradient(
+    90deg,
+    #111,
+    #111 2px,
+    transparent 2px,
+    transparent 4px,
+    #111 4px,
+    #111 7px,
+    transparent 7px,
+    transparent 9px
+  );
+}
+
+/* Textura scanline industrial (code.html actas/resumen) */
+@utility bg-scanline {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(255, 255, 255, 0.01) 2px,
+    rgba(255, 255, 255, 0.01) 4px
+  );
+}
