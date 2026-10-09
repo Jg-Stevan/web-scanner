@@ -185,3 +185,65 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   onTrigger,onNoDetectTimeout})), defaultQuad(types:210). captureSmart vive en el
   LAB (CameraView.tsx), no en el core. NOTA numeración: los D12–D22 del spec
   (redactado antes de D12/D13 del repo) se registrarán como D14–D24 en DECISIONS.
+
+### [2026-10-09 19:33 (Bogotá)] — L1 contrato async — Z.ai Code (Task 6-L1)
+- **Hecho:** FASE LÓGICA L1 (SPEC §8-L1) — el bridge pasa a async con eventos
+  de progreso, el store consume Promise y ANALIZANDO se vuelve event-driven.
+  El MODO SIMULACIÓN queda visualmente idéntico (regresión cero verificada).
+  - `types.ts` (§3.1 aditivo): `FuenteCaptura`, `EtapaAnalisis` (5 etapas),
+    `ProgresoAnalisis` y campos OPCIONALES en `Acta` (fuente, fotoProcesada,
+    fotoOriginal, ocrTexto, metricas, motor, quadDetectado — `Quad` importado
+    del core —, rotation). Seed/mocks intactos (todo opcional).
+  - `bridge.ts` (§3.2): `OpcionesEscaneo` gana `fuente/archivo/frameActual/
+    onProgreso`; `E14Bridge.escanearActa` → `Promise<Acta>` + `exportarPdf`.
+    `MockBridge.escanearActa` async: lógica ORIGINAL intacta (regla 2º intento
+    ≥8 D8, scores, firma2, rechazo 80/20) + progreso SINTÉTICO de 5 etapas
+    (~350–600 ms c/u, ~2.3 s total, 2–3 saltos por etapa; sin onProgreso la
+    temporización es la misma) y resuelve con `fuente:"SIMULACION"` +
+    `motor:"mock"`. `MockBridge.exportarPdf` → throw "EXPORTACIÓN NO
+    DISPONIBLE EN SIMULACIÓN". NUEVA `CompositeBridge` (D17/D19): enruta por
+    fuente (SIM→mock interno; CAMARA/ARCHIVO→real o throw "FUENTE REAL NO
+    IMPLEMENTADA (L2)"); horas delegan al mock.
+  - `get-bridge.ts`: instancia `new CompositeBridge(null)` — mismo contrato de
+    export; L2 inyectará el RealCoreBridge aquí (punto único, D1/D17).
+  - `store.ts`: estado nuevo `fuente` (SIM por defecto), `setFuente`,
+    `archivoPendiente`, `setArchivoPendiente`, `progresoAnalisis`,
+    `analisisResuelto`; `dispararEscaneo` → async (vista analizando primero,
+    actaActual null, onProgreso → set, error → toast crit "ERROR DE PROCESADO"
+    + volver a escanear). `analisisCompletado`/`enviarActa`/`repetirFoto`/
+    `enviarRevisionHumana` SIN cambios de lógica.
+  - `AnalyzingView.tsx` (§7): setInterval fake ELIMINADO. % ponderado por
+    etapa (DETECTANDO .15 · RECORTANDO .15 · REALZANDO .20 · CALIDAD .15 ·
+    OCR .35) suavizado con lerp por rAF (τ=140 ms); piso escénico D16/D18:
+    nunca 100 hasta (pipeline resuelto && ≥1200 ms), luego anima a 100 y
+    `analisisCompletado()` tras 350 ms (mismo patrón). Latencia del beacon =
+    ms reales desde el mount (~cada 180 ms). 4 barras + 4 labels de ETAPAS
+    intactos (mismas fórmulas floor/ceil que la fase gráfica).
+  - `eslint.config.mjs`: ignores `public/vendor/**` + `public/scanner/**`
+    (mismo patrón que scanner-lab) — SIN esto lint:e14 fallaba con 9 errores
+    por el opencv minificado que L0 copió a public/ (gap de L0).
+  - QA navegador (agent-browser 390×844, dev :3001): flujo dorado ÓPTIMA →
+    "✓ 8.2/10 ÓPTIMA" + "ENVIADO CORRECTAMENTE" + auto-envío D4 ✓;
+    ADVERTENCIA → "⚠ 7.5/10 MODERADA" → ENVIAR A TRANSMISIÓN → "✓ 7.5/10
+    ENVIADA CON ADVERTENCIA" ✓; RECHAZADA → toast crit "ACTA NO RECONOCIDA"
+    + ILEGIBLE + "OBLIGATORIO REPETIR FOTO (INTENTO 1 DE 2)" ✓; REPETIR →
+    "✓ 8.6/10 ÓPTIMA" (2º intento ≥8, D8) ✓. Muestreo del ANALIZANDO: 8%@360ms
+    → 20%@720 → 39%@1260 → 55%@1620 → 77%@2160 → 99%@2520 (piso) → 100% →
+    REVISIÓN; latencia real 360→2520 ms. `agent-browser errors` y consola:
+    0 errores. Tests bun del contrato: mock 2174 ms/14 eventos, composite-SIM
+    2º intento 9.4, CAMARA→throw L2, exportarPdf→throw SIM, error-path del
+    store → toast + vista escanear (nunca atascado en analizando).
+  - lint:e14 + e14:check: 0 errores. ScanView/ReviewView/seed/core/lab: 0
+    cambios (chips de fuente llegan en L2/L3).
+- **Archivos:** src/lib/e14/{types.ts,bridge.ts,get-bridge.ts,store.ts},
+  src/components/e14/screens/AnalyzingView.tsx, eslint.config.mjs,
+  docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run lint:e14 && bun run e14:check` → 0 errores;
+  `bun run dev:e14` → chip ÓPTIMA → Escanear → ANALIZANDO ~2.3 s con anillo y
+  barras avanzando → REVISIÓN auto-enviada. En consola del dev no hay errores.
+- **Pendiente/Bloqueado:** L2 — fuente ARCHIVO real: `scanner-core-bridge.ts`
+  (pipeline §5: fileToCaptureDataUrl → detectDocumentEdges → processImage →
+  evaluateQuality → requestOcr + gate ILEGIBLE §4.2), mapeo §4.1, ReviewView
+  "VER FOTO", inyectar RealCoreBridge en get-bridge.ts y chips de fuente en
+  ScanView. La numeración de DECISIONS sigue el corrimiento D12→D14 del spec.

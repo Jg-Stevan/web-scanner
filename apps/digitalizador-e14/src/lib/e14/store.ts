@@ -6,7 +6,7 @@
 import { create } from "zustand";
 import { getBridge } from "./get-bridge";
 import type { PaginaObjetivo, Forzado } from "./bridge";
-import type { Acta, HistorialRow, Mesa, TipoPagina } from "./types";
+import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
 import {
   COLA_OFFLINE_INICIAL,
   SOLICITUDES_RESCANEO_INICIAL,
@@ -32,6 +32,14 @@ interface E14Store {
   paginaObjetivo: PaginaObjetivo | null;
   /** Resultado que forzará el próximo escaneo (panel de simulación §7.1). */
   forzado: Forzado;
+  /** Fuente de captura del próximo escaneo (L1: solo SIMULACIÓN operativa). */
+  fuente: FuenteCaptura;
+  /** Archivo elegido para la fuente ARCHIVO (L2 lo consume). */
+  archivoPendiente: File | null;
+  /** Último evento de progreso del pipeline (alimenta ANALIZANDO, §7.2). */
+  progresoAnalisis: ProgresoAnalisis | null;
+  /** true cuando el pipeline resolvió (piso escénico D16 de ANALIZANDO). */
+  analisisResuelto: boolean;
   actasSesion: number;
   mesas: Mesa[];
   completadas: number;
@@ -43,8 +51,10 @@ interface E14Store {
 
   navegar: (vista: Vista) => void;
   setForzado: (forzado: Forzado) => void;
+  setFuente: (fuente: FuenteCaptura) => void;
+  setArchivoPendiente: (archivo: File | null) => void;
   alternarConexion: () => void;
-  dispararEscaneo: (intento?: number) => void;
+  dispararEscaneo: (intento?: number) => Promise<void>;
   analisisCompletado: () => void;
   enviarActa: () => void;
   repetirFoto: () => void;
@@ -149,6 +159,10 @@ export const useE14Store = create<E14Store>((set, get) => {
     actaActual: null,
     paginaObjetivo: null,
     forzado: "ALEATORIO",
+    fuente: "SIMULACION",
+    archivoPendiente: null,
+    progresoAnalisis: null,
+    analisisResuelto: false,
     actasSesion: 0,
     mesas: mesasIniciales(),
     completadas: progresoInicial().completadas,
@@ -161,6 +175,10 @@ export const useE14Store = create<E14Store>((set, get) => {
     navegar: (vista) => set({ vista }),
 
     setForzado: (forzado) => set({ forzado }),
+
+    setFuente: (fuente) => set({ fuente }),
+
+    setArchivoPendiente: (archivo) => set({ archivoPendiente: archivo }),
 
     alternarConexion: () => {
       const { online, colaOffline, actaActual } = get();
@@ -184,16 +202,37 @@ export const useE14Store = create<E14Store>((set, get) => {
       }
     },
 
-    dispararEscaneo: (intento = 1) => {
-      const { forzado, mesas } = get();
+    dispararEscaneo: async (intento = 1) => {
+      const { forzado, mesas, fuente, archivoPendiente } = get();
       const objetivo = proximaPagina(mesas);
-      const acta = bridge.escanearActa({ objetivo, forzado, intento, maxIntentos: 2 });
       set({
-        actaActual: acta,
-        paginaObjetivo: objetivo,
-        actasSesion: get().actasSesion + 1,
         vista: "analizando",
+        actaActual: null,
+        progresoAnalisis: null,
+        analisisResuelto: false,
       });
+      try {
+        const acta = await bridge.escanearActa({
+          objetivo,
+          forzado,
+          intento,
+          maxIntentos: 2,
+          fuente,
+          archivo: archivoPendiente ?? undefined,
+          onProgreso: (p) => set({ progresoAnalisis: p }),
+        });
+        set({
+          actaActual: acta,
+          paginaObjetivo: objetivo,
+          actasSesion: get().actasSesion + 1,
+          analisisResuelto: true,
+          archivoPendiente: null,
+        });
+      } catch {
+        // Manejo de error del pipeline (§7 store): nunca quedar en analizando.
+        notificar("crit", "ERROR DE PROCESADO", "No se pudo analizar la imagen.");
+        set({ vista: "escanear", progresoAnalisis: null, analisisResuelto: false });
+      }
     },
 
     analisisCompletado: () => {
@@ -257,7 +296,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     repetirFoto: () => {
       const { actaActual } = get();
       const intento = (actaActual?.intento ?? 0) + 1;
-      get().dispararEscaneo(intento);
+      void get().dispararEscaneo(intento);
     },
 
     enviarRevisionHumana: () => {

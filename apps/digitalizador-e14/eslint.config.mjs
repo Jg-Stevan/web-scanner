@@ -47,7 +47,10 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "no-useless-escape": "off",
   },
 }, {
-  ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "docs/**"]
+  // "public/vendor/**" + "public/scanner/**": assets del core copiados en L0
+  // (opencv/detection-worker, mismos bytes que scanner-lab) — JS vendor
+  // minificado, mismo patrón de ignores que apps/scanner-lab.
+  ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "docs/**", "public/vendor/**", "public/scanner/**"]
 }];
 
 export default eslintConfig;

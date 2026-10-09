@@ -13,3 +13,14 @@ Leyenda: [ ] pendiente · [~] en progreso · [x] hecho
 - [x] G8 — RESUMEN: dashboard de trabajo (§7.7)
 - [x] G9 — GitHub Pages: basePath + workflow parametrizado + verificación en /web-scanner/ (luego supersedido por Pages dual — ver D13)
 - [x] G10 — DoD completa (§10) + revisión visual lado a lado con screen.png + QA externa (FIXES-e14-qa.md: 2 fixes aplicados y verificados)
+
+## FASE LÓGICA (SPEC-fase-logica.md §8)
+
+- [x] L0 — Andamiaje: dep workspace `@jg-stevan/scanner-core` + transpilePackages + assets worker/opencv en public/ + bun.lock
+- [x] L1 — Contrato async (mock intacto): tipos §3 + CompositeBridge (D19) + store async con progresoAnalisis + ANALIZANDO event-driven con piso escénico (D18) — regresión cero en SIMULACIÓN
+- [ ] L2 — Fuente ARCHIVO real: pipeline §5 + mapeo §4 + gate ILEGIBLE + Acta extendida + ReviewView "VER FOTO"
+- [ ] L3 — Fuente CÁMARA real + interfaz de escaneo del lab COMPLETA (HUD, BUSCANDO ACTA…, quad en vivo, IA·AUTO, flash, ZSL, ruta iOS)
+- [ ] L4 — EXPORTAR PDF: adaptador §6 + CTA en REVISIÓN (solo actas reales)
+- [ ] L5 — Editor de recorte: COPIAR subsistema CROP de scanner-lab/EditorView.tsx (§7.5) + toolbar real de REVISIÓN
+- [ ] L6 — (opcional) Persistencia: localStorage + IndexedDB + "REINICIAR JORNADA"
+- [ ] L7 — (opcional) Cámara sintética en SIMULACIÓN (SyntheticCamera del core)
