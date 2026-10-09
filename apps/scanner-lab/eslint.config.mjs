@@ -19,6 +19,10 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     // React rules
     "react-hooks/exhaustive-deps": "off",
     "react-hooks/purity": "off",
+    // Reglas nuevas de eslint-plugin-react-hooks 7.1.x (traídas por el
+    // lockfile regenerado del monorepo): mismo criterio que purity/deps.
+    "react-hooks/refs": "off",
+    "react-hooks/set-state-in-effect": "off",
     "react/no-unescaped-entities": "off",
     "react/display-name": "off",
     "react/prop-types": "off",

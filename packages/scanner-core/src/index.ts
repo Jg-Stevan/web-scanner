@@ -21,6 +21,5 @@ export * from "./page-store";
 export * from "./sensor-profiler";
 export * from "./motion-stabilizer";
 export * from "./frame-loop";
-export * from "./image-modes";
 export * from "./detector-client";
 export * from "./pwa";
