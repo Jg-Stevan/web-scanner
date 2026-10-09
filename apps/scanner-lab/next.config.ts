@@ -6,7 +6,7 @@ import path from "node:path";
 // en un pipeline de despliegue que lo envuelve), Next 16 infiere un root
 // equivocado y genera un .next/standalone CORRUPTO (sin server.js).
 // Ver: https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory
-const workspaceRoot = path.resolve(__dirname);
+const workspaceRoot = path.resolve(__dirname, "../..");   // raíz del monorepo
 
 /**
  * Configuración DUAL para poder desplegar en GitHub Pages:
@@ -26,6 +26,8 @@ const basePath = isStatic ? "/web-scanner" : undefined;
 const nextConfig: NextConfig = {
   // Raíz de workspace explícita — ver comentario del import path.
   turbopack: { root: workspaceRoot },
+  // El core del workspace sirve TS crudo: Turbopack lo compila en dev y en build.
+  transpilePackages: ["@jg-stevan/scanner-core"],
   ...(isStatic
     ? {
         output: "export" as const,

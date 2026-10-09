@@ -14,24 +14,24 @@ import { toast } from "sonner";
 
 import { useIsHydrated } from "@/hooks/use-is-hydrated";
 
-import { useScannerStore } from "@/lib/scanner/store";
-import { type ScannerSettings } from "@/lib/scanner/types";
-import { dataUrlBytes, formatBytes } from "@/lib/scanner/format";
-import { countTagUsage } from "@/lib/scanner/tags";
-import { countWords } from "@/lib/scanner/text-export";
-import { getScannerWorker } from "@/lib/scanner/image-processor";
-import { storageAvailable } from "@/lib/scanner/page-store";
+import { useScannerStore } from "@jg-stevan/scanner-core/store";
+import { type ScannerSettings } from "@jg-stevan/scanner-core/types";
+import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
+import { countTagUsage } from "@jg-stevan/scanner-core/tags";
+import { countWords } from "@jg-stevan/scanner-core/text-export";
+import { getScannerWorker } from "@jg-stevan/scanner-core/image-processor";
+import { storageAvailable } from "@jg-stevan/scanner-core/page-store";
 import {
   getCachedDeviceCapability,
   measureDeviceCapability,
   type DeviceCapability,
-} from "@/lib/scanner/device-capability";
+} from "@jg-stevan/scanner-core/device-capability";
 import {
   getPwaInstallState,
   promptInstall,
   subscribePwaState,
   type PwaInstallState,
-} from "@/lib/scanner/pwa";
+} from "@jg-stevan/scanner-core/pwa";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import {

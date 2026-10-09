@@ -5,7 +5,7 @@
  * de instalación. No renderiza nada.
  */
 import { useEffect } from "react";
-import { registerServiceWorker, setupPwaListeners } from "@/lib/scanner/pwa";
+import { registerServiceWorker, setupPwaListeners } from "@jg-stevan/scanner-core/pwa";
 
 export default function PwaRegister() {
   useEffect(() => {

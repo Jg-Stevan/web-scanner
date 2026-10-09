@@ -14,11 +14,12 @@ node_modules
 /coverage
 
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
 /build
+build/
 
 # misc
 .DS_Store
@@ -53,6 +54,7 @@ server.log
 # Skills directory
 /skills/
 # artefactos de sesion / distribucion
-public/**/*.zip
+**/public/**/*.zip
 /tool-results
+tool-results/
 dev.log

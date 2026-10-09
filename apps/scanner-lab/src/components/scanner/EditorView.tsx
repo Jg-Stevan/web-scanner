@@ -62,24 +62,24 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { useScannerStore } from "@/lib/scanner/store";
+import { useScannerStore } from "@jg-stevan/scanner-core/store";
 import {
   detectDocumentEdges,
   loadImage,
   processImage,
-} from "@/lib/scanner/image-processor";
-import { getMaxProcessedLongSide } from "@/lib/scanner/device-capability";
+} from "@jg-stevan/scanner-core/image-processor";
+import { getMaxProcessedLongSide } from "@jg-stevan/scanner-core/device-capability";
 import {
   FILTER_PRESETS,
   TRASH_RETENTION_DAYS,
   capturePageKey,
   defaultQuad,
-} from "@/lib/scanner/types";
-import type { CapturePage, PageFilter, Point, Quad, ScanPage } from "@/lib/scanner/types";
-import { ocrTextIsValid, requestOcr } from "@/lib/scanner/ocr";
-import { buildDocPdf, downloadBlob, sanitizeFileName } from "@/lib/scanner/pdf-export";
-import { ocrTextOfPages } from "@/lib/scanner/text-export";
-import { formatBytes } from "@/lib/scanner/format";
+} from "@jg-stevan/scanner-core/types";
+import type { CapturePage, PageFilter, Point, Quad, ScanPage } from "@jg-stevan/scanner-core/types";
+import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
+import { buildDocPdf, downloadBlob, sanitizeFileName } from "@jg-stevan/scanner-core/pdf-export";
+import { ocrTextOfPages } from "@jg-stevan/scanner-core/text-export";
+import { formatBytes } from "@jg-stevan/scanner-core/format";
 import { cn } from "@/lib/utils";
 import { SaveSuccessOverlay } from "@/components/scanner/SaveSuccessOverlay";
 import { PresentationView } from "@/components/scanner/PresentationView";

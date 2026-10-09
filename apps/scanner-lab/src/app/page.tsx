@@ -12,12 +12,12 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { useScannerStore, ONBOARDING_STORAGE_KEY } from "@/lib/scanner/store";
-import type { ScannerView } from "@/lib/scanner/types";
-import { warmUpScannerWorker, getScannerWorker } from "@/lib/scanner/image-processor";
+import { useScannerStore, ONBOARDING_STORAGE_KEY } from "@jg-stevan/scanner-core/store";
+import type { ScannerView } from "@jg-stevan/scanner-core/types";
+import { warmUpScannerWorker, getScannerWorker } from "@jg-stevan/scanner-core/image-processor";
 import {
   ensureDeviceCapability,
-} from "@/lib/scanner/device-capability";
+} from "@jg-stevan/scanner-core/device-capability";
 import LibraryView from "@/components/scanner/LibraryView";
 import CameraView from "@/components/scanner/CameraView";
 import EditorView from "@/components/scanner/EditorView";
