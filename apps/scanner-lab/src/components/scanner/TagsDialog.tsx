@@ -16,8 +16,8 @@ import { useMemo, useState } from "react";
 import { Check, Plus, Tag as TagIcon, X } from "lucide-react";
 import { toast } from "sonner";
 
-import { useScannerStore } from "@/lib/scanner/store";
-import type { ScanDocument } from "@/lib/scanner/types";
+import { useScannerStore } from "@jg-stevan/scanner-core/store";
+import type { ScanDocument } from "@jg-stevan/scanner-core/types";
 import {
   addTag,
   cleanTagInput,
@@ -27,7 +27,7 @@ import {
   MAX_TAG_LEN,
   normalizeTag,
   tagColor,
-} from "@/lib/scanner/tags";
+} from "@jg-stevan/scanner-core/tags";
 import { cn } from "@/lib/utils";
 import {
   Dialog,

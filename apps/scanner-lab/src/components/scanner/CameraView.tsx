@@ -38,12 +38,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { nextId, useScannerStore } from "@/lib/scanner/store";
+import { nextId, useScannerStore } from "@jg-stevan/scanner-core/store";
 import {
   defaultQuad,
   type CapturePage,
   type Quad,
-} from "@/lib/scanner/types";
+} from "@jg-stevan/scanner-core/types";
 import {
   detectDocumentEdges,
   evaluateQuality,
@@ -51,20 +51,20 @@ import {
   generateDemoPage,
   getScannerWorker,
   loadImage,
-} from "@/lib/scanner/image-processor";
+} from "@jg-stevan/scanner-core/image-processor";
 import {
   CameraFrameLoop,
   SyntheticCamera,
   type FrameLoopTelemetry,
-} from "@/lib/scanner/frame-loop";
-import { SHUTTER_SCORE } from "@/lib/scanner/quality";
+} from "@jg-stevan/scanner-core/frame-loop";
+import { SHUTTER_SCORE } from "@jg-stevan/scanner-core/quality";
 import {
   buildCappedPhotoSettings,
   clampBlobToSafeCap,
   getSensorSafeCap,
   profileSensor,
   type SensorProfile,
-} from "@/lib/scanner/sensor-profiler";
+} from "@jg-stevan/scanner-core/sensor-profiler";
 
 type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
 

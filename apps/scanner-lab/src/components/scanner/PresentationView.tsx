@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useMotionValue } from "framer-motion";
 import { ChevronLeft, ChevronRight, Eye, X } from "lucide-react";
 
-import type { ScanPage } from "@/lib/scanner/types";
+import type { ScanPage } from "@jg-stevan/scanner-core/types";
 
 const IOS_EASE = [0.32, 0.72, 0, 1] as const;
 

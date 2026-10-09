@@ -44,14 +44,14 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { useScannerStore } from "@/lib/scanner/store";
-import type { ScanDocument } from "@/lib/scanner/types";
-import { TRASH_RETENTION_DAYS, isTrashed, trashDaysLeft } from "@/lib/scanner/types";
-import { formatBytes, relativeTime } from "@/lib/scanner/format";
-import { buildDocPdf, buildLibraryPdf, downloadBlob, sanitizeFileName, toJpeg } from "@/lib/scanner/pdf-export";
-import { docHasOcrText, downloadOcrTxt, shareOcrText } from "@/lib/scanner/text-export";
-import { ocrTextIsValid, requestOcr } from "@/lib/scanner/ocr";
-import { countTagUsage, docTags, normalizeTag, tagColor } from "@/lib/scanner/tags";
+import { useScannerStore } from "@jg-stevan/scanner-core/store";
+import type { ScanDocument } from "@jg-stevan/scanner-core/types";
+import { TRASH_RETENTION_DAYS, isTrashed, trashDaysLeft } from "@jg-stevan/scanner-core/types";
+import { formatBytes, relativeTime } from "@jg-stevan/scanner-core/format";
+import { buildDocPdf, buildLibraryPdf, downloadBlob, sanitizeFileName, toJpeg } from "@jg-stevan/scanner-core/pdf-export";
+import { docHasOcrText, downloadOcrTxt, shareOcrText } from "@jg-stevan/scanner-core/text-export";
+import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
+import { countTagUsage, docTags, normalizeTag, tagColor } from "@jg-stevan/scanner-core/tags";
 import { MiniTagRow, TagsDialog } from "@/components/scanner/TagsDialog";
 import { cn } from "@/lib/utils";
 import {

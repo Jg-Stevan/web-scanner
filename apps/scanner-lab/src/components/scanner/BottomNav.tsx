@@ -6,7 +6,7 @@
  */
 
 import { FileText, ScanLine, Settings } from "lucide-react";
-import { useScannerStore } from "@/lib/scanner/store";
+import { useScannerStore } from "@jg-stevan/scanner-core/store";
 import { cn } from "@/lib/utils";
 
 export default function BottomNav() {

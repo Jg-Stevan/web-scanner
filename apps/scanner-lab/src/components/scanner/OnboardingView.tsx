@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Camera, Crop, FolderOpen, ScanSearch } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useScannerStore } from "@/lib/scanner/store";
+import { useScannerStore } from "@jg-stevan/scanner-core/store";
 import { cn } from "@/lib/utils";
 
 interface OnboardingStep {
