@@ -44,10 +44,10 @@ export function ResumenView() {
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto thin-scroll bg-bg bg-scanline flex flex-col">
-      {/* Header propio de la pantalla (idéntico a ACTAS, §7.7) */}
+      {/* Header propio de la pantalla (estructura de ACTAS, §7.7; H1 corregido — ver D12) */}
       <header className="sticky top-0 z-40 w-full bg-bg border-b-2 border-outline-dim flex items-center justify-between px-4 h-14 shrink-0">
         <h1 className="text-2xl font-extrabold text-ok-tint tracking-tighter uppercase">
-          CONTROL ACTAS E-14
+          RESUMEN DE TRABAJO
         </h1>
       </header>
 

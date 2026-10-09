@@ -126,7 +126,8 @@ export function ReviewView() {
             <Pill tone="ok">
               <span className="w-2 h-2 rounded-full bg-ok-tint animate-pulse-sync" />
               <span className="text-[10px] font-bold text-ok-tint font-mono tracking-wide">
-                ✓ {acta.score.toFixed(1)}/10 ÓPTIMA
+                ✓ {acta.score.toFixed(1)}/10{" "}
+                {acta.score >= 8 ? "ÓPTIMA" : "ENVIADA CON ADVERTENCIA"}
               </span>
               <span className="text-ink-faint text-[10px]">•</span>
               <span className="text-[10px] font-semibold text-white tracking-wide uppercase">
