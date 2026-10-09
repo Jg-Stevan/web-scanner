@@ -17,6 +17,9 @@ const basePath = isStatic ? "/web-scanner" : undefined;
 
 const nextConfig: NextConfig = {
   turbopack: { root: workspaceRoot },
+  // El core del workspace sirve TS crudo: Turbopack lo compila en dev y en
+  // build. SIN esto el build falla (SPEC fase lógica §8 L0).
+  transpilePackages: ["@jg-stevan/scanner-core"],
   ...(isStatic
     ? {
         output: "export" as const,

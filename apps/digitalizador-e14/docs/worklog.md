@@ -160,3 +160,28 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   `out/` bajo prefijo `/web-scanner/`.
 - **Pendiente/Bloqueado:** merge a main + smoke test en Pages real. FASE LÓGICA
   (§11) sigue pendiente de aprobación del dueño.
+
+### [2026-10-09 14:25 (Bogotá)] — L0 andamiaje — Z.ai Code
+- **Hecho:** FASE LÓGICA arrancada (SPEC en docs/SPEC-fase-logica.md, rev.3,
+  commit propio). Andamiaje sin comportamiento:
+  - `package.json`: dep `@jg-stevan/scanner-core: workspace:*` + `bun install`
+    (bun.lock +1 línea — obligatorio para `--frozen-lockfile` de CI).
+  - `next.config.ts`: `transpilePackages` (el core sirve TS crudo).
+  - Assets del core copiados a `public/`: `scanner/detection-worker.js`
+    (md5 idéntico al del lab) + `vendor/opencv-4.5.5.js` + `opencv-4.5.5-core.js`.
+  - Smoke de resolución: 13/13 símbolos del core importables desde la app
+    (evaluateQuality, processImage, detectDocumentEdges, requestOcr, …).
+  - `e14:check` (tsc --noEmit) verde.
+- **Archivos:** package.json, next.config.ts, public/scanner/, public/vendor/, bun.lock
+- **Commits:** (ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run e14:check` + `bun -e 'await import("@jg-stevan/scanner-core")'`.
+- **Pendiente/Bloqueado:** L1 (contrato async, mock intacto). MAPA API del core
+  verificado: detectDocumentEdges(image-processor:459), processImage(:821,
+  ProcessResult{processed,thumbnail,precision.engine}), evaluateQuality(:1014,
+  PageQuality{level,sharpness,brightness,contrast}), requestOcr(ocr:155, con
+  NEXT_PUBLIC_STATIC=1 va directo a Tesseract local), ocrTextIsValid(:182),
+  buildDocPdf(pdf-export:352), downloadBlob/sanitizeFileName, fileToCaptureDataUrl
+  (image-processor:225), CameraFrameLoop(frame-loop:76, start(video,{onFrame,
+  onTrigger,onNoDetectTimeout})), defaultQuad(types:210). captureSmart vive en el
+  LAB (CameraView.tsx), no en el core. NOTA numeración: los D12–D22 del spec
+  (redactado antes de D12/D13 del repo) se registrarán como D14–D24 en DECISIONS.
