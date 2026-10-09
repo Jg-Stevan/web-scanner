@@ -185,3 +185,47 @@ export const ImportIcon = ({ className = "w-4 h-4" }: IconProps) => (
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
   </svg>
 );
+
+export const EyeIcon = ({ className = "w-3.5 h-3.5" }: IconProps) => (
+  <svg
+    className={`${className} stroke-current stroke-2 fill-none`}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+/** Linterna del flash (L3 — silueta de linterna, mismo patrón SVG inline). */
+export const FlashIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg className={`${className} fill-current`} viewBox="0 0 24 24" aria-hidden>
+    <path d="M6 2h12a1 1 0 0 1 1 1v3.5a3 3 0 0 1-.88 2.12L15 11.5V21a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-9.5L5.88 8.62A3 3 0 0 1 5 6.5V3a1 1 0 0 1 1-1zm1 2v2.5a1 1 0 0 0 .29.71L10 10h4l2.71-2.79A1 1 0 0 0 17 6.5V4H7zm3 8v7h1.5v-7H10z" />
+    <path d="M8.5 5.5h2l.5 2-1.5 1.5L8.5 7.5z" />
+  </svg>
+);
+
+/** Encuadre de escaneo (L3 — toggle AUTO del visor, 4 esquinas del lab Scan). */
+export const ScanFrameIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg
+    className={`${className} stroke-current stroke-2 fill-none`}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
+  </svg>
+);
+
+export const DownloadIcon = ({ className = "w-3.5 h-3.5" }: IconProps) => (
+  <svg
+    className={`${className} fill-none stroke-current stroke-2`}
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+  </svg>
+);

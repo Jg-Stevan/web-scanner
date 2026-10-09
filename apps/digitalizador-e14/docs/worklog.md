@@ -160,3 +160,405 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   `out/` bajo prefijo `/web-scanner/`.
 - **Pendiente/Bloqueado:** merge a main + smoke test en Pages real. FASE LÓGICA
   (§11) sigue pendiente de aprobación del dueño.
+
+### [2026-10-09 14:25 (Bogotá)] — L0 andamiaje — Z.ai Code
+- **Hecho:** FASE LÓGICA arrancada (SPEC en docs/SPEC-fase-logica.md, rev.3,
+  commit propio). Andamiaje sin comportamiento:
+  - `package.json`: dep `@jg-stevan/scanner-core: workspace:*` + `bun install`
+    (bun.lock +1 línea — obligatorio para `--frozen-lockfile` de CI).
+  - `next.config.ts`: `transpilePackages` (el core sirve TS crudo).
+  - Assets del core copiados a `public/`: `scanner/detection-worker.js`
+    (md5 idéntico al del lab) + `vendor/opencv-4.5.5.js` + `opencv-4.5.5-core.js`.
+  - Smoke de resolución: 13/13 símbolos del core importables desde la app
+    (evaluateQuality, processImage, detectDocumentEdges, requestOcr, …).
+  - `e14:check` (tsc --noEmit) verde.
+- **Archivos:** package.json, next.config.ts, public/scanner/, public/vendor/, bun.lock
+- **Commits:** (ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run e14:check` + `bun -e 'await import("@jg-stevan/scanner-core")'`.
+- **Pendiente/Bloqueado:** L1 (contrato async, mock intacto). MAPA API del core
+  verificado: detectDocumentEdges(image-processor:459), processImage(:821,
+  ProcessResult{processed,thumbnail,precision.engine}), evaluateQuality(:1014,
+  PageQuality{level,sharpness,brightness,contrast}), requestOcr(ocr:155, con
+  NEXT_PUBLIC_STATIC=1 va directo a Tesseract local), ocrTextIsValid(:182),
+  buildDocPdf(pdf-export:352), downloadBlob/sanitizeFileName, fileToCaptureDataUrl
+  (image-processor:225), CameraFrameLoop(frame-loop:76, start(video,{onFrame,
+  onTrigger,onNoDetectTimeout})), defaultQuad(types:210). captureSmart vive en el
+  LAB (CameraView.tsx), no en el core. NOTA numeración: los D12–D22 del spec
+  (redactado antes de D12/D13 del repo) se registrarán como D14–D24 en DECISIONS.
+
+### [2026-10-09 19:33 (Bogotá)] — L1 contrato async — Z.ai Code (Task 6-L1)
+- **Hecho:** FASE LÓGICA L1 (SPEC §8-L1) — el bridge pasa a async con eventos
+  de progreso, el store consume Promise y ANALIZANDO se vuelve event-driven.
+  El MODO SIMULACIÓN queda visualmente idéntico (regresión cero verificada).
+  - `types.ts` (§3.1 aditivo): `FuenteCaptura`, `EtapaAnalisis` (5 etapas),
+    `ProgresoAnalisis` y campos OPCIONALES en `Acta` (fuente, fotoProcesada,
+    fotoOriginal, ocrTexto, metricas, motor, quadDetectado — `Quad` importado
+    del core —, rotation). Seed/mocks intactos (todo opcional).
+  - `bridge.ts` (§3.2): `OpcionesEscaneo` gana `fuente/archivo/frameActual/
+    onProgreso`; `E14Bridge.escanearActa` → `Promise<Acta>` + `exportarPdf`.
+    `MockBridge.escanearActa` async: lógica ORIGINAL intacta (regla 2º intento
+    ≥8 D8, scores, firma2, rechazo 80/20) + progreso SINTÉTICO de 5 etapas
+    (~350–600 ms c/u, ~2.3 s total, 2–3 saltos por etapa; sin onProgreso la
+    temporización es la misma) y resuelve con `fuente:"SIMULACION"` +
+    `motor:"mock"`. `MockBridge.exportarPdf` → throw "EXPORTACIÓN NO
+    DISPONIBLE EN SIMULACIÓN". NUEVA `CompositeBridge` (D17/D19): enruta por
+    fuente (SIM→mock interno; CAMARA/ARCHIVO→real o throw "FUENTE REAL NO
+    IMPLEMENTADA (L2)"); horas delegan al mock.
+  - `get-bridge.ts`: instancia `new CompositeBridge(null)` — mismo contrato de
+    export; L2 inyectará el RealCoreBridge aquí (punto único, D1/D17).
+  - `store.ts`: estado nuevo `fuente` (SIM por defecto), `setFuente`,
+    `archivoPendiente`, `setArchivoPendiente`, `progresoAnalisis`,
+    `analisisResuelto`; `dispararEscaneo` → async (vista analizando primero,
+    actaActual null, onProgreso → set, error → toast crit "ERROR DE PROCESADO"
+    + volver a escanear). `analisisCompletado`/`enviarActa`/`repetirFoto`/
+    `enviarRevisionHumana` SIN cambios de lógica.
+  - `AnalyzingView.tsx` (§7): setInterval fake ELIMINADO. % ponderado por
+    etapa (DETECTANDO .15 · RECORTANDO .15 · REALZANDO .20 · CALIDAD .15 ·
+    OCR .35) suavizado con lerp por rAF (τ=140 ms); piso escénico D16/D18:
+    nunca 100 hasta (pipeline resuelto && ≥1200 ms), luego anima a 100 y
+    `analisisCompletado()` tras 350 ms (mismo patrón). Latencia del beacon =
+    ms reales desde el mount (~cada 180 ms). 4 barras + 4 labels de ETAPAS
+    intactos (mismas fórmulas floor/ceil que la fase gráfica).
+  - `eslint.config.mjs`: ignores `public/vendor/**` + `public/scanner/**`
+    (mismo patrón que scanner-lab) — SIN esto lint:e14 fallaba con 9 errores
+    por el opencv minificado que L0 copió a public/ (gap de L0).
+  - QA navegador (agent-browser 390×844, dev :3001): flujo dorado ÓPTIMA →
+    "✓ 8.2/10 ÓPTIMA" + "ENVIADO CORRECTAMENTE" + auto-envío D4 ✓;
+    ADVERTENCIA → "⚠ 7.5/10 MODERADA" → ENVIAR A TRANSMISIÓN → "✓ 7.5/10
+    ENVIADA CON ADVERTENCIA" ✓; RECHAZADA → toast crit "ACTA NO RECONOCIDA"
+    + ILEGIBLE + "OBLIGATORIO REPETIR FOTO (INTENTO 1 DE 2)" ✓; REPETIR →
+    "✓ 8.6/10 ÓPTIMA" (2º intento ≥8, D8) ✓. Muestreo del ANALIZANDO: 8%@360ms
+    → 20%@720 → 39%@1260 → 55%@1620 → 77%@2160 → 99%@2520 (piso) → 100% →
+    REVISIÓN; latencia real 360→2520 ms. `agent-browser errors` y consola:
+    0 errores. Tests bun del contrato: mock 2174 ms/14 eventos, composite-SIM
+    2º intento 9.4, CAMARA→throw L2, exportarPdf→throw SIM, error-path del
+    store → toast + vista escanear (nunca atascado en analizando).
+  - lint:e14 + e14:check: 0 errores. ScanView/ReviewView/seed/core/lab: 0
+    cambios (chips de fuente llegan en L2/L3).
+- **Archivos:** src/lib/e14/{types.ts,bridge.ts,get-bridge.ts,store.ts},
+  src/components/e14/screens/AnalyzingView.tsx, eslint.config.mjs,
+  docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run lint:e14 && bun run e14:check` → 0 errores;
+  `bun run dev:e14` → chip ÓPTIMA → Escanear → ANALIZANDO ~2.3 s con anillo y
+  barras avanzando → REVISIÓN auto-enviada. En consola del dev no hay errores.
+- **Pendiente/Bloqueado:** L2 — fuente ARCHIVO real: `scanner-core-bridge.ts`
+  (pipeline §5: fileToCaptureDataUrl → detectDocumentEdges → processImage →
+  evaluateQuality → requestOcr + gate ILEGIBLE §4.2), mapeo §4.1, ReviewView
+  "VER FOTO", inyectar RealCoreBridge en get-bridge.ts y chips de fuente en
+  ScanView. La numeración de DECISIONS sigue el corrimiento D12→D14 del spec.
+
+### [2026-10-09 19:55 (Bogotá)] — L2 fuente ARCHIVO real — Z.ai Code (Task 6-L2)
+- **Hecho:** FASE LÓGICA L2 (SPEC §8-L2, §5+§4+§7) — el pipeline REAL del
+  core analiza imágenes importadas; SIMULACIÓN intacta (regresión cero
+  verificada de los 4 caminos dorados).
+  - `scanner-core-bridge.ts` (NUEVO): `RealCoreBridge implements E14Bridge`.
+    Pipeline §5: `fileToCaptureDataUrl → detectDocumentEdges →
+    processImage(quad, "original") → evaluateQuality → requestOcr → mapeo §4
+    → Acta`. Mapeo §4.1 (bruto .4/.3/.3 /10, techos fair≤7.9 y poor≤6.4);
+    gate §4.2 `ocrTextIsValid && /E-?14|REGISTRADURÍA/i` → ILEGIBLE calca la
+    rechazada v2 (score real queda); legible → statusDeScore (RECHAZADA
+    GENERICO "SCORE INSUFICIENTE…"). Timeout global 15 s: RESUELVE acta
+    RECHAZADA ILEGIBLE "TIEMPO DE PROCESADO EXCEDIDO" (nunca reject — el
+    toast crit sale del flujo normal del store) + flag `vencido` para no
+    emitir progreso/descartar el resultado tardío. Excepción de
+    detectDocumentEdges → RECHAZADA ILEGIBLE inmediata (el core SIEMPRE
+    devuelve Quad: excepción = no detectable). Progreso: rampas interpoladas
+    en las esperas opacas (DETECTANDO 0→.5→.9→1 · RECORTANDO .2→.6 ·
+    REALZANDO .4→1 · CALIDAD 0→1) y progreso REAL del Tesseract en OCR.
+    Relleno simulado idéntico al mock (seed ACTA_MOCK, firma2 TENUE/
+    NO_DETECTADO coherente) + campos reales (fuente, fotoOriginal,
+    fotoProcesada, ocrTexto, metricas, motor=precision.engine??"canvas",
+    quadDetectado, rotation 0). CAMARA → throw "CÁMARA LLEGA EN LA FASE L3";
+    exportarPdf → throw "…L4". Log `[e14-L2] pipeline …ms` por etapa
+    (decode/detect/proceso/calidad/ocr + motor + metricas).
+  - `get-bridge.ts`: `new CompositeBridge(new RealCoreBridge())` — punto
+    único intacto (D1/D17).
+  - `store.ts`: `notificar` expuesto como acción (L2: toast CÁMARA→L3; L3
+    lo reusará para permisos). Guard ARCHIVO: disparo sin archivo → toast
+    warn "ELIGE UNA IMAGEN" + vista escanear (REPETIR FOTO en fuente ARCHIVO
+    vuelve al picker en vez de reventar).
+  - `ScanView.tsx` (§7): fila de chips de FUENTE (SIMULACIÓN · CÁMARA ·
+    IMPORTAR, activa en verde tint) encima del panel; CÁMARA → toast warn
+    "CÁMARA LLEGA EN LA FASE L3" (visible, no muerto); IMPORTAR/chip/botón
+    IMPORTAR IMAGEN → picker real → `setArchivoPendiente +
+    setFuente("ARCHIVO") + dispararEscaneo()` (análisis inmediato); chips de
+    resultado solo en SIMULACIÓN (panel no-SIM = estado de fuente + botón
+    IMPORTAR; PASAR A OFFLINE siempre); label del visor según fuente;
+    `warmUpScannerWorker()` al montar (§9).
+  - `ReviewView.tsx` (§7): `ToolbarBtn "VER FOTO"` (ADVERTENCIA/RECHAZADA:
+    4ª columna; ENVIADA real: toggle centrado) — alterna papel sintético ↔
+    `<img fotoProcesada>` (misma caja, object-contain); badge
+    "FOTO REAL DISPONIBLE" (font-data ok-tint) cuando hay foto y se muestra
+    el papel. En SIM (sin foto) todo queda como la fase gráfica. EyeIcon
+    nuevo en icons.tsx (mismo patrón SVG inline).
+  - QA navegador (agent-browser 390×844, dev :3001):
+    - SIM: ÓPTIMA → "✓ 9.1/10 ÓPTIMA"+"ENVIADO CORRECTAMENTE"+auto-envío;
+      ADVERTENCIA → "⚠ 7.2/10 MODERADA" → ENVIAR A TRANSMISIÓN → "✓ 7.2/10
+      ENVIADA CON ADVERTENCIA"; RECHAZADA → toast crit "ACTA NO RECONOCIDA
+      (Score 3.8/10)" + ILEGIBLE + "INTENTO 1 DE 2"; REPETIR → "✓ 9.4/10
+      ÓPTIMA" (D8). Chips de fuente presentes, SIM por defecto.
+    - ARCHIVO nítida (test-acta-nitida.png): pipeline motor=worker,
+      legible=true, **score 9.3 → ÓPTIMA auto-enviada**, VER FOTO muestra
+      el warp del core (PNG 1466×1988, centrado, sin distorsión — verificado
+      con VLM); metricas reales {sharpness 100, brightness 77, contrast
+      100, level excellent} → bruto 9.31 → 9.3 coherente.
+    - ARCHIVO ilegible (test-acta-ilegible.png): gate OCR → **RECHAZADA**
+      (score REAL 7.8 — el estado manda sobre el score) + toast crit
+      "ACTA NO RECONOCIDA Score 7.8/10" + CTAs de rechazo; metricas
+      {sharpness 61, brightness 78, contrast 100, level good}.
+    - CÁMARA chip → toast "CÁMARA LLEGA EN LA FASE L3". REPETIR en ARCHIVO
+      sin archivo → toast warn + picker (nunca atascado en analizando).
+    - Timeout (QA con TIMEOUT_MS=800 temporal, revertido): acta RECHAZADA
+      "TIEMPO DE PROCESADO EXCEDIDO" + toast crit; el pipeline tardío se
+      descarta sin unhandled rejection.
+    - Tiempos REALES del pipeline (log `[e14-L2]`, headless): nítida 1ª vez
+      total=3719 ms (decode 84 · detect 57 · proceso 382 · calidad 29 · OCR
+      3168 — 1ª descarga del motor Tesseract CDN); nítida 2ª (WASM cacheado)
+      total=2164 ms (85 · 32 · 306 · 28 · 1713); ilegible total=1082 ms
+      (85 · 33 · 275 · 27 · 665). Muy por debajo del timeout de 15 s (no
+      hizo falta reintentar). `window.__scannerPrecision()` → {ready:true,
+      dead:false} (worker OpenCV vivo — motor "worker" en las 3 corridas).
+    - `agent-browser errors` + consola: 0 errores de app. Único ruido
+      esperado: `POST /api/ocr 404` en dev (requestOcr del core intenta el
+      endpoint antes de caer al Tesseract local — fallback documentado del
+      core, no error de e14).
+  - lint:e14 + e14:check: 0 errores. scanner-core/scanner-lab: 0 cambios.
+- **Archivos:** src/lib/e14/{scanner-core-bridge.ts(get nuevo),get-bridge.ts,store.ts},
+  src/components/e14/{icons.tsx,screens/ScanView.tsx,screens/ReviewView.tsx},
+  docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run dev:e14` → chip IMPORTAR (o IMPORTAR IMAGEN) →
+  elegir foto de un acta → ANALIZANDO con etapas reales → REVISIÓN con VER
+  FOTO. Con imagen borrosa/sin cabecera → RECHAZADA ILEGIBLE. El modo
+  SIMULACIÓN sigue idéntico (chips ÓPTIMA/ADVERTENCIA/RECHAZADA).
+- **Pendiente/Bloqueado:** L3 — fuente CÁMARA real + interfaz de escaneo
+  del lab COMPLETA (HUD, BUSCANDO ACTA…, quad en vivo, IA·AUTO, flash,
+  ZSL, ruta iOS). El copy fijo de la tarjeta ILEGIBLE (diseño v2) sigue
+  mostrando "CÓDIGO DE BARRAS Y CABECERA NO DETECTADOS" también para el
+  timeout — el detalle real vive en `acta.rechazo.detalle` (dato, no UI).
+
+### [2026-10-09 20:25 (Bogotá)] — L3 cámara real + interfaz del lab — Z.ai Code (Task 6-L3)
+- **Hecho:** FASE LÓGICA L3 (SPEC §8-L3 + §7 rev.3) — la fuente CÁMARA es REAL
+  (video + CameraFrameLoop del core) y la interfaz de escaneo del lab
+  (CameraView.tsx) se copió COMPLETA re-vestida con Precision Monitor, sin
+  dependencias nuevas (rg de useScannerStore/framer/vaul/sonner → VACÍO).
+  SIMULACIÓN/IMPORTAR quedan EXACTOS a L2 (diff de píxeles del visor ≈0.8/255).
+  - `scanner-core-bridge.ts`: soporte CAMARA con dos entradas (§5): `archivo`
+    (foto ZSL/captureSmart/iOS) → MISMO pipeline que ARCHIVO; sin archivo y con
+    `frameActual` (video vivo) → grab síncrono a canvas a RESOLUCIÓN DEL STREAM
+    (videoWidth/Height, antes de que React desmonte el visor) → dataUrl →
+    pipeline con ETIQUETAS DE ETAPA idénticas. Timeout 15 s/gate/mapeo intactos.
+    Log `[e14] pipeline CAMARA/file|video-grab …`.
+  - `store.ts`: `framePendiente/setFramePendiente` (video vivo para el grab) +
+    guard CAMARA sin captura (toast warn "CAPTURA UNA FOTO" + vista escanear,
+    espejo de D23) + `frameActual` pasado al bridge.
+  - `ScanView.tsx` (§7 rev.3 completo, copiado del lab):
+    · `<video playsInline muted autoPlay>` dentro del marco existente (mismos
+      corner brackets, z-30); getUserMedia con cascada exact environment
+      (ideal 1920×1080) → environment → video; stop() del stream + loop +
+      ring en unmount y cambio de fuente/vista.
+    · Fallback: permiso denegado / sin HTTPS / sin getUserMedia / track muerto
+      (B3) → toast warn + vuelta automática a SIMULACIÓN (§7, D27).
+    · CameraFrameLoop montado sobre el video: onFrame → telemetría (throttle
+      UI ~10 Hz) + feed del ring ZSL (~5 Hz); onTrigger → gate del lab
+      L1380-1385 (`if (!autoArmado || procesando || cooldown) return` — el gate
+      fino vive en el core); onNoDetectTimeout → toast warn "NO DETECTO EL
+      ACTA" / "Acércala más al encuadre.".
+    · HUD: "CALIDAD 82%" (score.total, ok-tint >80) + "ACTA DETECTADA /
+      NO DETECTADA" + pill "IA · AUTO / IA · MANUAL" (punto pulsante ok-tint).
+    · Pill "BUSCANDO ACTA…" superior centrada (bg-black/60 + blur + spinner
+      ok-tint + texto blanco 12px) mientras corners === null.
+    · Quad overlay SVG en vivo (mapeo object-cover exacto con ResizeObserver,
+      lab L1493-1515) en ok-tint + máscara 32% + 4 puntos blancos, fade 150 ms.
+    · Toggle AUTO default OFF (D22 spec → D24) en la fila [FLASH | shutter |
+      AUTO]; overlay "MANTÉN INMÓVIL EL ACTA…" cuando armado + score>0.8
+      (lab L1802); anillo del shutter verde si score.total > SHUTTER_SCORE.
+    · Flash F-FLASH v3 (lab L486-555/L1404-1416): applyConstraints +
+      verificación getSettings().torch + flashRef con reintentos
+      0/250/700/1500 ms + re-aplicación en "playing"; sin stream → hint
+      "LA LINTERNA NECESITA CÁMARA REAL" (D26).
+    · Disparo POR PLATAFORMA (D25): ImageCapture → captureSmart (takePhoto
+      full-res, carrera 8 s); iOS/Safari sin ImageCapture → input
+      capture="environment" (cámara nativa, mismo pipeline); otros sin IC →
+      best frame ZSL; último recurso → grab del video vivo (frameActual).
+      ZSL ring de 8 canvases, ventana 80-450 ms, liberación R-14.
+    · Destello blanco ~120 ms (flashKey, keyframe nuevo en globals.css) +
+      navegación a ANALIZANDO diferida ~260 ms para que se vea; vibrate(30).
+    · Toast iOS único: "CÁMARA NATIVA EN IPHONE". Fuera de alcance (spec):
+      "Revisar N" + multi-página NO copiados.
+  - `globals.css`: keyframe `animate-capture-flash` (120 ms). `icons.tsx`:
+    FlashIcon + ScanFrameIcon (SVG inline). Fix de estilo: la liberación de
+    canvases del ring vive en función de módulo `liberarCanvas` (espejo del
+    releaseFrame del lab) para satisfacer `react-hooks/immutability` 7.1.x.
+  - QA navegador (agent-browser 390×844, dev :3001):
+    - SIM regresión: ÓPTIMA "✓ 8.2/10 ÓPTIMA"+"ENVIADO CORRECTAMENTE"
+      (auto-envío D4); ADVERTENCIA "⚠ 7.0/10 MODERADA" → ENVIAR A
+      TRANSMISIÓN → "✓ 7.0/10 ENVIADA CON ADVERTENCIA"; RECHAZADA toast
+      "ACTA NO RECONOCIDA Score 4.2/10" + "INTENTO 1 DE 2" + ILEGIBLE;
+      REPETIR → "✓ 9.4/10 ÓPTIMA" (D8). Visor SIM idéntico a L2 (diff píxel
+      0.81/255 muestreado).
+    - ARCHIVO nítida: "✓ 9.3/10 ÓPTIMA" (motor=worker, log `[e14] pipeline
+      ARCHIVO/file total=3359ms … score=9.3`), VER FOTO = warp real centrado
+      sin distorsión (verificado con VLM).
+    - CÁMARA headless (sin cámara): click chip → getUserMedia falla → toast
+      warn "CÁMARA NO DISPONIBLE" / "No hay cámara accesible (permiso
+      denegado, sin hardware o sin conexión segura). VOLVIENDO A
+      SIMULACIÓN." + fuente vuelve a SIMULACIÓN (chip SIM activo, panel
+      Simulación, IMPORTAR IMAGEN visible) y el flujo dorado sigue
+      operativo (ÓPTIMA 9.4 tras el fallback). Cambio rápido de chips
+      CÁMARA→SIM→CÁMARA estable. `agent-browser errors` + consola: 0 errores
+      de app.
+    - Test bun aislado del store: guard CAMARA (toast warn + escanear) y
+      error-path con frameActual inválido (toast crit ERROR DE PROCESADO +
+      escanear, nunca atascado en analizando).
+  - lint:e14 + e14:check: 0 errores. scanner-core/scanner-lab: 0 cambios.
+  - HONESTO: la cámara REAL (preview, quad, HUD, flash, AUTO, iOS nativo) NO
+    es verificable en headless — el dueño la prueba en el teléfono (Pages
+    HTTPS). Lo verificado aquí es el fallback + todo lo no-cámara.
+- **Archivos:** src/lib/e14/{scanner-core-bridge.ts,store.ts},
+  src/components/e14/{icons.tsx,screens/ScanView.tsx},
+  src/app/globals.css, docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run dev:e14` → chip CÁMARA (en teléfono: HTTPS +
+  permiso) → quad verde en vivo + HUD CALIDAD; armar AUTO → dispara sola con
+  el acta quieta; FLASH para la linterna; en iPhone el shutter abre la cámara
+  nativa. Sin cámara (desktop headless) → toast + vuelta a SIMULACIÓN. El
+  modo SIMULACIÓN sigue idéntico (chips ÓPTIMA/ADVERTENCIA/RECHAZADA).
+- **Pendiente/Bloqueado:** L4 — EXPORTAR PDF (adaptador §6 buildDocPdf +
+  CTA "EXPORTAR PDF" en REVISIÓN solo actas reales). Riesgos conocidos para
+  el teléfono real: el preview pide 1920×1080 (más GPU que el 540p del lab
+  en gama baja — si se ve pesado, bajar a 960×540); sin F-LENS v4 del lab
+  (sondeo de lentes) Chrome elige la trasera por defecto; takePhoto sin
+  sensor-profiler (el clamp de 48MP lo cubre maxLongSide del core al decodar).
+
+### [2026-10-09 15:35 (Bogotá)] — L4 EXPORTAR PDF — Z.ai Code (Task 6-L4)
+- **Hecho:** export real §6 con el core tal cual:
+  - `scanner-core-bridge.ts`: `exportarPdf(acta)` implementado — adaptador
+    Acta→ScanDocument (pages[0] con processed=fotoProcesada, filter "original",
+    quad unitario en Points, quality de metricas vía `makeQuality` o
+    `excellentQuality`, `ocrDone`/`createdAt` requeridos por la interfaz
+    congelada) → `buildDocPdf(doc, "standard")` → `pdf.output("blob")` →
+    `downloadBlob(blob, sanitizeFileName(title)+".pdf")` (patrón canónico del
+    lab). Sin foto real → throw "SIN FOTO REAL PARA EXPORTAR".
+  - `store.ts`: acción `exportarPdfActa` (guard SIN FOTO REAL → toast warn;
+    try/catch → toast ok "PDF GENERADO" / crit "ERROR DE EXPORTACIÓN").
+  - `ReviewView.tsx` (ReviewCtas): ENVIADA + acta REAL → fila con EXPORTAR PDF
+    (outline + DownloadIcon) JUNTO a SEGUIR ESCANEANDO (flex-1 verde). En
+    SIMULACIÓN el botón se OCULTA (spec §6). DownloadIcon añadido a icons.tsx.
+- **QA (agent-browser 390×844, dev :3001):**
+  - ARCHIVO nítida → ÓPTIMA → ENVIADA → EXPORTAR PDF → blob capturado con spy
+    de anchor.click: **{size: 333721, type: "application/pdf", name: "ROMA -
+    CONSULADO — MESA 002.pdf"}** + toast "PDF GENERADO" ✓
+  - SIM ÓPTIMA → ENVIADA → footer SOLO "seguir escaneando" (botón oculto) ✓
+  - lint:e14 + e14:check: 0 errores · sin page errors.
+- **Archivos:** scanner-core-bridge.ts, store.ts, ReviewView.tsx, icons.tsx
+- **Commits:** (este commit)
+- **Cómo probar:** IMPORTAR imagen → esperar ÓPTIMA/ENVIADA → EXPORTAR PDF →
+  descarga + toast. En SIM el botón no existe.
+- **Pendiente/Bloqueado:** L5 (QuadEditor copiado del lab + toolbar real +
+  rescate D20).
+
+### [2026-10-10 00:55 (Bogotá)] — L5 editor de recorte + toolbar REAL + rescate — Z.ai Code (Task 6-L5)
+- **Hecho:** FASE LÓGICA L5 (SPEC §8-L5 + §7.5 + §7 ReviewView) — el editor de
+  recorte NO se inventó: se COPIÓ el subsistema CROP del lab
+  (EditorView.tsx) y se re-vestió Precision Monitor, sin deps nuevas
+  (rg de store del core/lib de animación/drawer/toasts → VACÍO).
+  - `src/components/e14/QuadEditor.tsx` (NUEVO, ~470 líneas netas): COPIA
+    según el mapa §7.5 — `clampN`/`loupeCenterAt`/`quadsClose` (L127-147
+    literal), estado quad/drag/loupe + refs, `pointerToNormalized`/
+    `updateLoupe`/`onHandleDown`/`onContainerPointerMove`/
+    `onContainerPointerUp` (L950-1050 literal, con setPointerCapture y
+    clamp 0-1), 8 asas 44×44 (4 esquinas + 4 medios que trasladan la arista
+    completa), lupa 3× Ø168 en el lado opuesto al dedo con crosshair ámbar,
+    polígono SVG ok-tint, Escape cancela (bloqueado mientras aplica).
+    Aterrizaje del quad con el rAF del lab (easeOutCubic 280 ms); entrada del
+    overlay y pulso del asa → keyframes CSS (globals.css). loadImage UNA vez;
+    rotación del acta en CSS con la misma inversión de coords del lab.
+    CANCELAR descarta · APLICAR full-width verde con spinner "PROCESANDO…".
+  - `src/lib/e14/image-utils.ts` (NUEVO): `rotateProcessedDataUrl` del lab
+    (L189-224, canvas puro) para ROTAR 90° sin re-procesar el pipeline.
+  - `bridge.ts` + `scanner-core-bridge.ts`: método aditivo `recortar(acta,
+    quad, onProgreso)` — Mock/Composite → error canónico en SIM;
+    RealCoreBridge re-ejecuta §5 con F5-MANUAL (`processImage(fotoOriginal,
+    quad, "original", rotation, { manual: true })`), evaluateQuality +
+    requestOcr + mapeo §4.1 + gate §4.2, emite RECORTANDO/REALZANDO/CALIDAD/
+    OCR, timeout 15 s → RECHAZADA "TIEMPO DE PROCESADO EXCEDIDO", y devuelve
+    el acta por SPREAD (intento/fuente/paginación IGUALES — rescate D20 sin
+    intento) con firmas coherentes al status.
+  - `store.ts`: `aplicarRecorte(quad)` (guard SIN FOTO ORIGINAL → warn;
+    recortando → toasts ACTA RECUPERADA/LISTA PARA ENVÍO MANUAL · SIGUE
+    RECHAZADA (SCORE X.X/10) · ERROR DE RECORTADO) + `rotarFoto()` (gira
+    fotoProcesada y hornea rotation para el PDF §6) + `enviarActa` relajada
+    a ADVERTENCIA u OPTIMA (envío MANUAL tras rescate, sin auto-envío D4).
+  - `ReviewView.tsx`: toolbar REAL con fuente ≠ SIMULACIÓN — RECORTAR abre
+    el QuadEditor (quadInicial = quadDetectado ?? defaultQuad) · ROTAR 90°
+    real/Papel en SIM · PANTALLA COMPLETA = visor modal (tap/Esc cierran).
+    Pill "ÓPTIMA · Recuperada — envío manual" + CTAs OPTIMA rescatada
+    (ENVIAR A TRANSMISIÓN verde + REPETIR). En SIM todo queda como hoy.
+  - `globals.css`: keyframes `editor-enter` (280 ms) y `handle-pulse`
+    (1.3 s) — reemplazo CSS de las animaciones del lab.
+  - **QA (agent-browser 390×844, dev :3001):**
+    - SIM regresión COMPLETA: ÓPTIMA 9.8 auto-enviada (✓ ENVIADO
+      AUTOMÁTICAMENTE + SHA-256) · ADVERTENCIA 7.2 → ENVIAR A TRANSMISIÓN →
+      "ENVIADA CON ADVERTENCIA" · RECHAZADA 4.9 + toast "ACTA NO RECONOCIDA
+      Score 4.9/10" + INTENTO 1 DE 2 · ROTAR papel SIM (rotate(90deg)) ·
+      RECORTAR SIM decorativo (sin dialog) · 2º intento 9.8 ÓPTIMA (D8).
+    - ARCHIVO nítida: 9.3 ÓPTIMA (motor=worker) → ENVIADA → EXPORTAR PDF →
+      blob {name: "ROMA - CONSULADO — MESA 003.pdf"} + toast "PDF GENERADO".
+    - EDITOR con ilegible: 7.8 RECHAZADA (gate) → RECORTAR → overlay con la
+      ORIGINAL + quad detectado → drag de asa (Vértice 1 → 39.9%/20.8%,
+      lupa visible durante el arrastre y desaparece al soltar) → APLICAR →
+      "PROCESANDO…" → pipeline re-corre (log `[e14] recorte ARCHIVO
+      total=1279ms … motor=worker legible=false score=7.8`) → sigue
+      RECHAZADA 7.8 + toast "SIGUE RECHAZADA SCORE 7.8/10" + **INTENTO 1 DE
+      2 IGUAL (no consume intento)** · CANCELAR con drag previo: score
+      antes/después 7.8 idéntico.
+    - RESCATE D20 exitoso (imagen diseñada test-acta-croppable.png: header
+      E-14 fuera del quad auto): 9.2 RECHAZADA por gate → RECORTAR → arista
+      superior 24.5%→0% (incluye header) → APLICAR → **toast "ACTA
+      RECUPERADA / LISTA PARA ENVÍO MANUAL" + "9.2/10 ÓPTIMA" + CTAs
+      ENVIAR A TRANSMISIÓN/REPETIR** (manual, sin auto-envío) → enviar →
+      ENVIADA + "ENVIADO CORRECTAMENTE" (log `recorte … legible=true
+      score=9.2 motor=worker`).
+    - ROTAR real: VER FOTO 1553×1995 → ROTAR 90° → 1995×1553 (girada,
+      rotation horneada) · PANTALLA COMPLETA: abre (img girada) + tap y Esc
+      cierran · VLM del editor: quad verde 8 asas + lupa circular +
+      CANCELAR/AJUSTAR BORDES/APLICAR RECORTE ✓.
+    - `agent-browser errors`: 0 errores de app. lint:e14 + e14:check: 0
+      errores. scanner-core/scanner-lab: 0 cambios.
+- **Archivos:** src/components/e14/QuadEditor.tsx (nuevo),
+  src/lib/e14/{image-utils.ts (nuevo), bridge.ts, scanner-core-bridge.ts,
+  store.ts}, src/components/e14/screens/ReviewView.tsx,
+  src/app/globals.css, docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** IMPORTAR una foto borrosa/sin cabecera → RECHAZADA →
+  RECORTAR → arrastrar las 8 asas (la lupa amplía el punto de corte) →
+  APLICAR → el pipeline re-corre y el acta se actualiza SIN consumir intento
+  (mejoró → CTAs de envío manual). ROTAR 90° gira la foto real; PANTALLA
+  COMPLETA la muestra a pantalla completa. En SIM todo queda como hoy.
+- **Pendiente/Bloqueado:** L6 (opcional, persistencia localStorage+
+  IndexedDB) y L7 (opcional, cámara sintética en SIM). La fase lógica
+  OBLIGATORIA (L0-L5) está COMPLETA — queda la DoD §10 final (regresión
+  dorada ya verificada aquí).
+
+### [2026-10-09 16:30 (Bogotá)] — Cierre de FASE LÓGICA: QA integral + build estático — Z.ai Code (Task 6-final)
+- **Hecho:** QA integral de cierre (DoD §10):
+  - `bun install --frozen-lockfile` ✓ · `lint:e14` ✓ · `e14:check` ✓.
+  - SIM dorado completo (ADVERTENCIA manual → "✓ 7.8/10 ENVIADA CON ADVERTENCIA").
+  - ARCHIVO croppable: RECHAZADA 9.2 (gate) → RECORTAR (drag asa superior real con
+    mouse) → APLICAR → "✓ 9.2/10 ÓPTIMA" + ENVIAR A TRANSMISIÓN manual (rescate
+    D20 SIN auto-envío, SIN consumir intento) → ENVIADA con EXPORTAR PDF en footer.
+  - Build estático (BUILD_STATIC=1, basePath /web-scanner): out/ con
+    scanner/detection-worker.js + vendor/opencv×2; URL del worker inlinada
+    `/web-scanner/scanner/detection-worker.js` en el chunk; servido bajo prefijo
+    /web-scanner/ → pipeline REAL en navegador: upload nítida → "✓ 9.3/10 ÓPTIMA"
+    (tesseract CDN 200, motor worker). Todos los assets 200.
+  - D32 registrada (no-useScannerStore, spec D18) — cierra la cobertura D12-D22
+    del spec (→ repo D14-D31 + D32).
+- **Archivos:** docs/{DECISIONS,worklog,ROADMAP}.md
+- **Commits:** (docs final de cierre)
+- **Cómo probar:** ver entradas L0-L5. DoD 5 (cámara real en móvil) queda para el
+  teléfono del dueño en Pages (headless sin cámara: fallback verificado).
+- **Pendiente/Bloqueado:** push + PR feat/e14-fase-logica → main + deploy Pages +
+  smoke test producción (DoD 8). L6/L7 opcionales sin hacer (no bloquean).

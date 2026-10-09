@@ -5,8 +5,10 @@
  */
 import { create } from "zustand";
 import { getBridge } from "./get-bridge";
+import { rotateProcessedDataUrl } from "./image-utils";
 import type { PaginaObjetivo, Forzado } from "./bridge";
-import type { Acta, HistorialRow, Mesa, TipoPagina } from "./types";
+import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
+import type { Quad } from "@jg-stevan/scanner-core/types";
 import {
   COLA_OFFLINE_INICIAL,
   SOLICITUDES_RESCANEO_INICIAL,
@@ -32,6 +34,18 @@ interface E14Store {
   paginaObjetivo: PaginaObjetivo | null;
   /** Resultado que forzará el próximo escaneo (panel de simulación §7.1). */
   forzado: Forzado;
+  /** Fuente de captura del próximo escaneo (L1: solo SIMULACIÓN operativa). */
+  fuente: FuenteCaptura;
+  /** Archivo elegido para la fuente ARCHIVO (L2 lo consume). */
+  archivoPendiente: File | null;
+  /** Video vivo de la fuente CÁMARA (L3: grab del frame si el disparo no trae foto). */
+  framePendiente: HTMLVideoElement | null;
+  /** Último evento de progreso del pipeline (alimenta ANALIZANDO, §7.2). */
+  progresoAnalisis: ProgresoAnalisis | null;
+  /** true cuando el pipeline resolvió (piso escénico D16 de ANALIZANDO). */
+  analisisResuelto: boolean;
+  /** L5 §7.5: true mientras el bridge re-corre el pipeline del RECORTE. */
+  recortando: boolean;
   actasSesion: number;
   mesas: Mesa[];
   completadas: number;
@@ -43,12 +57,32 @@ interface E14Store {
 
   navegar: (vista: Vista) => void;
   setForzado: (forzado: Forzado) => void;
+  setFuente: (fuente: FuenteCaptura) => void;
+  setArchivoPendiente: (archivo: File | null) => void;
+  /** Registra el <video> vivo de la cámara (null al detener el stream). */
+  setFramePendiente: (frame: HTMLVideoElement | null) => void;
+  /** Toast flotante genérico (L2: aviso CÁMARA→L3 del chip de fuente; L3 lo reusa para permisos). */
+  notificar: (tone: Notificacion["tone"], titulo: string, descripcion?: string) => void;
   alternarConexion: () => void;
-  dispararEscaneo: (intento?: number) => void;
+  dispararEscaneo: (intento?: number) => Promise<void>;
   analisisCompletado: () => void;
   enviarActa: () => void;
   repetirFoto: () => void;
   enviarRevisionHumana: () => void;
+  /** L4 §6: exporta el acta REAL (fotoProcesada) a PDF vía buildDocPdf del core. */
+  exportarPdfActa: () => Promise<void>;
+  /**
+   * L5 §7.5 (rescate D20): aplica el recorte manual del QuadEditor —
+   * bridge.recortar re-ejecuta el pipeline con el quad manual (F5-MANUAL) y
+   * NO consume intento. Toast según el resultado del rescate.
+   */
+  aplicarRecorte: (quad: Quad) => Promise<void>;
+  /**
+   * L5 §7 ReviewView: gira fotoProcesada 90° (rotateProcessedDataUrl del lab,
+   * canvas puro) y hornea rotation para el PDF §6. SOLO actas reales — en
+   * SIMULACIÓN ReviewView conserva su rotación local del papel.
+   */
+  rotarFoto: () => Promise<void>;
   descartarNotificacion: (id: number) => void;
 }
 
@@ -85,6 +119,10 @@ function hashMock(): string {
 }
 
 let idNotificacion = 0;
+
+/** Guard anti doble-rotación (espejo del rotatingRef del lab L1054 — la
+ *  rotación rápida es async y un doble tap giraría 180°). */
+let rotandoFotoEnVuelo = false;
 
 export const useE14Store = create<E14Store>((set, get) => {
   const bridge = getBridge();
@@ -149,6 +187,12 @@ export const useE14Store = create<E14Store>((set, get) => {
     actaActual: null,
     paginaObjetivo: null,
     forzado: "ALEATORIO",
+    fuente: "SIMULACION",
+    archivoPendiente: null,
+    framePendiente: null,
+    progresoAnalisis: null,
+    analisisResuelto: false,
+    recortando: false,
     actasSesion: 0,
     mesas: mesasIniciales(),
     completadas: progresoInicial().completadas,
@@ -161,6 +205,14 @@ export const useE14Store = create<E14Store>((set, get) => {
     navegar: (vista) => set({ vista }),
 
     setForzado: (forzado) => set({ forzado }),
+
+    setFuente: (fuente) => set({ fuente }),
+
+    setArchivoPendiente: (archivo) => set({ archivoPendiente: archivo }),
+
+    setFramePendiente: (frame) => set({ framePendiente: frame }),
+
+    notificar,
 
     alternarConexion: () => {
       const { online, colaOffline, actaActual } = get();
@@ -184,16 +236,53 @@ export const useE14Store = create<E14Store>((set, get) => {
       }
     },
 
-    dispararEscaneo: (intento = 1) => {
-      const { forzado, mesas } = get();
+    dispararEscaneo: async (intento = 1) => {
+      const { forzado, mesas, fuente, archivoPendiente, framePendiente } = get();
+      // L2: en fuente ARCHIVO el disparo necesita imagen (REPETIR FOTO vuelve
+      // al picker en vez de reventar el pipeline sin archivo).
+      if (fuente === "ARCHIVO" && !archivoPendiente) {
+        notificar("warn", "ELIGE UNA IMAGEN", "La fuente IMPORTAR analiza la imagen que elijas.");
+        set({ vista: "escanear" });
+        return;
+      }
+      // L3: la fuente CÁMARA necesita una captura (foto ZSL/nativa ya en el
+      // store) o el video vivo para el grab del frame. REPETIR FOTO vuelve al
+      // visor (la cámara se reinicia al reactivar la vista) — espejo de D23.
+      if (fuente === "CAMARA" && !archivoPendiente && !framePendiente) {
+        notificar("warn", "CAPTURA UNA FOTO", "La fuente CÁMARA analiza la foto que toma el obturador.");
+        set({ vista: "escanear" });
+        return;
+      }
       const objetivo = proximaPagina(mesas);
-      const acta = bridge.escanearActa({ objetivo, forzado, intento, maxIntentos: 2 });
       set({
-        actaActual: acta,
-        paginaObjetivo: objetivo,
-        actasSesion: get().actasSesion + 1,
         vista: "analizando",
+        actaActual: null,
+        progresoAnalisis: null,
+        analisisResuelto: false,
       });
+      try {
+        const acta = await bridge.escanearActa({
+          objetivo,
+          forzado,
+          intento,
+          maxIntentos: 2,
+          fuente,
+          archivo: archivoPendiente ?? undefined,
+          frameActual: fuente === "CAMARA" ? framePendiente : undefined,
+          onProgreso: (p) => set({ progresoAnalisis: p }),
+        });
+        set({
+          actaActual: acta,
+          paginaObjetivo: objetivo,
+          actasSesion: get().actasSesion + 1,
+          analisisResuelto: true,
+          archivoPendiente: null,
+        });
+      } catch {
+        // Manejo de error del pipeline (§7 store): nunca quedar en analizando.
+        notificar("crit", "ERROR DE PROCESADO", "No se pudo analizar la imagen.");
+        set({ vista: "escanear", progresoAnalisis: null, analisisResuelto: false });
+      }
     },
 
     analisisCompletado: () => {
@@ -238,7 +327,13 @@ export const useE14Store = create<E14Store>((set, get) => {
 
     enviarActa: () => {
       const { actaActual } = get();
-      if (!actaActual || actaActual.status !== "ADVERTENCIA") {
+      // D20 (L5): envío MANUAL para ADVERTENCIA y también para ÓPTIMA tras un
+      // rescate por recorte (el auto-envío D4 solo dispara al capturar — el
+      // rescate nunca se auto-envía, evita la doble transmisión).
+      if (
+        !actaActual ||
+        (actaActual.status !== "ADVERTENCIA" && actaActual.status !== "OPTIMA")
+      ) {
         return;
       }
       registrarEnvio(tituloPaginaActual());
@@ -257,7 +352,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     repetirFoto: () => {
       const { actaActual } = get();
       const intento = (actaActual?.intento ?? 0) + 1;
-      get().dispararEscaneo(intento);
+      void get().dispararEscaneo(intento);
     },
 
     enviarRevisionHumana: () => {
@@ -274,6 +369,73 @@ export const useE14Store = create<E14Store>((set, get) => {
         historial: [fila, ...get().historial],
       });
       notificar("warn", "ENVIADA A REVISIÓN HUMANA", "Un auditor validará esta acta.");
+    },
+
+    exportarPdfActa: async () => {
+      const { actaActual } = get();
+      if (!actaActual?.fotoProcesada) {
+        notificar("warn", "SIN FOTO REAL", "Solo las actas escaneadas se exportan.");
+        return;
+      }
+      try {
+        await bridge.exportarPdf(actaActual);
+        notificar("ok", "PDF GENERADO", "Acta exportada y descargada.");
+      } catch {
+        notificar("crit", "ERROR DE EXPORTACIÓN", "No se pudo generar el PDF del acta.");
+      }
+    },
+
+    aplicarRecorte: async (quad) => {
+      const { actaActual } = get();
+      if (!actaActual?.fotoOriginal) {
+        notificar("warn", "SIN FOTO ORIGINAL", "Solo las actas escaneadas se pueden recortar.");
+        return;
+      }
+      if (get().recortando) return;
+      set({ recortando: true, progresoAnalisis: null });
+      try {
+        // RecorTE manual → pipeline §5 re-ejecutado con F5-MANUAL; el acta
+        // conserva identidad (intento/fuente/paginación) — rescate sin intento.
+        const acta = await bridge.recortar(actaActual, quad, (p) =>
+          set({ progresoAnalisis: p }),
+        );
+        set({ actaActual: acta, progresoAnalisis: null });
+        if (acta.status === "OPTIMA" || acta.status === "ADVERTENCIA") {
+          notificar("ok", "ACTA RECUPERADA", "LISTA PARA ENVÍO MANUAL");
+        } else {
+          notificar("warn", "SIGUE RECHAZADA", `SCORE ${acta.score.toFixed(1)}/10 — prueba otro recorte o repite la foto.`);
+        }
+      } catch {
+        notificar("crit", "ERROR DE RECORTADO", "No se pudo re-procesar el acta.");
+      } finally {
+        set({ recortando: false });
+      }
+    },
+
+    rotarFoto: async () => {
+      const { actaActual } = get();
+      // SOLO actas reales con foto procesada (en SIM ReviewView rota el papel
+      // sintético localmente y JAMÁS llama aquí — spec §7 ReviewView).
+      if (!actaActual?.fotoProcesada || actaActual.fuente === "SIMULACION") return;
+      if (rotandoFotoEnVuelo) return;
+      rotandoFotoEnVuelo = true;
+      try {
+        // F-ROT-RAPID del lab (L1080): gira la PROCESADA sin re-ejecutar el
+        // pipeline; la rotación queda HORNEADA (rotation += 90) para que el
+        // PDF §6 y un eventual re-recorte la respeten.
+        const { url } = await rotateProcessedDataUrl(actaActual.fotoProcesada, 90);
+        set({
+          actaActual: {
+            ...actaActual,
+            fotoProcesada: url,
+            rotation: ((actaActual.rotation ?? 0) + 90) % 360,
+          },
+        });
+      } catch {
+        notificar("crit", "ERROR DE ROTACIÓN", "No se pudo girar la foto.");
+      } finally {
+        rotandoFotoEnVuelo = false;
+      }
     },
 
     descartarNotificacion: (id) =>

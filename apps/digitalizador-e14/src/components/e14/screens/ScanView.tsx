@@ -1,14 +1,52 @@
 "use client";
 
 /**
- * ESCANEAR (§7.1) — placeholder de visor (no hay mock de cámara en el zip):
- * marco con corner brackets, retícula central, botón disparo, ghost import
- * y PANEL DE SIMULACIÓN para forzar el resultado del próximo escaneo.
+ * ESCANEAR (§7.1) — marco con corner brackets, retícula central, botón
+ * disparo, ghost IMPORTAR y PANEL DE SIMULACIÓN para forzar el resultado.
+ * FASE LÓGICA L2 (§7): chips de FUENTE (SIMULACIÓN · CÁMARA · IMPORTAR);
+ * IMPORTAR IMAGEN real (input file → setArchivoPendiente → análisis);
+ * warmUp del worker OpenCV al montar (§9).
+ *
+ * FASE LÓGICA L3 (§7 rev.3 — interfaz de escaneo del lab COPIADA de
+ * apps/scanner-lab/src/components/scanner/CameraView.tsx y re-vestida con la
+ * estética Precision Monitor, con CERO dependencias nuevas: solo las que ya
+ * tiene e14 + funciones puras del core):
+ *  · <video> en el marco existente + CameraFrameLoop del core (detección en
+ *    vivo OpenCV, score compuesto, k-de-n, isDeviceStable).
+ *  · HUD "CALIDAD 82%" + "ACTA DETECTADA / NO DETECTADA" (font-data).
+ *  · Pill "BUSCANDO ACTA…" superior centrada (lab L1737-1753) mientras
+ *    corners === null.
+ *  · Quad overlay SVG en vivo (lab L1693-1711) en ok-tint con mapeo
+ *    object-cover exacto (mapPoint).
+ *  · Pill "IA · AUTO / IA · MANUAL" (lab L1553-1566) con punto pulsante verde.
+ *  · Toggle AUTO — default OFF (D22 del spec → D24 aquí): el gate del CORE
+ *    dispara onTrigger (k-de-n, cooldown 1500 ms, re-arme, quietud); el
+ *    componente solo filtra if (!autoArmado || procesando) (lab L1380-1385).
+ *  · Flash F-FLASH v3 (lab L486-555 + L1404-1416): applyConstraints +
+ *    verificación getSettings().torch + flashRef con reintentos.
+ *  · ZSL best-shot ring (lab L779-805 + L1395-1400): el disparo manual NO
+ *    usa el frame del instante del tap — ganador por lapVar de 80-450 ms
+ *    ANTES del disparo; ring liberado al desmontar.
+ *  · Ruta iOS (lab L902-925): con ImageCapture → captureSmart (foto
+ *    full-res del sensor); iOS/Safari sin ImageCapture → cámara NATIVA vía
+ *    <input capture="environment">; último recurso → grab del video vivo
+ *    (frameActual del bridge).
+ *  · Destello blanco ~120 ms al capturar (lab L569, flashKey).
+ *  · onNoDetectTimeout → toast "NO DETECTO EL ACTA · ACÉRCALA AL ENCUADRE".
+ *  · Permiso denegado / sin HTTPS / sin getUserMedia → toast warn + vuelta
+ *    automática a SIMULACIÓN (spec §7).
+ * Fuera de alcance (spec): "Revisar N" + contador multi-página (1 acta = 1
+ * captura). En SIMULACIÓN/IMPORTAR la vista queda EXACTAMENTE como en L2.
  */
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { warmUpScannerWorker } from "@jg-stevan/scanner-core/detector-client";
+import { CameraFrameLoop, type FrameLoopTelemetry } from "@jg-stevan/scanner-core/frame-loop";
+import { SHUTTER_SCORE } from "@jg-stevan/scanner-core/quality";
+import type { Quad } from "@jg-stevan/scanner-core/types";
 import { useE14Store } from "@/lib/e14/store";
 import type { Forzado } from "@/lib/e14/bridge";
-import { ImportIcon } from "../icons";
+import type { FuenteCaptura } from "@/lib/e14/types";
+import { FlashIcon, ImportIcon, ScanFrameIcon } from "../icons";
 
 const CHIPS: { valor: Forzado; label: string }[] = [
   { valor: "ALEATORIO", label: "ALEATORIO" },
@@ -17,110 +55,1173 @@ const CHIPS: { valor: Forzado; label: string }[] = [
   { valor: "RECHAZADA", label: "RECHAZADA" },
 ];
 
+const FUENTES: { valor: FuenteCaptura; label: string }[] = [
+  { valor: "SIMULACION", label: "SIMULACIÓN" },
+  { valor: "CAMARA", label: "CÁMARA" },
+  { valor: "ARCHIVO", label: "IMPORTAR" },
+];
+
+/* ── Constantes de cámara (lab CameraView.tsx, adaptadas al task §2) ─────── */
+
+/** Preview ideal 1920×1080 (task L3); la captura full-res va por takePhoto. */
+const IDEAL_PREVIEW_WIDTH = 1920;
+const IDEAL_PREVIEW_HEIGHT = 1080;
+/** Cooldown anti doble-disparo (lab §5.2 — CAPTURE_COOLDOWN_MS del core). */
+const COOLDOWN_MS = 1500;
+/** F-ZSL: ventana pre-tap 80–450 ms (anti tap-shock) + ring de máx 8 frames. */
+const ZSL_DESDE_MS = 80;
+const ZSL_HASTA_MS = 450;
+const RING_MAX = 8;
+/** Feed del ring desde el video a ~5 Hz (lab L735-737). */
+const RING_FEED_MS = 200;
+/** Throttle de la telemetría que va al UI (lab L1371). */
+const TELEMETRIA_UI_MS = 100;
+/** Destello de captura ~120 ms (spec §7 — duración en globals.css) + margen
+ *  antes de navegar a ANALIZANDO (el visor se desmonta). */
+const NAVEGACION_TRAS_MS = 260;
+/** takePhoto puede colgarse (lab error #29): carrera de 8 s. */
+const TAKEPHOTO_TIMEOUT_MS = 8000;
+
+/** Hints de la linterna (F-FLASH v3 — TORCH_HINT del lab, abreviado). */
+const HINT_LINTERNA = "LA LINTERNA NECESITA CÁMARA REAL";
+const DESC_LINTERNA =
+  "El navegador no controla el LED aquí (en iPhone usa Safari 17.4+; las apps integradas no lo permiten). Reabre el escáner o prueba otro navegador.";
+
+/** QA/diagnóstico: telemetría viva del loop desde la consola. */
+declare global {
+  interface Window {
+    __e14Telemetria?: FrameLoopTelemetry;
+  }
+}
+
+/* ── ZSL §5.4 del lab — medidas SIN encode/decode extra (L311-356) ───────── */
+
+/** Medidas de una candidata del burst: varianza Laplaciano + exposición. */
+interface Medidas {
+  lapVar: number;
+  exposure: number;
+}
+
+/** Laplaciano 3×3 (varianza) + histograma de exposición sobre la luma de un
+ *  canvas ≤ 400 px (misma matemática del quality.ts del core). */
+function medirGris(gray: Float32Array, w: number, h: number): Medidas {
+  const n = w * h;
+  let under = 0;
+  let over = 0;
+  for (let i = 0; i < n; i++) {
+    const l = gray[i]!;
+    if (l < 30) under += 1;
+    else if (l > 225) over += 1;
+  }
+  const exposure = 1 - (under + over) / n;
+  let lapSum = 0;
+  let lapSq = 0;
+  let cnt = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const lap = 4 * gray[i]! - gray[i - 1]! - gray[i + 1]! - gray[i - w]! - gray[i + w]!;
+      lapSum += lap;
+      lapSq += lap * lap;
+      cnt += 1;
+    }
+  }
+  const lapVar = cnt > 0 ? lapSq / cnt - (lapSum / cnt) ** 2 : 0;
+  return { lapVar, exposure };
+}
+
+/** Dibuja la fuente a 400 px de lado mayor y mide. SIN encode ni decode. */
+function medirPixeles(src: CanvasImageSource, sw: number, sh: number): Medidas | null {
+  if (!(sw > 0) || !(sh > 0)) return null;
+  const s = Math.min(1, 400 / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * s));
+  const h = Math.max(1, Math.round(sh * s));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(src, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const gray = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+    gray[j] = 0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!;
+  }
+  return medirGris(gray, w, h);
+}
+
+/** iOS/Safari NO implementa ImageCapture en ninguna versión (lab §5.2). */
+function esIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  // iPadOS 13+ se presenta como Mac con touch.
+  return /Mac/.test(ua) && typeof navigator.maxTouchPoints === "number" && navigator.maxTouchPoints > 1;
+}
+
+/** R-14 (lab releaseFrame L360-365): suelta YA el backing store del canvas
+ *  perdedor — no espera al GC (disciplina de memoria iOS, error #22). */
+function liberarCanvas(canvas: HTMLCanvasElement): void {
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
+/** Telemetría reducida para el UI (throttle ~100 ms — LiveUi del lab). */
+interface LiveUi {
+  corners: Quad | null;
+  score: number | null;
+}
+
+/** Frame del ring ZSL (copia dedicada + lapVar + timestamp). */
+interface FrameAnillo {
+  canvas: HTMLCanvasElement;
+  lapVar: number;
+  timestamp: number;
+}
+
+type CamEstado = "iniciando" | "viva" | "no-disponible";
+
 export function ScanView() {
   const dispararEscaneo = useE14Store((s) => s.dispararEscaneo);
   const forzado = useE14Store((s) => s.forzado);
   const setForzado = useE14Store((s) => s.setForzado);
+  const fuente = useE14Store((s) => s.fuente);
+  const setFuente = useE14Store((s) => s.setFuente);
+  const setArchivoPendiente = useE14Store((s) => s.setArchivoPendiente);
+  const setFramePendiente = useE14Store((s) => s.setFramePendiente);
+  const notificar = useE14Store((s) => s.notificar);
   const online = useE14Store((s) => s.online);
   const alternarConexion = useE14Store((s) => s.alternarConexion);
   const inputRef = useRef<HTMLInputElement>(null);
+  /** HQ-iOS: cámara NATIVA del sistema (el click del shutter es el gesto). */
+  const inputCamaraRef = useRef<HTMLInputElement>(null);
+
+  // ── Cámara (refs y estado — patrón del lab L383-458) ──
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const visorRef = useRef<HTMLDivElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const loopRef = useRef<CameraFrameLoop | null>(null);
+  const procesandoRef = useRef(false);
+  const cooldownRef = useRef(0);
+  // D22/D24: AUTO default OFF — el operador decide si arma (intentos finitos).
+  const [autoArmado, setAutoArmado] = useState(false);
+  const autoRef = useRef(false);
+  /** F-FLASH: preferencia de linterna de la sesión (re-aplicada por stream). */
+  const [flashPrefOn, setFlashPrefOn] = useState(false);
+  const flashRef = useRef(false);
+  /** Espejo legible desde listeners sin re-render (lab L399-400). */
+  const torchOnRef = useRef(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [torchDisponible, setTorchDisponible] = useState(false);
+  const [camEstado, setCamEstado] = useState<CamEstado>("iniciando");
+  const [live, setLive] = useState<LiveUi>({ corners: null, score: null });
+  const [procesando, setProcesando] = useState(false);
+  const [destelloKey, setDestelloKey] = useState(0);
+  const [videoDims, setVideoDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [boxSize, setBoxSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const puedeTomarFotoRef = useRef(false);
+  const toastIOSYaRef = useRef(false);
+  const telemetriaAtRef = useRef(0);
+  // F-ZSL — buffer circular Best-Shot (lab L407-411).
+  const anilloRef = useRef<FrameAnillo[]>([]);
+  const anilloFeedAtRef = useRef(0);
+  const anilloScratchRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Espejos para listeners del loop sin re-render (lab L456-458).
+  autoRef.current = autoArmado;
+  flashRef.current = flashPrefOn;
+  torchOnRef.current = torchOn;
+
+  const modoCamara = fuente === "CAMARA";
+  const camaraViva = modoCamara && camEstado === "viva";
+  const buscando = camaraViva && live.corners === null;
+  const scoreAlto = (live.score ?? 0) > SHUTTER_SCORE;
+  const scorePct = live.score !== null ? Math.round(live.score * 100) : null;
+
+  // §9: precarga OpenCV.js del worker sin bloquear la UI.
+  useEffect(() => {
+    warmUpScannerWorker();
+  }, []);
+
+  /* ── Linterna — F-FLASH v3 (lab L473-520) ─────────────────────────── */
+
+  /** Enciende/apaga el torch y VERIFICA el resultado real leyendo
+   *  getSettings().torch — NO confiando en getCapabilities() (hay Chrome que
+   *  no anuncian torch en caps pero SÍ lo aplican). Devuelve true si el LED
+   *  quedó controlado. */
+  const ponerLinterna = useCallback(async (on: boolean): Promise<boolean> => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return false;
+    try {
+      const caps = track.getCapabilities?.() as { torch?: boolean } | undefined;
+      if (caps?.torch) setTorchDisponible(true);
+      await track.applyConstraints({
+        advanced: [{ torch: on }],
+      } as MediaTrackConstraints & { advanced: unknown[] });
+      const st = track.getSettings() as { torch?: boolean };
+      const aplicado = on ? st.torch === true : st.torch !== true;
+      if (aplicado) {
+        torchOnRef.current = on;
+        setTorchOn(on);
+      }
+      if (caps?.torch || aplicado) setTorchDisponible(true);
+      if (!aplicado && on) {
+        // Aceptado en silencio pero sin señal verificable: deshaz para no
+        // dejar un LED encendido "fantasma" (lab L494-502).
+        await track
+          .applyConstraints({ advanced: [{ torch: false }] } as MediaTrackConstraints & {
+            advanced: unknown[];
+          })
+          .catch(() => undefined);
+      }
+      return aplicado;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /** Re-aplica la preferencia persistida CON REINTENTOS (0/250/700/1500 ms):
+   *  varios Android rechazan applyConstraints justo tras getUserMedia. */
+  const aplicarLinternaGuardada = useCallback(() => {
+    for (const ms of [0, 250, 700, 1500]) {
+      window.setTimeout(() => {
+        if (!flashRef.current || torchOnRef.current) return;
+        void ponerLinterna(true);
+      }, ms);
+    }
+  }, [ponerLinterna]);
+
+  /* ── Captura ZSL (lab L710-770) ───────────────────────────────────── */
+
+  /** Copia el fotograma al ring (máx 8) y suelta YA el backing store del
+   *  expulsado (disciplina de memoria iOS, error #22). */
+  const empujarAnillo = useCallback((canvas: HTMLCanvasElement, lapVar: number) => {
+    const anillo = anilloRef.current;
+    const copia = document.createElement("canvas");
+    copia.width = canvas.width;
+    copia.height = canvas.height;
+    copia.getContext("2d")?.drawImage(canvas, 0, 0);
+    anillo.push({ canvas: copia, lapVar, timestamp: performance.now() });
+    if (anillo.length > RING_MAX) {
+      const viejo = anillo.shift();
+      if (viejo) liberarCanvas(viejo.canvas);
+    }
+  }, []);
+
+  /** Alimenta el ring desde el <video> vivo a ~5 Hz: garantiza que el buffer
+   *  SIEMPRE cubra la ventana pre-tap de 80–450 ms. */
+  const alimentarAnillo = useCallback((): void => {
+    const ahora = performance.now();
+    if (ahora - anilloFeedAtRef.current < RING_FEED_MS) return;
+    anilloFeedAtRef.current = ahora;
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) return;
+    if (!anilloScratchRef.current) anilloScratchRef.current = document.createElement("canvas");
+    const scratch = anilloScratchRef.current;
+    if (scratch.width !== video.videoWidth || scratch.height !== video.videoHeight) {
+      scratch.width = video.videoWidth;
+      scratch.height = video.videoHeight;
+    }
+    const ctx = scratch.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    const m = medirPixeles(scratch, scratch.width, scratch.height);
+    empujarAnillo(scratch, m?.lapVar ?? 0);
+  }, [empujarAnillo]);
+
+  /** Libera el ring (al desmontar la sesión de cámara — lab L1395-1400). */
+  const liberarAnillo = useCallback(() => {
+    for (const f of anilloRef.current) liberarCanvas(f.canvas);
+    anilloRef.current = [];
+  }, []);
+
+  /** Instantánea del <video> a resolución del track + medidas sobre ESA MISMA
+   *  imagen (par píxel-idéntico). SIN encode: solo si gana el burst. */
+  const instantanea = useCallback(
+    (): { canvas: HTMLCanvasElement; lapVar: number } | null => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || !video.videoWidth) return null;
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(video, 0, 0);
+      const m = medirPixeles(canvas, canvas.width, canvas.height);
+      empujarAnillo(canvas, m?.lapVar ?? 0);
+      return { canvas, lapVar: m?.lapVar ?? 0 };
+    },
+    [empujarAnillo],
+  );
+
+  /** F-ZSL: ganador pre-tap (mayor lapVar entre 80 y 450 ms antes del
+   *  disparo) y VACIADO del ring — el canvas del ganador pasa al burst. */
+  const tomarZsl = useCallback((): { canvas: HTMLCanvasElement; lapVar: number } | null => {
+    const ahora = performance.now();
+    const enVentana = anilloRef.current.filter((f) => {
+      const edad = ahora - f.timestamp;
+      return edad >= ZSL_DESDE_MS && edad <= ZSL_HASTA_MS;
+    });
+    const ganador =
+      enVentana.length > 0
+        ? enVentana.reduce((a, b) => (b.lapVar > a.lapVar ? b : a))
+        : null;
+    // Libera el ring EXCEPTO el canvas del ganador (lab L809-814).
+    for (const f of anilloRef.current) {
+      if (f === ganador) continue;
+      liberarCanvas(f.canvas);
+    }
+    anilloRef.current = [];
+    if (!ganador) return null;
+    return { canvas: ganador.canvas, lapVar: ganador.lapVar };
+  }, []);
+
+  /** DUAL PIPELINE (lab L645-681, simplificado sin sensor-profiler): foto a
+   *  RESOLUCIÓN DEL SENSOR vía takePhoto() — ignora la resolución del
+   *  preview. Carrera de 8 s; null → el llamador cae al ZSL pre-tap. */
+  const tomarFoto = useCallback(async (): Promise<Blob | null> => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || typeof ImageCapture === "undefined") return null;
+    try {
+      const capture = new ImageCapture(track);
+      const blob = await Promise.race([
+        capture.takePhoto(),
+        new Promise<never>((_, reject) =>
+          window.setTimeout(
+            () => reject(new Error("takePhoto timeout")),
+            TAKEPHOTO_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+      return blob && blob.size > 0 ? blob : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  /** Canvas → Blob JPEG 0.92 (toBlob, NUNCA toDataURL en canvas grande). */
+  const canvasABlob = useCallback(async (canvas: HTMLCanvasElement): Promise<Blob | null> => {
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((b) => resolve(b), "image/jpeg", 0.92),
+    );
+    return blob && blob.size > 0 ? blob : null;
+  }, []);
+
+  /** Despacha la captura: destello + vibrate + File → store → ANALIZANDO.
+   *  La navegación se demora ~260 ms para que el destello (~120 ms) se vea
+   *  ANTES de desmontar el visor. */
+  const despacharCaptura = useCallback(
+    (archivo: File) => {
+      setArchivoPendiente(archivo);
+      setDestelloKey((k) => k + 1);
+      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+        navigator.vibrate(30);
+      }
+      window.setTimeout(() => {
+        procesandoRef.current = false;
+        setProcesando(false);
+        void dispararEscaneo();
+      }, NAVEGACION_TRAS_MS);
+    },
+    [dispararEscaneo, setArchivoPendiente],
+  );
+
+  /** Captura inteligente (lab captureSmart L785-885, adaptada a e14: el
+   *  resultado entra al pipeline del bridge como File):
+   *  1. ZSL pre-tap (ganador del ring, anti tap-shock).
+   *  2. Foto full-res del sensor (takePhoto) si hay ImageCapture → gana
+   *     SIEMPRE (F-RES-PRIORITY: la resolución es intocable).
+   *  3. Sin foto → burst {zsl, snapA, snap} por lapVar → encode del ganador.
+   *  4. Sin NADA → grab del video vivo vía frameActual del bridge. */
+  const capturarInteligente = useCallback(async (): Promise<void> => {
+    if (procesandoRef.current) return;
+    if (cooldownRef.current > Date.now()) return;
+    loopRef.current?.notifyCaptured();
+    cooldownRef.current = Date.now() + COOLDOWN_MS;
+    procesandoRef.current = true;
+    setProcesando(true);
+
+    const zsl = tomarZsl();
+    const fotoBlob = puedeTomarFotoRef.current ? await tomarFoto() : null;
+    if (fotoBlob) {
+      // La foto full-sensor gana: suelta los frames de respaldo (R-14).
+      if (zsl) liberarCanvas(zsl.canvas);
+      despacharCaptura(
+        new File([fotoBlob], `acta-camara-${Date.now()}.jpg`, {
+          type: fotoBlob.type || "image/jpeg",
+        }),
+      );
+      return;
+    }
+    if (puedeTomarFotoRef.current && camEstado === "viva") {
+      // takePhoto colgó (> 8 s) o no existe → aviso honesto del fallback.
+      notificar(
+        "warn",
+        "CAPTURA A RESOLUCIÓN DEL VISOR",
+        "La foto del sensor no respondió; se analiza el mejor fotograma reciente.",
+      );
+    }
+    const snapA = instantanea();
+    const snapB = instantanea();
+    const candidatos = [zsl, snapA, snapB].filter(
+      (f): f is { canvas: HTMLCanvasElement; lapVar: number } => f !== null,
+    );
+    if (candidatos.length === 0) {
+      // Último recurso (lab B8 → e14): grab del video vivo por el bridge
+      // (frameActual → canvas a resolución del stream).
+      const video = videoRef.current;
+      if (video && video.readyState >= 2 && video.videoWidth) {
+        setDestelloKey((k) => k + 1);
+        window.setTimeout(() => {
+          procesandoRef.current = false;
+          setProcesando(false);
+          void dispararEscaneo();
+        }, NAVEGACION_TRAS_MS);
+      } else {
+        procesandoRef.current = false;
+        setProcesando(false);
+        notificar("crit", "NO SE PUDO CAPTURAR", "Inténtalo de nuevo.");
+      }
+      return;
+    }
+    const ganador = candidatos.reduce((a, b) => (b.lapVar > a.lapVar ? b : a));
+    const blob = await canvasABlob(ganador.canvas);
+    for (const c of candidatos) {
+      if (c !== ganador) liberarCanvas(c.canvas);
+    }
+    if (blob) {
+      despacharCaptura(
+        new File([blob], `acta-camara-${Date.now()}.jpg`, { type: "image/jpeg" }),
+      );
+    } else {
+      procesandoRef.current = false;
+      setProcesando(false);
+      notificar("crit", "NO SE PUDO CAPTURAR", "Inténtalo de nuevo.");
+    }
+  }, [
+    tomarZsl,
+    tomarFoto,
+    instantanea,
+    canvasABlob,
+    despacharCaptura,
+    dispararEscaneo,
+    camEstado,
+    notificar,
+  ]);
+
+  /** Ref fresca del captureSmart para los listeners del loop (lab L887-888). */
+  const capturarRef = useRef(capturarInteligente);
+  capturarRef.current = capturarInteligente;
+
+  /* ── Arranque de cámara (lab L996-1252, simplificado: real o fallback SIM) ── */
+
+  useEffect(() => {
+    if (fuente !== "CAMARA") return;
+    let cancelado = false;
+    setCamEstado("iniciando");
+
+    const media = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    if (!media || typeof media.getUserMedia !== "function" || !window.isSecureContext) {
+      notificar(
+        "warn",
+        "CÁMARA NO DISPONIBLE",
+        "Sin acceso a la cámara en este entorno (se requiere HTTPS y permiso). VOLVIENDO A SIMULACIÓN.",
+      );
+      setFuente("SIMULACION");
+      return;
+    }
+
+    const esErrorPermiso = (e: unknown): boolean =>
+      e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError");
+
+    // E3 (lab): SOLO anchos/altos IDEALES — sin exact/min (ideal nunca
+    // rechaza getUserMedia). Cascada: exact environment → environment → video.
+    const intentos: MediaStreamConstraints[] = [
+      {
+        video: {
+          facingMode: { exact: "environment" },
+          width: { ideal: IDEAL_PREVIEW_WIDTH },
+          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+        },
+        audio: false,
+      },
+      {
+        video: {
+          facingMode: "environment",
+          width: { ideal: IDEAL_PREVIEW_WIDTH },
+          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+        },
+        audio: false,
+      },
+      { video: { facingMode: "environment" }, audio: false },
+      { video: true, audio: false },
+    ];
+
+    void (async () => {
+      let stream: MediaStream | null = null;
+      for (const c of intentos) {
+        try {
+          stream = await media.getUserMedia(c);
+          break;
+        } catch (e) {
+          if (esErrorPermiso(e)) break; // permiso: la cascada no ayuda
+          /* siguiente nivel */
+        }
+      }
+      if (!stream) {
+        if (cancelado) return;
+        // Permiso denegado / sin cámara / sin HTTPS (headless cae aquí):
+        // toast warn + vuelta automática a SIMULACIÓN (spec §7).
+        notificar(
+          "warn",
+          "CÁMARA NO DISPONIBLE",
+          "No hay cámara accesible (permiso denegado, sin hardware o sin conexión segura). VOLVIENDO A SIMULACIÓN.",
+        );
+        setFuente("SIMULACION");
+        return;
+      }
+      if (cancelado) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      streamRef.current = stream;
+      setCamEstado("viva");
+      // §5.2: Safari/iOS no implementa ImageCapture → el shutter manual abre
+      // la cámara NATIVA; auto-captura usa frames del video.
+      puedeTomarFotoRef.current = typeof ImageCapture !== "undefined";
+      if (!puedeTomarFotoRef.current && esIOS() && !toastIOSYaRef.current) {
+        toastIOSYaRef.current = true;
+        notificar(
+          "warn",
+          "CÁMARA NATIVA EN IPHONE",
+          "El disparo abre la cámara del sistema: la foto sale a resolución completa del sensor.",
+        );
+      }
+      // B3 (lab): si el track muere (permiso revocado, otra app roba la
+      // cámara) → aviso + vuelta a SIMULACIÓN (el visor no queda congelado).
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        track.onended = () => {
+          if (cancelado) return;
+          notificar("warn", "SE PERDIÓ LA CÁMARA", "El stream se cortó. VOLVIENDO A SIMULACIÓN.");
+          setFuente("SIMULACION");
+        };
+      }
+      // F-FLASH v3: botón habilitado SIEMPRE con cámara real (la verdad del
+      // torch se verifica al pulsar); preferencia persistida → re-aplicar.
+      setTorchDisponible(true);
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        void video.play().catch(() => undefined);
+        setFramePendiente(video); // bridge: grab del frame si no hay foto
+      }
+      if (flashRef.current) aplicarLinternaGuardada();
+    })();
+
+    return () => {
+      cancelado = true;
+      const t = streamRef.current?.getVideoTracks()[0];
+      if (t) t.onended = null; // stop() no dispara "ended" (lab B3)
+      streamRef.current?.getTracks().forEach((st) => st.stop());
+      streamRef.current = null;
+      setFramePendiente(null);
+      setCamEstado("iniciando");
+      procesandoRef.current = false;
+      cooldownRef.current = 0;
+    };
+  }, [fuente]);
+
+  /** Re-asigna el stream al <video> (lab L1255-1261) por si el elemento se
+   *  remontó (cambio de vista ida/vuelta manteniendo la fuente viva). */
+  useEffect(() => {
+    if (!camaraViva) return;
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!video || !stream || video.srcObject === stream) return;
+    video.srcObject = stream;
+    void video.play().catch(() => undefined);
+  }, [camaraViva]);
+
+  /** Dimensiones del video + "playing" → re-aplicar torch (lab L1262-1269). */
+  useEffect(() => {
+    if (!camaraViva) return;
+    const video = videoRef.current;
+    if (!video) return;
+    const alReproducir = () => {
+      if (flashRef.current && !torchOnRef.current) aplicarLinternaGuardada();
+    };
+    video.addEventListener("playing", alReproducir);
+    return () => video.removeEventListener("playing", alReproducir);
+  }, [camaraViva]);
+
+  /** Tamaño del visor (ResizeObserver — mapeo object-cover del overlay). */
+  useEffect(() => {
+    const el = visorRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r) setBoxSize({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /* ── FRAME LOOP REAL (lab L1356-1402): detección en vivo + k-de-n ──── */
+
+  useEffect(() => {
+    if (!camaraViva) return;
+    const video = videoRef.current;
+    if (!video) return;
+    const loop = new CameraFrameLoop();
+    loopRef.current = loop;
+    loop.start(video, {
+      onFrame: (t) => {
+        if (typeof window !== "undefined") window.__e14Telemetria = t;
+        // F-ZSL: alimenta el ring (~5 Hz) — cubre la ventana pre-tap.
+        alimentarAnillo();
+        const ahora = performance.now();
+        if (ahora - telemetriaAtRef.current < TELEMETRIA_UI_MS) return; // ~10 Hz
+        telemetriaAtRef.current = ahora;
+        setLive({ corners: t.corners, score: t.score ? t.score.total : null });
+      },
+      onTrigger: () => {
+        // El gate fino (k-de-n, cooldown del core, re-arme, isDeviceStable)
+        // vive en CameraFrameLoop — aquí solo el filtro del lab L1380-1385.
+        if (!autoRef.current) return;
+        if (procesandoRef.current) return;
+        if (cooldownRef.current > Date.now()) return;
+        void capturarRef.current();
+      },
+      onNoDetectTimeout: () => {
+        notificar("warn", "NO DETECTO EL ACTA", "Acércala más al encuadre.");
+      },
+    });
+    return () => {
+      loop.stop();
+      loopRef.current = null;
+      // F-ZSL: libera el Best-Shot ring al cerrar la sesión de cámara.
+      liberarAnillo();
+    };
+  }, [camaraViva]);
+
+  /** Linterna — botón SIEMPRE activo con cámara; la verdad al pulsar (lab
+   *  toggleTorch L1404-1422). Sin cámara viva → hint. */
+  const alternarLinterna = useCallback(async () => {
+    if (camEstado !== "viva") {
+      notificar("warn", HINT_LINTERNA, DESC_LINTERNA);
+      return;
+    }
+    const siguiente = !torchOn;
+    const aplicado = await ponerLinterna(siguiente);
+    if (aplicado) {
+      setFlashPrefOn(siguiente);
+      if (siguiente) {
+        notificar("ok", "FLASH ENCENDIDO", "Linterna del dispositivo activa.");
+      }
+    } else {
+      notificar("warn", HINT_LINTERNA, DESC_LINTERNA);
+    }
+  }, [camEstado, torchOn, ponerLinterna, notificar]);
+
+  /* ── Disparo por plataforma (lab onShutter L902-925) ──────────────── */
+
+  const alDisparar = useCallback(() => {
+    if (fuente !== "CAMARA") {
+      // SIM/ARCHIVO: disparo directo (L2 intacto; el guard del store avisa).
+      void dispararEscaneo();
+      return;
+    }
+    const video = videoRef.current;
+    const streamVivo = camEstado === "viva" && !!video && video.readyState >= 2;
+    if (streamVivo) {
+      if (puedeTomarFotoRef.current || !esIOS()) {
+        // Chrome/Android → takePhoto full-res; desktop sin ImageCapture →
+        // best frame ZSL del ring (el fallback interno de captureSmart).
+        void capturarInteligente();
+      } else {
+        // HQ-iOS: el click del shutter ES el gesto de usuario que iOS exige
+        // → cámara NATIVA del sistema (input capture=environment).
+        inputCamaraRef.current?.click();
+      }
+      return;
+    }
+    inputCamaraRef.current?.click(); // cámara iniciando → picker
+  }, [fuente, camEstado, dispararEscaneo, capturarInteligente]);
+
+  /** Elegir imagen = fuente ARCHIVO + análisis inmediato (L2, intacto). */
+  const alElegirArchivo = (e: ChangeEvent<HTMLInputElement>) => {
+    const archivo = e.target.files?.[0];
+    e.target.value = ""; // permite re-elegir el MISMO archivo (REPETIR FOTO)
+    if (!archivo) return;
+    setArchivoPendiente(archivo);
+    setFuente("ARCHIVO");
+    void dispararEscaneo();
+  };
+
+  /** Ruta iOS (HQ-iOS §5.2): la foto de la cámara nativa entra como archivo
+   *  al MISMO pipeline (fuente ya es CÁMARA — spec §7 "como ARCHIVO, L2"). */
+  const alElegirFotoCamara = (e: ChangeEvent<HTMLInputElement>) => {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    if (!archivo) return;
+    despacharCaptura(archivo);
+  };
+
+  /* ── Overlay: quad REAL con mapeo object-cover (lab L1493-1515) ────── */
+
+  const alCargarMetaVideo = useCallback(() => {
+    const v = videoRef.current;
+    if (v?.videoWidth) setVideoDims({ w: v.videoWidth, h: v.videoHeight });
+  }, []);
+
+  /** Mapea fracciones del FRAME → % del visor visible (object-cover). */
+  const mapearPunto = useCallback(
+    (p: { x: number; y: number }) => {
+      if (!boxSize.w || !videoDims.w) return { x: p.x * 100, y: p.y * 100 };
+      const escala = Math.max(boxSize.w / videoDims.w, boxSize.h / videoDims.h);
+      const dw = videoDims.w * escala;
+      const dh = videoDims.h * escala;
+      const ox = (boxSize.w - dw) / 2;
+      const oy = (boxSize.h - dh) / 2;
+      return {
+        x: ((ox + p.x * dw) / boxSize.w) * 100,
+        y: ((oy + p.y * dh) / boxSize.h) * 100,
+      };
+    },
+    [boxSize, videoDims],
+  );
+
+  const puntosQuad = live.corners
+    ?.map((p) => {
+      const m = mapearPunto(p);
+      return `${m.x.toFixed(2)} ${m.y.toFixed(2)}`;
+    })
+    .join(" L ");
+
+  /* ── Render ──────────────────────────────────────────────────────────── */
 
   return (
     <div className="flex-1 flex flex-col bg-bg pt-safe">
-      {/* Marco tipo visor */}
+      {/* Inputs ocultos: IMPORTAR (galería) + cámara nativa iOS (capture) */}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        aria-label="Importar imagen"
+        onChange={alElegirArchivo}
+      />
+      <input
+        ref={inputCamaraRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        aria-label="Tomar foto con la cámara del sistema"
+        onChange={alElegirFotoCamara}
+      />
+
+      {/* Marco tipo visor (mismo marco + corner brackets en TODAS las fuentes) */}
       <div className="flex-1 min-h-0 px-4 pt-4 pb-2 flex">
-        <div className="relative flex-1 rounded-xl border border-line bg-surface-1 flex items-center justify-center overflow-hidden">
-          {/* Corner brackets (2px, 24px) */}
-          <div className="absolute inset-3 pointer-events-none" aria-hidden>
+        <div
+          ref={visorRef}
+          className="relative flex-1 rounded-xl border border-line bg-surface-1 flex items-center justify-center overflow-hidden"
+        >
+          {/* Corner brackets (2px, 24px) — el marco existente de e14 (el
+              video vive DENTRO, spec §7); por encima de la máscara del quad. */}
+          <div className="absolute inset-3 pointer-events-none z-30" aria-hidden>
             <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-ok-tint" />
             <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-ok-tint" />
             <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-ok-tint" />
             <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-ok-tint" />
           </div>
-          {/* Retícula central */}
-          <div className="flex flex-col items-center gap-3 select-none" aria-hidden>
-            <div className="relative w-16 h-16">
-              <div className="absolute inset-x-0 top-1/2 h-px bg-outline-dim" />
-              <div className="absolute inset-y-0 left-1/2 w-px bg-outline-dim" />
-              <div className="absolute inset-[22px] border border-outline-dim rounded-sm" />
+
+          {modoCamara ? (
+            <>
+              <video
+                ref={videoRef}
+                autoPlay
+                muted
+                playsInline
+                disablePictureInPicture
+                onLoadedMetadata={alCargarMetaVideo}
+                aria-label="Vista previa de la cámara"
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+
+              {/* Estado: iniciando cámara (lab L1726-1734) */}
+              {camEstado === "iniciando" && (
+                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-bg/60">
+                  <span className="h-6 w-6 rounded-full border-2 border-ok-tint/30 border-t-ok-tint animate-spin" aria-hidden />
+                  <span className="font-data text-[10px] tracking-[0.2em] text-ink-faint">
+                    INICIANDO CÁMARA…
+                  </span>
+                </div>
+              )}
+
+              {/* Quad en vivo (lab L1693-1711) — SVG sobre el video, ok-tint,
+                  transición CSS ~150 ms (el core throttlea la detección). */}
+              {camaraViva && puntosQuad && (
+                <div
+                  className="absolute inset-0 pointer-events-none z-20 transition-opacity duration-150"
+                  aria-hidden
+                >
+                  <svg
+                    className="absolute inset-0 h-full w-full"
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                  >
+                    <path
+                      d={`M 0 0 L 100 0 L 100 100 L 0 100 Z M ${puntosQuad} Z`}
+                      fill="rgba(0,0,0,0.32)"
+                      fillRule="evenodd"
+                    />
+                    <path
+                      d={`M ${puntosQuad} Z`}
+                      fill="none"
+                      stroke="var(--color-ok-tint)"
+                      strokeWidth={2}
+                      strokeLinejoin="round"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  </svg>
+                  {live.corners?.map((p, i) => {
+                    const m = mapearPunto(p);
+                    return (
+                      <span
+                        key={i}
+                        className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(63,229,108,0.9),0_1px_4px_rgba(0,0,0,0.5)]"
+                        style={{ left: `${m.x}%`, top: `${m.y}%` }}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Pill "BUSCANDO ACTA…" (lab L1737-1753): superior centrada
+                  mientras corners === null; desaparece al detectar. */}
+              {buscando && !procesando && (
+                <div className="pointer-events-none absolute inset-x-0 top-5 z-30 flex justify-center px-6">
+                  <div className="flex items-center gap-2 rounded-full bg-black/60 px-3.5 py-1.5 backdrop-blur-sm">
+                    <span
+                      className="h-3.5 w-3.5 rounded-full border-2 border-ok-tint border-t-transparent animate-spin"
+                      aria-hidden
+                    />
+                    <p className="text-[12px] font-medium text-white/85">BUSCANDO ACTA…</p>
+                  </div>
+                </div>
+              )}
+
+              {/* HUD (§7 rev.3): CALIDAD % + estado de detección + pill IA·AUTO */}
+              {camaraViva && !procesando && (
+                <>
+                  <div
+                    className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-full bg-black/55 px-2.5 py-1.5 backdrop-blur-sm"
+                    role="status"
+                    aria-label={`Calidad de encuadre ${scorePct ?? 0} por ciento`}
+                  >
+                    <span
+                      className={`font-data text-[10px] font-semibold tabular-nums ${
+                        scoreAlto ? "text-ok-tint" : "text-white/85"
+                      }`}
+                    >
+                      CALIDAD {scorePct !== null ? `${scorePct}%` : "--%"}
+                    </span>
+                  </div>
+                  <div className="pointer-events-none absolute bottom-3 right-3 z-20 rounded-full bg-black/55 px-2.5 py-1.5 backdrop-blur-sm">
+                    <span
+                      className={`font-data text-[10px] font-semibold ${
+                        live.corners ? "text-ok-tint" : "text-white/60"
+                      }`}
+                    >
+                      {live.corners ? "ACTA DETECTADA" : "NO DETECTADA"}
+                    </span>
+                  </div>
+                  {/* Pill IA · AUTO (lab L1553-1566) — punto pulsante verde
+                      ok-tint + label del modo de disparo. */}
+                  <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1.5 backdrop-blur-sm">
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full bg-ok-tint ${
+                        !scoreAlto ? "animate-pulse-sync" : ""
+                      }`}
+                      aria-hidden
+                    />
+                    <span className="font-data text-[10px] font-semibold tracking-wider text-white/90">
+                      IA · {autoArmado ? "AUTO" : "MANUAL"}
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {/* Overlay "armado" (lab L1802): pill centrada cuando AUTO está
+                  armado y el score supera el umbral del disparo. */}
+              {camaraViva && autoArmado && scoreAlto && !procesando && (
+                <div className="pointer-events-none absolute inset-x-0 top-[42%] z-30 flex justify-center px-6">
+                  <div className="flex items-center gap-2.5 rounded-[20px] bg-black/75 px-4 py-2.5 shadow-[0_4px_12px_rgba(0,0,0,0.3)] backdrop-blur-sm">
+                    <span className="h-2 w-2 rounded-full bg-ok-tint" aria-hidden />
+                    <p className="text-[13px] font-medium text-white">
+                      MANTÉN INMÓVIL EL ACTA…
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Procesando captura (lab L1889-1912, re-vestido). */}
+              {procesando && (
+                <div
+                  className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-[3px]"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span
+                    className="h-10 w-10 rounded-full border-[3px] border-white/15 border-t-ok-tint animate-spin"
+                    aria-hidden
+                  />
+                  <p className="text-[13px] font-medium text-white">CAPTURANDO…</p>
+                  <p className="font-data text-[10px] tracking-[0.2em] text-white/55">
+                    CAPTURA RECIBIDA · PASANDO A ANÁLISIS
+                  </p>
+                </div>
+              )}
+
+              {/* Destello blanco de captura (~120 ms — lab L569, flashKey) */}
+              {destelloKey > 0 && (
+                <div
+                  key={destelloKey}
+                  className="animate-capture-flash pointer-events-none absolute inset-0 z-50 bg-white"
+                  aria-hidden
+                />
+              )}
+            </>
+          ) : (
+            /* Retícula central (SIMULACIÓN/ARCHIVO — exacto a L2) */
+            <div className="flex flex-col items-center gap-3 select-none" aria-hidden>
+              <div className="relative w-16 h-16">
+                <div className="absolute inset-x-0 top-1/2 h-px bg-outline-dim" />
+                <div className="absolute inset-y-0 left-1/2 w-px bg-outline-dim" />
+                <div className="absolute inset-[22px] border border-outline-dim rounded-sm" />
+              </div>
+              <span className="font-data text-[10px] tracking-[0.2em] text-ink-faint">
+                {fuente === "ARCHIVO"
+                  ? "ESPERANDO IMAGEN · IMPORTAR ARCHIVO"
+                  : "ESPERANDO CAPTURA · MODO SIMULACIÓN"}
+              </span>
             </div>
-            <span className="font-data text-[10px] tracking-[0.2em] text-ink-faint">
-              ESPERANDO CAPTURA · MODO SIMULACIÓN
-            </span>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Botón disparo: círculo blanco (72px) con anillo verde */}
-      <div className="flex justify-center py-4">
-        <button
-          type="button"
-          aria-label="Escanear acta"
-          onClick={() => dispararEscaneo()}
-          className="w-[72px] h-[72px] rounded-full bg-white ring-4 ring-ok-tint/50 shadow-[0_0_24px_-4px_rgba(63,229,108,0.5)] active:scale-95 transition-transform flex items-center justify-center"
-        >
-          <span className="w-[58px] h-[58px] rounded-full border-2 border-neutral-300" aria-hidden />
-        </button>
-      </div>
-
-      {/* Ghost IMPORTAR IMAGEN (el mock la ignora) */}
-      <div className="px-4 pb-3 flex justify-center">
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          aria-label="Importar imagen"
-          onChange={() => inputRef.current && (inputRef.current.value = "")}
-        />
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-outline-dim text-ink-dim hover:bg-hover active:scale-95 transition-all"
-        >
-          <ImportIcon className="w-4 h-4" />
-          <span className="label-caps !text-[10px]">IMPORTAR IMAGEN</span>
-        </button>
-      </div>
-
-      {/* Panel de simulación (MOCK) — discreto: border-line + tint 10% */}
-      <div className="px-4 pb-4">
-        <div className="rounded-lg border border-line bg-surface-1/60 px-2.5 py-2">
-          <span className="font-data text-[8px] tracking-[0.25em] text-ink-faint uppercase block mb-1.5">
-            Simulación
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {CHIPS.map(({ valor, label }) => {
-              const activo = forzado === valor;
-              return (
-                <button
-                  key={valor}
-                  type="button"
-                  onClick={() => setForzado(valor)}
-                  aria-pressed={activo}
-                  className={`label-caps !text-[9px] px-2 py-1 rounded border transition-colors ${
-                    activo
-                      ? "border-ok-tint/40 bg-ok-tint/10 text-ok-tint"
-                      : "border-line text-ink-faint hover:bg-hover"
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
+      {/* Botón disparo: en CÁMARA la fila es [FLASH | shutter 72px | AUTO]
+          (lab bottom bar L1939-2034, re-vestida); en SIM/ARCHIVO exacto a L2. */}
+      {modoCamara ? (
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center px-4 py-4">
+          {/* FLASH — F-FLASH v3: SIEMPRE activo con cámara (la verdad se
+              descubre al pulsar); sin stream → hint. */}
+          <div className="flex justify-start pl-1">
             <button
               type="button"
-              onClick={alternarConexion}
-              aria-pressed={!online}
-              className={`label-caps !text-[9px] px-2 py-1 rounded border transition-colors ${
-                online
-                  ? "border-line text-ink-faint hover:bg-hover"
-                  : "border-warn/40 bg-warn/10 text-warn"
+              aria-pressed={torchOn}
+              aria-label={
+                torchOn
+                  ? "Apagar la linterna"
+                  : torchDisponible
+                    ? "Encender la linterna"
+                    : "Linterna — toca para ver el motivo"
+              }
+              onClick={() => void alternarLinterna()}
+              className={`flex flex-col items-center gap-1 px-3 py-1.5 rounded-lg border transition-colors active:scale-95 ${
+                torchOn
+                  ? "border-warn/40 bg-warn/10 text-warn"
+                  : "border-line text-ink-faint hover:bg-hover"
               }`}
             >
-              {online ? "PASAR A OFFLINE" : "VOLVER EN LÍNEA"}
+              <FlashIcon className="w-4 h-4" />
+              <span className="label-caps !text-[9px]">FLASH</span>
             </button>
           </div>
+
+          <button
+            type="button"
+            aria-label="Escanear acta"
+            onClick={alDisparar}
+            disabled={procesando}
+            className={`w-[72px] h-[72px] rounded-full bg-white ring-4 transition-transform flex items-center justify-center active:scale-95 ${
+              scoreAlto
+                ? "ring-ok-tint shadow-[0_0_24px_-4px_rgba(63,229,108,0.8)]"
+                : "ring-ok-tint/50 shadow-[0_0_24px_-4px_rgba(63,229,108,0.5)]"
+            } ${procesando ? "opacity-50" : ""}`}
+          >
+            <span className="w-[58px] h-[58px] rounded-full border-2 border-neutral-300" aria-hidden />
+          </button>
+
+          {/* AUTO (D22/D24: default OFF — el gate fino vive en el core). */}
+          <div className="flex justify-end pr-1">
+            <button
+              type="button"
+              aria-pressed={autoArmado}
+              aria-label={`Auto-captura: ${autoArmado ? "armada" : "desactivada"}`}
+              title="Auto-captura (dispara sola con el acta quieta y nítida)"
+              onClick={() => setAutoArmado((v) => !v)}
+              className={`flex flex-col items-center gap-1 px-3 py-1.5 rounded-lg border transition-colors active:scale-95 ${
+                autoArmado
+                  ? "border-ok-tint/40 bg-ok-tint/10 text-ok-tint"
+                  : "border-line text-ink-faint hover:bg-hover"
+              }`}
+            >
+              <ScanFrameIcon className="w-4 h-4" />
+              <span className="label-caps !text-[9px]">AUTO</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex justify-center py-4">
+          <button
+            type="button"
+            aria-label="Escanear acta"
+            onClick={() => dispararEscaneo()}
+            className="w-[72px] h-[72px] rounded-full bg-white ring-4 ring-ok-tint/50 shadow-[0_0_24px_-4px_rgba(63,229,108,0.5)] active:scale-95 transition-transform flex items-center justify-center"
+          >
+            <span className="w-[58px] h-[58px] rounded-full border-2 border-neutral-300" aria-hidden />
+          </button>
+        </div>
+      )}
+
+      {/* IMPORTAR IMAGEN — REAL en L2 (oculto en CÁMARA: el visor ES la
+          fuente; IMPORTAR sigue accesible en el chip de fuente) */}
+      {fuente !== "CAMARA" && (
+        <div className="px-4 pb-3 flex justify-center">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-outline-dim text-ink-dim hover:bg-hover active:scale-95 transition-all"
+          >
+            <ImportIcon className="w-4 h-4" />
+            <span className="label-caps !text-[10px]">IMPORTAR IMAGEN</span>
+          </button>
+        </div>
+      )}
+
+      {/* Fila de chips de FUENTE (L2 §7) — encima del panel de simulación */}
+      <div className="px-4 pb-2">
+        <div className="flex flex-wrap gap-1.5">
+          {FUENTES.map(({ valor, label }) => {
+            const activo = fuente === valor;
+            return (
+              <button
+                key={valor}
+                type="button"
+                aria-pressed={activo}
+                onClick={() => {
+                  if (valor === "CAMARA") {
+                    // L3: activa el visor de cámara real (con fallback
+                    // automático a SIMULACIÓN si no hay acceso).
+                    setFuente("CAMARA");
+                    return;
+                  }
+                  if (valor === "ARCHIVO") {
+                    inputRef.current?.click();
+                    return;
+                  }
+                  setFuente("SIMULACION");
+                }}
+                className={`label-caps !text-[9px] px-2.5 py-1.5 rounded border transition-colors ${
+                  activo
+                    ? "border-ok-tint/40 bg-ok-tint/10 text-ok-tint"
+                    : "border-line text-ink-faint hover:bg-hover"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Panel de simulación (MOCK) — discreto: border-line + tint 10%.
+          En fuente !== SIMULACIÓN muestra el estado de la fuente + IMPORTAR
+          (los chips de resultado son solo del modo SIMULACIÓN, §7). */}
+      <div className="px-4 pb-4">
+        <div className="rounded-lg border border-line bg-surface-1/60 px-2.5 py-2">
+          {fuente === "SIMULACION" ? (
+            <>
+              <span className="font-data text-[8px] tracking-[0.25em] text-ink-faint uppercase block mb-1.5">
+                Simulación
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {CHIPS.map(({ valor, label }) => {
+                  const activo = forzado === valor;
+                  return (
+                    <button
+                      key={valor}
+                      type="button"
+                      onClick={() => setForzado(valor)}
+                      aria-pressed={activo}
+                      className={`label-caps !text-[9px] px-2 py-1 rounded border transition-colors ${
+                        activo
+                          ? "border-ok-tint/40 bg-ok-tint/10 text-ok-tint"
+                          : "border-line text-ink-faint hover:bg-hover"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={alternarConexion}
+                  aria-pressed={!online}
+                  className={`label-caps !text-[9px] px-2 py-1 rounded border transition-colors ${
+                    online
+                      ? "border-line text-ink-faint hover:bg-hover"
+                      : "border-warn/40 bg-warn/10 text-warn"
+                  }`}
+                >
+                  {online ? "PASAR A OFFLINE" : "VOLVER EN LÍNEA"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className="font-data text-[8px] tracking-[0.25em] text-ink-faint uppercase block mb-1.5">
+                Fuente de captura
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-data text-[9px] tracking-wide text-ok-tint">
+                  {fuente === "ARCHIVO"
+                    ? "IMPORTAR · LA IMAGEN SE ANALIZA AL ELEGIRLA"
+                    : camEstado === "viva"
+                      ? `CÁMARA · EN VIVO${autoArmado ? " — AUTO ARMADO" : " — DISPARO MANUAL"}`
+                      : camEstado === "iniciando"
+                        ? "CÁMARA · INICIANDO…"
+                        : "CÁMARA · NO DISPONIBLE"}
+                </span>
+                {fuente === "ARCHIVO" && (
+                  <button
+                    type="button"
+                    onClick={() => inputRef.current?.click()}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded border border-outline-dim text-ink-dim hover:bg-hover active:scale-95 transition-all"
+                  >
+                    <ImportIcon className="w-3.5 h-3.5" />
+                    <span className="label-caps !text-[9px]">IMPORTAR</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={alternarConexion}
+                  aria-pressed={!online}
+                  className={`label-caps !text-[9px] px-2 py-1 rounded border transition-colors ${
+                    online
+                      ? "border-line text-ink-faint hover:bg-hover"
+                      : "border-warn/40 bg-warn/10 text-warn"
+                  }`}
+                >
+                  {online ? "PASAR A OFFLINE" : "VOLVER EN LÍNEA"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -1,7 +1,19 @@
 /**
  * Dominio E-14 (SPEC §6 — ampliado para v2).
- * FASE GRÁFICA: los datos salen del bridge mock; el core se conecta luego.
+ * FASE LÓGICA L1: campos async opcionales (§3.1) — el mock y el seed siguen
+ * compatibles (todo es opcional).
  */
+import type { Quad } from "@jg-stevan/scanner-core/types";
+
+// ---------- Captura y análisis (SPEC fase lógica §3.1) ----------
+export type FuenteCaptura = "SIMULACION" | "CAMARA" | "ARCHIVO";
+
+export type EtapaAnalisis = "DETECTANDO" | "RECORTANDO" | "REALZANDO" | "CALIDAD" | "OCR";
+
+export interface ProgresoAnalisis {
+  etapa: EtapaAnalisis;
+  progreso: number; // 0..1 dentro de la etapa
+}
 
 // ---------- Acta (flujo de revisión) ----------
 export type ActaStatus =
@@ -51,6 +63,22 @@ export interface Acta {
   maxIntentos: number; // "INTENTO 1 DE 2"
   enviadoAutomaticamente?: string; // "16:42:00"
   hashSha256?: string; // "EN COLA" | hash
+
+  // ----- FASE LÓGICA (§3.1, opcionales — compatibles con seed/mocks) -----
+  fuente?: FuenteCaptura;
+  /** data URL warp+realce (la evidencia real). */
+  fotoProcesada?: string;
+  /** data URL cruda del frame/archivo. */
+  fotoOriginal?: string;
+  /** texto detectado (debug/verificación). */
+  ocrTexto?: string;
+  /** métricas del core 0-100. */
+  metricas?: { sharpness: number; brightness: number; contrast: number };
+  motor?: "worker" | "canvas" | "mock";
+  /** esquinas de la detección automática (inicio del editor §7.5). */
+  quadDetectado?: Quad;
+  /** 0|90|180|270 — horneada en fotoProcesada. */
+  rotation?: number;
 }
 
 // ---------- Control de mesas (vista ACTAS) ----------

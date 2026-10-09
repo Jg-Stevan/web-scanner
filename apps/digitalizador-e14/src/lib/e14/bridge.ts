@@ -1,11 +1,13 @@
 /**
  * E14Bridge — la ÚNICA fuente de datos de las vistas (SPEC §2, D1).
- * Hoy: MockBridge. Mañana: scanner-core-bridge (FASE LÓGICA §11) — se
- * reemplaza tocando 1 archivo: get-bridge.ts.
+ * FASE LÓGICA L1 (SPEC-fase-logica §3.2): contrato ASYNC con eventos de
+ * progreso. El CompositeBridge enruta por `fuente` (D17: get-bridge.ts
+ * sigue siendo el punto único de intercambio — las vistas no se enteran).
  */
-import type { Acta, ActaFirma, TipoPagina } from "./types";
+import type { Acta, ActaFirma, EtapaAnalisis, FuenteCaptura, ProgresoAnalisis, TipoPagina } from "./types";
 import { statusDeScore } from "./types";
 import { ACTA_MOCK } from "./seed";
+import type { Quad } from "@jg-stevan/scanner-core/types";
 
 /** Página de mesa a la que apunta el próximo escaneo (D7: vive en el store). */
 export interface PaginaObjetivo {
@@ -18,14 +20,32 @@ export type Forzado = "ALEATORIO" | "OPTIMA" | "ADVERTENCIA" | "RECHAZADA";
 
 export interface OpcionesEscaneo {
   objetivo: PaginaObjetivo | null;
-  forzado: Forzado;
+  forzado: Forzado; // solo aplica en SIMULACION
   intento: number;
   maxIntentos: number;
+  fuente: FuenteCaptura;
+  archivo?: File; // fuente ARCHIVO
+  frameActual?: HTMLVideoElement | null; // fuente CAMARA
+  onProgreso?: (p: ProgresoAnalisis) => void;
 }
 
 export interface E14Bridge {
-  /** Genera el acta resultante de un escaneo (mock: aleatorio o forzado). */
-  escanearActa(opciones: OpcionesEscaneo): Acta;
+  /** Analiza la imagen y resuelve con el acta resultante (async, §3.2). */
+  escanearActa(opciones: OpcionesEscaneo): Promise<Acta>;
+  /** Exporta el acta a PDF (§6; L4 lo cablea solo para actas reales). */
+  exportarPdf(acta: Acta): Promise<void>;
+  /**
+   * L5 (§7.5): re-ejecuta el pipeline §5 sobre `fotoOriginal` del acta con el
+   * QUAD MANUAL (F5-MANUAL: respeta el quad al píxel, sin refine) → devuelve
+   * el acta ACTUALIZADA (fotoProcesada/score/status/rechazo/ocr/metricas;
+   * fuente/intento/maxIntentos/paginación IGUALES — el rescate D20 NO consume
+   * intento). La UI nunca lo llama en SIMULACIÓN (no hay foto real).
+   */
+  recortar(
+    acta: Acta,
+    quad: Quad,
+    onProgreso?: (p: ProgresoAnalisis) => void,
+  ): Promise<Acta>;
   /** HH:MM:SS — hora del envío automático. */
   horaEnvio(): string;
   /** HH:MM — hora de las filas del historial. */
@@ -44,11 +64,37 @@ function dosDigitos(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** Implementación MOCK (FASE GRÁFICA). */
+function dormir(ms: number): Promise<void> {
+  return new Promise((resolver) => setTimeout(resolver, ms));
+}
+
+/** Implementación MOCK — MODO SIMULACIÓN (regla de oro §1.2: intacto). */
 export class MockBridge implements E14Bridge {
   private contador = 0;
 
-  escanearActa({ objetivo, forzado, intento, maxIntentos }: OpcionesEscaneo): Acta {
+  /**
+   * Async con progreso SINTÉTICO: recorre las 5 etapas canónicas (~350–600 ms
+   * por etapa, ~2.3 s total) para calcar el feel del timer de la fase gráfica,
+   * emitiendo onProgreso en 2–3 saltos por etapa. Sin onProgreso la
+   * temporización es la MISMA (mantener feel). La lógica del acta (regla 2º
+   * intento ≥8, scores, firma2, rechazo 80/20) se conserva intacta en
+   * generarActa().
+   */
+  async escanearActa(opciones: OpcionesEscaneo): Promise<Acta> {
+    const etapas: EtapaAnalisis[] = ["DETECTANDO", "RECORTANDO", "REALZANDO", "CALIDAD", "OCR"];
+    for (const etapa of etapas) {
+      const duracion = 350 + Math.floor(Math.random() * 251); // 350–600 ms
+      const saltos = 2 + Math.floor(Math.random() * 2); // 2–3 eventos
+      for (let i = 1; i <= saltos; i++) {
+        await dormir(duracion / saltos);
+        opciones.onProgreso?.({ etapa, progreso: Math.min(1, i / saltos) });
+      }
+    }
+    return { ...this.generarActa(opciones), fuente: "SIMULACION", motor: "mock" };
+  }
+
+  /** Lógica mock original (FASE GRÁFICA) — intacta. */
+  private generarActa({ objetivo, forzado, intento, maxIntentos }: OpcionesEscaneo): Acta {
     // §7.5: en el 2º intento el mock SIEMPRE fuerza ≥ 8 para desbloquear el
     // demo (regla absoluta: nunca hay rechazo consecutivo que bloquee).
     let resultado: Forzado = forzado;
@@ -118,6 +164,16 @@ export class MockBridge implements E14Bridge {
     };
   }
 
+  async exportarPdf(): Promise<void> {
+    // La UI no la llama en SIM; L4 la cablea solo para actas reales (§6).
+    throw new Error("EXPORTACIÓN NO DISPONIBLE EN SIMULACIÓN");
+  }
+
+  recortar(): Promise<Acta> {
+    // La UI nunca abre el editor en SIM (no hay foto real) — guard explícito.
+    throw new Error("RECORTAR NO APLICA EN SIMULACIÓN");
+  }
+
   horaEnvio(): string {
     const d = new Date();
     return `${dosDigitos(d.getHours())}:${dosDigitos(d.getMinutes())}:${dosDigitos(d.getSeconds())}`;
@@ -126,5 +182,51 @@ export class MockBridge implements E14Bridge {
   horaHistorial(): string {
     const d = new Date();
     return `${dosDigitos(d.getHours())}:${dosDigitos(d.getMinutes())}`;
+  }
+}
+
+/**
+ * Enrutador por fuente (SPEC §3.3, D17): SIMULACIÓN → MockBridge interno;
+ * CAMARA/ARCHIVO → bridge real (L2/L3 lo inyecta en get-bridge.ts).
+ * get-bridge.ts sigue siendo el punto único de intercambio.
+ */
+export class CompositeBridge implements E14Bridge {
+  private mock = new MockBridge();
+
+  constructor(private real: E14Bridge | null = null) {}
+
+  escanearActa(opciones: OpcionesEscaneo): Promise<Acta> {
+    if (opciones.fuente === "SIMULACION") {
+      return this.mock.escanearActa(opciones);
+    }
+    if (this.real) {
+      return this.real.escanearActa(opciones);
+    }
+    return Promise.reject(new Error("FUENTE REAL NO IMPLEMENTADA (L2)"));
+  }
+
+  exportarPdf(acta: Acta): Promise<void> {
+    if (acta.fuente !== "SIMULACION" && this.real) {
+      return this.real.exportarPdf(acta);
+    }
+    // El mock no exporta (SIM): siempre rechaza con su error canónico.
+    return this.mock.exportarPdf();
+  }
+
+  recortar(acta: Acta, quad: Quad, onProgreso?: (p: ProgresoAnalisis) => void): Promise<Acta> {
+    if (acta.fuente !== "SIMULACION" && this.real) {
+      return this.real.recortar(acta, quad, onProgreso);
+    }
+    // El mock no recorta (SIM): error canónico (la UI no llega aquí).
+    return Promise.reject(new Error("RECORTAR NO APLICA EN SIMULACIÓN"));
+  }
+
+  horaEnvio(): string {
+    // Delega al mock: las horas son de dominio de sesión, no del motor.
+    return this.mock.horaEnvio();
+  }
+
+  horaHistorial(): string {
+    return this.mock.horaHistorial();
   }
 }
