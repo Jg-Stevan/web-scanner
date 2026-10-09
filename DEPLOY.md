@@ -9,19 +9,23 @@ Guía verificada de despliegue. Sustituye al antiguo `LEEME-SUBIR-A-GITHUB.md`
 - **Deploy automático**: cada push a `main` dispara
   `.github/workflows/deploy-pages.yml` (pestaña *Actions*). También se puede
   lanzar a mano con *Run workflow*.
-- El workflow hace: checkout → `bun install --frozen-lockfile` →
-  `BUILD_STATIC=1 bunx next build` (export estático a `./out`) → publica con
-  `actions/upload-pages-artifact@v4` y `actions/deploy-pages@v4`.
+- El workflow hace: checkout → `bun install --frozen-lockfile` → build estático
+  de **ambas apps** (e14 en la raíz; scanner-lab con basePath `/web-scanner/lab`)
+  → anida `apps/scanner-lab/out` dentro de `apps/digitalizador-e14/out/lab` →
+  publica el artifact único con `actions/upload-pages-artifact@v4` y
+  `actions/deploy-pages@v4`.
+- **Sitio dual (fin del modo switch)**:
+  - `https://jg-stevan.github.io/web-scanner/` → **digitalizador-e14** (demo pública)
+  - `https://jg-stevan.github.io/web-scanner/lab/` → **scanner-lab** (laboratorio de pruebas)
 - Mejora futura opcional: añadir `bunx tsc --noEmit` como gate de tipos (solo
   cuando el repo esté sin archivos heredados, para no romper migraciones).
-- **El sitio queda en**: `https://jg-stevan.github.io/web-scanner/`
 
 ## Variables del build estático (no tocar a la ligera)
 
 | Variable | Valor | Para qué |
 |---|---|---|
-| `BUILD_STATIC` | `1` | Activa `output: "export"` + `basePath: /web-scanner` en `next.config.ts` |
-| `NEXT_PUBLIC_BASE_PATH` | `/web-scanner` | Prefijo para assets y URLs construidas en cliente (worker, manifest, ZIP de descarga) |
+| `BUILD_STATIC` | `1` | Activa `output: "export"` + basePath en ambos `next.config.ts` |
+| `NEXT_PUBLIC_BASE_PATH` | `/web-scanner` (job) · `/web-scanner/lab` (step de scanner-lab) | Prefijo para assets y URLs construidas en cliente (worker, manifest, sw, ZIP). e14 lo trae fijo en su config; scanner-lab lo lee de esta var con fallback `/web-scanner` |
 | `NEXT_PUBLIC_STATIC` | `1` | El OCR salta la ruta `/api/ocr` (no existe en Pages) y va directo a Tesseract local |
 
 ## Reglas de oro

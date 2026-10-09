@@ -15,13 +15,18 @@ const workspaceRoot = path.resolve(__dirname, "../..");   // raíz del monorepo
  *  · GitHub Pages (estático): `BUILD_STATIC=1 bunx next build`  →  genera `./out/`
  *    con HTML/CSS/JS estático servible desde cualquier hosting estático.
  *
- * GitHub Pages sirve el repo `web-scanner` bajo la subcarpeta /web-scanner/,
- * por eso el build estático activa `basePath`. Los archivos de public/ que se
- * referencian a mano (worker de detección) usan NEXT_PUBLIC_BASE_PATH —
- * ver detector-client.ts.
+ * Pages dual: el sitio publica AMBAS apps del monorepo — digitalizador-e14 en
+ * la raíz (`/web-scanner/`) y este laboratorio en la subruta `/web-scanner/lab/`.
+ * El basePath estático se toma de NEXT_PUBLIC_BASE_PATH (la configura el
+ * workflow de deploy: `/web-scanner/lab`) con fallback al histórico `/web-scanner`
+ * para builds locales sueltos. Los archivos de public/ que se referencian a
+ * mano (worker de detección, manifest, sw.js) usan la misma variable —
+ * ver detector-client.ts, layout.tsx y pwa.ts.
  */
 const isStatic = process.env.BUILD_STATIC === "1";
-const basePath = isStatic ? "/web-scanner" : undefined;
+const basePath = isStatic
+  ? process.env.NEXT_PUBLIC_BASE_PATH || "/web-scanner"
+  : undefined;
 
 const nextConfig: NextConfig = {
   // Raíz de workspace explícita — ver comentario del import path.

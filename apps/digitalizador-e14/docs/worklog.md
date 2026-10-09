@@ -124,3 +124,39 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
 - **Pendiente/Bloqueado:** desplegar en Pages real requiere merge a main
   (el workflow despliega e14 por defecto). FASE LÓGICA (§11) pendiente de
   aprobación de la gráfica.
+
+### [2026-10-09 13:40 (Bogotá)] — Pages dual (SPEC-pages-dual-apps.md) — Z.ai Code
+- **Hecho:** SPEC-pages-dual-apps.md analizado y ejecutado — el sitio de Pages
+  publica AHORA ambas apps: e14 en la raíz y scanner-lab en `/lab/`.
+  - Cambio 1: `apps/scanner-lab/next.config.ts` — el basePath estático pasa a
+    leerse de `NEXT_PUBLIC_BASE_PATH` (fallback `/web-scanner`); dev intacto.
+    Grep anti-rutas-sueltas en `apps/scanner-lab/src|public`: sin resultados.
+  - Cambio 2: `deploy-pages.yml` — steps "Resolver app" y `app` input
+    ELIMINADOS (fin del modo switch); build de ambas apps (scanner-lab con
+    `NEXT_PUBLIC_BASE_PATH=/web-scanner/lab` a nivel de step) + anidado con
+    `cp -r apps/scanner-lab/out apps/digitalizador-e14/out/lab` + artifact
+    único desde `apps/digitalizador-e14/out`. YAML validado con PyYAML.
+  - Coherencia basePath verificada en los `out/`: e14 → `/web-scanner/_next/…`;
+    lab → `/web-scanner/lab/_next/…`; URL del worker inlinada
+    `/web-scanner/lab/scanner/detection-worker.js` en el chunk compilado del
+    core; manifest `/web-scanner/lab/manifest.webmanifest`. El SW (network-first)
+    queda auto-escopado a `/lab/` (scope más específico gana) y los iconos
+    derivan de la misma var.
+  - DoD 1 local COMPLETA: builds estáticos de ambas apps OK; sitio dual montado
+    bajo prefijo `/web-scanner/` (servidor estático): raíz e14 200, `/lab/` 200,
+    worker 200, opencv 200. Navegador: e14 flujo dorado (ÓPTIMA → pill
+    "✓ 9.8/10 ÓPTIMA"); lab onboarding → Omitir → biblioteca "Mis documentos"
+    hidratada con mock data. Recarga dura en AMBAS URLs: 0 404 de assets (solo
+    el probe de favicon del origen, preexistente), 0 errores de página/consola.
+- **Archivos:** apps/scanner-lab/next.config.ts,
+  .github/workflows/deploy-pages.yml, docs/worklog.md, docs/DECISIONS.md,
+  docs/ROADMAP.md, DEPLOY.md (raíz)
+- **Commits:** en feat/pages-dual-apps (ver git log)
+- **Cómo probar:** push/merge a main → https://jg-stevan.github.io/web-scanner/
+  (E-14) y https://jg-stevan.github.io/web-scanner/lab/ (escáner original).
+  Local: `bun run build:e14` + `BUILD_STATIC=1 NEXT_PUBLIC_STATIC=1
+  NEXT_PUBLIC_BASE_PATH=/web-scanner/lab bunx next build` (en apps/scanner-lab)
+  + `cp -r apps/scanner-lab/out apps/digitalizador-e14/out/lab` + servir
+  `out/` bajo prefijo `/web-scanner/`.
+- **Pendiente/Bloqueado:** merge a main + smoke test en Pages real. FASE LÓGICA
+  (§11) sigue pendiente de aprobación del dueño.

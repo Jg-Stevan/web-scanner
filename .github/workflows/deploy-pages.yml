@@ -1,21 +1,14 @@
 name: Deploy to GitHub Pages
 
-# Construye la versión estática de una app del monorepo y la publica en
-# Pages. En push a main despliega la app por defecto (digitalizador-e14);
-# desde la pestaña Actions se puede elegir la app con el input `app`.
+# Pages DUAL: construye AMBAS apps del monorepo y las publica en el mismo
+# sitio — digitalizador-e14 en la raíz (demo pública) y scanner-lab en la
+# subruta /lab/ (laboratorio de pruebas). Cada push a main re-despliega
+# ambas; ya no hay selección de app (fin del modo switch).
 
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
-    inputs:
-      app:
-        description: "App del monorepo a desplegar"
-        type: choice
-        options:
-          - digitalizador-e14
-          - scanner-lab
-        default: digitalizador-e14
 
 permissions:
   contents: read
@@ -44,30 +37,40 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Resolver app a desplegar
-        id: app
-        run: echo "app=${{ inputs.app || 'digitalizador-e14' }}" >> "$GITHUB_OUTPUT"
+      # Nota: el gate `bunx tsc --noEmit` se dejó FUERA a propósito para que
+      # la migración por pasos nunca produzca un deploy rojo intermedio.
 
       - name: Install dependencies (workspace raíz)
         run: bun install --frozen-lockfile
 
-      # Nota: el gate `bunx tsc --noEmit` se dejó FUERA a propósito para que
-      # la migración por pasos nunca produzca un deploy rojo intermedio.
-
       # Los route handlers (src/app/api) requieren servidor Node y son
       # incompatibles con el export estático. Se excluyen SOLO del build de
-      # Pages (solo scanner-lab los tiene; en e14 el rm es un no-op).
-      - name: Remove server-only API routes
-        run: rm -rf "apps/${{ steps.app.outputs.app }}/src/app/api"
+      # Pages (solo scanner-lab los tiene; e14 no genera rutas de API).
+      - name: Remove server-only API routes (scanner-lab)
+        run: rm -rf apps/scanner-lab/src/app/api
 
-      - name: Build estático (salida en apps/<app>/out)
+      # Raíz del sitio: e14 usa el basePath por defecto del job (/web-scanner).
+      - name: Build estático digitalizador-e14 (raíz del sitio)
         run: bunx next build
-        working-directory: apps/${{ steps.app.outputs.app }}
+        working-directory: apps/digitalizador-e14
+
+      # Subruta /lab/: el basePath de scanner-lab se sobreescribe a nivel de
+      # step → /web-scanner/lab (assets, worker, manifest y sw auto-prefijados).
+      - name: Build estático scanner-lab (subruta /lab/)
+        working-directory: apps/scanner-lab
+        env:
+          NEXT_PUBLIC_BASE_PATH: /web-scanner/lab
+        run: bunx next build
+
+      # Anidar scanner-lab dentro del artifact final: /web-scanner/lab/.
+      # Los _next/ de cada app viven en prefijos distintos → sin colisiones.
+      - name: Anidar scanner-lab dentro del artifact final
+        run: cp -r apps/scanner-lab/out apps/digitalizador-e14/out/lab
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: apps/${{ steps.app.outputs.app }}/out
+          path: apps/digitalizador-e14/out
 
   deploy:
     needs: build
