@@ -106,3 +106,21 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
 - **Archivos:** src/lib/e14/bridge.ts (regla 2º intento), ResumenView, ActasView
 - **Commits:** incluidos en G7+G8 y fix(e14) posterior
 - **Pendiente/Bloqueado:** G9/G10.
+
+### [2026-10-09 19:40] — G9+G10 — Z.ai Code
+- **Hecho:** workflow deploy-pages.yml parametrizado (workflow_dispatch con
+  input choice `app` digitalizador-e14|scanner-lab, default e14; push a main
+  despliega el default; working-directory y artifact path parametrizados vía
+  step output; rm de API routes parametrizado). Build estático verificado:
+  `out/` generado sin errores, servido localmente bajo /web-scanner/ con
+  assets (chunks JS + woff2) en 200 y navegador interactivo completo (scan →
+  análisis → revisión). Toast crit añadido al rechazo (3 variantes del DoD).
+  lint:e14 y e14:check verdes; scanner-lab y scanner-core SIN cambios vs main
+  (git diff --name-only → 0 archivos).
+- **Archivos:** .github/workflows/deploy-pages.yml, src/lib/e14/store.ts, docs/*
+- **Commits:** c661208 + fix(e14) final
+- **Cómo probar:** `bun run build:e14` → servir apps/digitalizador-e14/out
+  bajo /web-scanner/ (o fusionar y ver el deploy de Pages del workflow).
+- **Pendiente/Bloqueado:** desplegar en Pages real requiere merge a main
+  (el workflow despliega e14 por defecto). FASE LÓGICA (§11) pendiente de
+  aprobación de la gráfica.

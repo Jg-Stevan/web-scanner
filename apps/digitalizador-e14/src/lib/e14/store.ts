@@ -227,6 +227,11 @@ export const useE14Store = create<E14Store>((set, get) => {
           solicitudesRescaneo: get().solicitudesRescaneo + 1,
           historial: [fila, ...get().historial],
         });
+        notificar(
+          "crit",
+          "ACTA NO RECONOCIDA",
+          `Score ${actaActual.score.toFixed(1)}/10 — obligatorio repetir foto.`,
+        );
       }
       set({ vista: "revision" });
     },
