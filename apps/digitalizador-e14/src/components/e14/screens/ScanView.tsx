@@ -69,16 +69,8 @@ import { CameraFrameLoop, type FrameLoopTelemetry } from "@jg-stevan/scanner-cor
 import { SHUTTER_SCORE } from "@jg-stevan/scanner-core/quality";
 import type { Quad } from "@jg-stevan/scanner-core/types";
 import { useE14Store } from "@/lib/e14/store";
-import type { Forzado } from "@/lib/e14/bridge";
 import type { FuenteCaptura } from "@/lib/e14/types";
 import { FlashIcon, ImportIcon, ScanFrameIcon } from "../icons";
-
-const CHIPS: { valor: Forzado; label: string }[] = [
-  { valor: "ALEATORIO", label: "ALEATORIO" },
-  { valor: "OPTIMA", label: "ÓPTIMA" },
-  { valor: "ADVERTENCIA", label: "ADVERTENCIA" },
-  { valor: "RECHAZADA", label: "RECHAZADA" },
-];
 
 const FUENTES: { valor: FuenteCaptura; label: string }[] = [
   { valor: "SIMULACION", label: "SIMULACIÓN" },
@@ -420,8 +412,6 @@ type CamEstado = "iniciando" | "viva" | "no-disponible";
 
 export function ScanView() {
   const dispararEscaneo = useE14Store((s) => s.dispararEscaneo);
-  const forzado = useE14Store((s) => s.forzado);
-  const setForzado = useE14Store((s) => s.setForzado);
   const fuente = useE14Store((s) => s.fuente);
   const setFuente = useE14Store((s) => s.setFuente);
   const setArchivoPendiente = useE14Store((s) => s.setArchivoPendiente);
@@ -1674,9 +1664,11 @@ export function ScanView() {
         </div>
       </div>
 
-      {/* Panel de simulación (MOCK) — discreto: border-line + tint 10%.
-          En fuente !== SIMULACIÓN muestra el estado de la fuente + IMPORTAR
-          (los chips de resultado son solo del modo SIMULACIÓN, §7). */}
+      {/* Panel de simulación — discreto: border-line + tint 10%.
+          En fuente !== SIMULACIÓN muestra el estado de la fuente + IMPORTAR.
+          D35 (F1.4): los chips de forzado ÓPTIMA/ADVERTENCIA/RECHAZADA se
+          ELIMINARON — SIMULACIÓN es un escaneo REAL (determinista) del acta
+          E-14 incluida; solo queda la línea estática + el toggle offline. */}
       <div className="px-4 pb-4">
         <div className="rounded-lg border border-line bg-surface-1/60 px-2.5 py-2">
           {fuente === "SIMULACION" ? (
@@ -1684,25 +1676,10 @@ export function ScanView() {
               <span className="font-data text-[8px] tracking-[0.25em] text-ink-faint uppercase block mb-1.5">
                 Simulación
               </span>
-              <div className="flex flex-wrap gap-1.5">
-                {CHIPS.map(({ valor, label }) => {
-                  const activo = forzado === valor;
-                  return (
-                    <button
-                      key={valor}
-                      type="button"
-                      onClick={() => setForzado(valor)}
-                      aria-pressed={activo}
-                      className={`label-caps !text-[9px] px-2 py-1 rounded border transition-colors ${
-                        activo
-                          ? "border-ok-tint/40 bg-ok-tint/10 text-ok-tint"
-                          : "border-line text-ink-faint hover:bg-hover"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-data text-[9px] tracking-wide text-ok-tint">
+                  IMAGEN REAL INCLUIDA · ACTA E-14 (KIT 745 — CONSULADO FRANKFURT)
+                </span>
                 <button
                   type="button"
                   onClick={alternarConexion}

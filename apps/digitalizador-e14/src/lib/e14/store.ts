@@ -6,7 +6,7 @@
 import { create } from "zustand";
 import { getBridge } from "./get-bridge";
 import { rotateProcessedDataUrl } from "./image-utils";
-import type { PaginaObjetivo, Forzado } from "./bridge";
+import type { PaginaObjetivo } from "./bridge";
 import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
 import type { Quad } from "@jg-stevan/scanner-core/types";
 import {
@@ -32,9 +32,7 @@ interface E14Store {
   actaActual: Acta | null;
   /** Página de mesa apuntada por el escaneo en curso (D7). */
   paginaObjetivo: PaginaObjetivo | null;
-  /** Resultado que forzará el próximo escaneo (panel de simulación §7.1). */
-  forzado: Forzado;
-  /** Fuente de captura del próximo escaneo (L1: solo SIMULACIÓN operativa). */
+  /** Fuente de captura del próximo escaneo (D35: SIMULACIÓN = pipeline real). */
   fuente: FuenteCaptura;
   /** Archivo elegido para la fuente ARCHIVO (L2 lo consume). */
   archivoPendiente: File | null;
@@ -56,7 +54,6 @@ interface E14Store {
   notificaciones: Notificacion[];
 
   navegar: (vista: Vista) => void;
-  setForzado: (forzado: Forzado) => void;
   setFuente: (fuente: FuenteCaptura) => void;
   setArchivoPendiente: (archivo: File | null) => void;
   /** Registra el <video> vivo de la cámara (null al detener el stream). */
@@ -186,7 +183,6 @@ export const useE14Store = create<E14Store>((set, get) => {
     online: true,
     actaActual: null,
     paginaObjetivo: null,
-    forzado: "ALEATORIO",
     fuente: "SIMULACION",
     archivoPendiente: null,
     framePendiente: null,
@@ -203,8 +199,6 @@ export const useE14Store = create<E14Store>((set, get) => {
     notificaciones: [],
 
     navegar: (vista) => set({ vista }),
-
-    setForzado: (forzado) => set({ forzado }),
 
     setFuente: (fuente) => set({ fuente }),
 
@@ -237,7 +231,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     },
 
     dispararEscaneo: async (intento = 1) => {
-      const { forzado, mesas, fuente, archivoPendiente, framePendiente } = get();
+      const { mesas, fuente, archivoPendiente, framePendiente } = get();
       // L2: en fuente ARCHIVO el disparo necesita imagen (REPETIR FOTO vuelve
       // al picker en vez de reventar el pipeline sin archivo).
       if (fuente === "ARCHIVO" && !archivoPendiente) {
@@ -263,7 +257,6 @@ export const useE14Store = create<E14Store>((set, get) => {
       try {
         const acta = await bridge.escanearActa({
           objetivo,
-          forzado,
           intento,
           maxIntentos: 2,
           fuente,
@@ -414,9 +407,9 @@ export const useE14Store = create<E14Store>((set, get) => {
 
     rotarFoto: async () => {
       const { actaActual } = get();
-      // SOLO actas reales con foto procesada (en SIM ReviewView rota el papel
-      // sintético localmente y JAMÁS llama aquí — spec §7 ReviewView).
-      if (!actaActual?.fotoProcesada || actaActual.fuente === "SIMULACION") return;
+      // Actas con foto procesada (D35: SIMULACIÓN también — el gate es la foto;
+      // F-ROT-RAPID gira la PROCESADA sin re-ejecutar el pipeline).
+      if (!actaActual?.fotoProcesada) return;
       if (rotandoFotoEnVuelo) return;
       rotandoFotoEnVuelo = true;
       try {

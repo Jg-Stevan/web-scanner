@@ -24,7 +24,12 @@
  * maxIntentos/paginación se preservan por spread del acta de entrada).
  *
  * Lo que sigue simulado (votos/firmas/ubicación) se rellena del seed exacto
- * como hace el MockBridge (§0: no se presenta como extraído).
+ * (§0: no se presenta como extraído).
+ *
+ * UX-REAL F1 (SPEC-ux-real-bn-editor §F1, D35): SIMULACIÓN también pasa por
+ * este pipeline — la fuente carga el acta E-14 REAL incluida (§1) y la trata
+ * EXACTAMENTE como un `archivo` de IMPORTAR (mismo File → fileToCaptureDataUrl
+ * → F-IMPORT: EXIF/12MP). El mock de la fase gráfica se retiró.
  */
 import {
   detectDocumentEdges,
@@ -50,6 +55,9 @@ import type {
 } from "@jg-stevan/scanner-core/types";
 import { ACTA_MOCK } from "./seed";
 import { statusDeScore } from "./types";
+// §1 (SPEC-ux-real-bn-editor): acta E-14 real del dueño (Galaxy A56 5G) —
+// import estático: Next resuelve el basePath /web-scanner del deploy estático.
+import actaSimUrl from "@/assets/acta-e14-real.jpg";
 import type { Acta, ActaFirma, ActaStatus, ProgresoAnalisis } from "./types";
 import type { E14Bridge, OpcionesEscaneo } from "./bridge";
 
@@ -83,6 +91,23 @@ function capturarFrame(video: HTMLVideoElement): string | null {
 
 /** Entrada del pipeline: File (ARCHIVO o foto CÁMARA) o dataUrl ya crudo. */
 type EntradaPipeline = { archivo: File } | { dataUrl: string };
+
+/**
+ * SIMULACIÓN = pipeline real sobre el acta E-14 incluida (D35).
+ * Mismo camino que IMPORTAR: File → fileToCaptureDataUrl (F-IMPORT: EXIF/12MP).
+ * Caché a nivel de módulo para no re-descargar en REINTENTAR/REPETIR FOTO
+ * (SPEC §F1.1 — el asset se decodifica al entrar a SIMULACIÓN, lazy).
+ */
+let actaSimCache: File | null = null;
+async function fetchActaSimulada(): Promise<File> {
+  if (actaSimCache) return actaSimCache;
+  // actaSimUrl es StaticImageData — .src ya resuelve el basePath /web-scanner
+  // del deploy estático (en dev: /_next/static/media/...).
+  const res = await fetch(actaSimUrl.src);
+  if (!res.ok) throw new Error("SIMULACIÓN: no se pudo cargar la imagen incluida");
+  actaSimCache = new File([await res.blob()], "acta-e14-real.jpg", { type: "image/jpeg" });
+  return actaSimCache;
+}
 
 function dosDigitos(n: number): string {
   return String(n).padStart(2, "0");
@@ -129,10 +154,12 @@ function conRampa<T>(
 export class RealCoreBridge implements E14Bridge {
   private contador = 0;
 
-  escanearActa(opciones: OpcionesEscaneo): Promise<Acta> {
-    // Resolución de la entrada (L3 §5 CAMARA):
+  async escanearActa(opciones: OpcionesEscaneo): Promise<Acta> {
+    // Resolución de la entrada (L3 §5 CAMARA + F1 SIMULACIÓN):
     //  · CAMARA + archivo (ZSL/captureSmart/iOS) → MISMO pipeline que ARCHIVO.
     //  · CAMARA sin archivo + frameActual (video vivo) → grab síncrono.
+    //  · SIMULACIÓN sin archivo (D35) → el acta E-14 incluida, EXACTAMENTE
+    //    como un archivo de IMPORTAR (la foto real del dueño, EXIF incluido).
     //  · Sin entrada → error explícito (el guard del store ya avisó).
     let entrada: EntradaPipeline | null = null;
     if (opciones.archivo) {
@@ -143,11 +170,15 @@ export class RealCoreBridge implements E14Bridge {
         ? capturarFrame(video)
         : null;
       if (!dataUrl) {
-        return Promise.reject(new Error("SIN CAPTURA PARA ANALIZAR (fuente CÁMARA)"));
+        throw new Error("SIN CAPTURA PARA ANALIZAR (fuente CÁMARA)");
       }
       entrada = { dataUrl };
+    } else if (opciones.fuente === "SIMULACION") {
+      // SIMULACIÓN = pipeline real sobre el acta E-14 incluida (D35).
+      // Mismo camino que IMPORTAR: File → fileToCaptureDataUrl (F-IMPORT: EXIF/12MP).
+      entrada = { archivo: await fetchActaSimulada() };
     } else {
-      return Promise.reject(new Error("SIN IMAGEN PARA ANALIZAR (fuente ARCHIVO)"));
+      throw new Error("SIN IMAGEN PARA ANALIZAR (fuente ARCHIVO)");
     }
 
     // Acumulador de lo que ya se tiene (el acta de timeout rellena lo que

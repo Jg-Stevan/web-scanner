@@ -139,7 +139,8 @@ export function ReviewView() {
   const mesa = paginaObjetivo?.mesaId.replace(/\D/g, "").padStart(3, "0") ?? acta.ubicacion.mesa;
   const status = acta.status;
   const hayFoto = Boolean(acta.fotoProcesada);
-  const esReal = acta.fuente !== undefined && acta.fuente !== "SIMULACION";
+  // D35: SIMULACIÓN produce fotos reales (pipeline real) — el gate es la foto, no la fuente.
+  const esReal = Boolean(acta.fotoProcesada);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -428,11 +429,12 @@ export function ReviewCtas() {
 
   if (!acta) return null;
   const status = acta.status;
-  const esReal = acta.fuente !== undefined && acta.fuente !== "SIMULACION";
+  // D35: SIMULACIÓN produce fotos reales (pipeline real) — el gate es la foto, no la fuente.
+  const esReal = Boolean(acta.fotoProcesada);
 
   if (status === "ENVIADA") {
-    // L4 §6: EXPORTAR PDF junto a SEGUIR ESCANEANDO — solo actas REALES
-    // (en SIMULACIÓN no hay foto que exportar: el botón se oculta).
+    // L4 §6: EXPORTAR PDF junto a SEGUIR ESCANEANDO — actas con foto real
+    // (D35: SIMULACIÓN incluida — el gate es la foto, no la fuente).
     if (esReal) {
       return (
         <div className="flex flex-row items-center gap-2 w-full">
