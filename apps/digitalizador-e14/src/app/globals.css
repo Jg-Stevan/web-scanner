@@ -206,3 +206,20 @@ body {
     rgba(255, 255, 255, 0.01) 4px
   );
 }
+
+/* Destello blanco de captura (L3 — flashKey del lab CameraView.tsx L569,
+   ~120 ms según SPEC-fase-logica §7 rev.3) */
+@keyframes capture-flash {
+  0% {
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@utility animate-capture-flash {
+  animation: capture-flash 120ms ease-out forwards;
+}

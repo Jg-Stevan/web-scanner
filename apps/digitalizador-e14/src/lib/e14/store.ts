@@ -36,6 +36,8 @@ interface E14Store {
   fuente: FuenteCaptura;
   /** Archivo elegido para la fuente ARCHIVO (L2 lo consume). */
   archivoPendiente: File | null;
+  /** Video vivo de la fuente CÁMARA (L3: grab del frame si el disparo no trae foto). */
+  framePendiente: HTMLVideoElement | null;
   /** Último evento de progreso del pipeline (alimenta ANALIZANDO, §7.2). */
   progresoAnalisis: ProgresoAnalisis | null;
   /** true cuando el pipeline resolvió (piso escénico D16 de ANALIZANDO). */
@@ -53,6 +55,8 @@ interface E14Store {
   setForzado: (forzado: Forzado) => void;
   setFuente: (fuente: FuenteCaptura) => void;
   setArchivoPendiente: (archivo: File | null) => void;
+  /** Registra el <video> vivo de la cámara (null al detener el stream). */
+  setFramePendiente: (frame: HTMLVideoElement | null) => void;
   /** Toast flotante genérico (L2: aviso CÁMARA→L3 del chip de fuente; L3 lo reusa para permisos). */
   notificar: (tone: Notificacion["tone"], titulo: string, descripcion?: string) => void;
   alternarConexion: () => void;
@@ -163,6 +167,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     forzado: "ALEATORIO",
     fuente: "SIMULACION",
     archivoPendiente: null,
+    framePendiente: null,
     progresoAnalisis: null,
     analisisResuelto: false,
     actasSesion: 0,
@@ -181,6 +186,8 @@ export const useE14Store = create<E14Store>((set, get) => {
     setFuente: (fuente) => set({ fuente }),
 
     setArchivoPendiente: (archivo) => set({ archivoPendiente: archivo }),
+
+    setFramePendiente: (frame) => set({ framePendiente: frame }),
 
     notificar,
 
@@ -207,11 +214,19 @@ export const useE14Store = create<E14Store>((set, get) => {
     },
 
     dispararEscaneo: async (intento = 1) => {
-      const { forzado, mesas, fuente, archivoPendiente } = get();
+      const { forzado, mesas, fuente, archivoPendiente, framePendiente } = get();
       // L2: en fuente ARCHIVO el disparo necesita imagen (REPETIR FOTO vuelve
       // al picker en vez de reventar el pipeline sin archivo).
       if (fuente === "ARCHIVO" && !archivoPendiente) {
         notificar("warn", "ELIGE UNA IMAGEN", "La fuente IMPORTAR analiza la imagen que elijas.");
+        set({ vista: "escanear" });
+        return;
+      }
+      // L3: la fuente CÁMARA necesita una captura (foto ZSL/nativa ya en el
+      // store) o el video vivo para el grab del frame. REPETIR FOTO vuelve al
+      // visor (la cámara se reinicia al reactivar la vista) — espejo de D23.
+      if (fuente === "CAMARA" && !archivoPendiente && !framePendiente) {
+        notificar("warn", "CAPTURA UNA FOTO", "La fuente CÁMARA analiza la foto que toma el obturador.");
         set({ vista: "escanear" });
         return;
       }
@@ -230,6 +245,7 @@ export const useE14Store = create<E14Store>((set, get) => {
           maxIntentos: 2,
           fuente,
           archivo: archivoPendiente ?? undefined,
+          frameActual: fuente === "CAMARA" ? framePendiente : undefined,
           onProgreso: (p) => set({ progresoAnalisis: p }),
         });
         set({

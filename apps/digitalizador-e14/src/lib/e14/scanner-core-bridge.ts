@@ -3,14 +3,23 @@
  * FASE LÓGICA L2: fuente ARCHIVO completa —
  *   fileToCaptureDataUrl → detectDocumentEdges → processImage →
  *   evaluateQuality → requestOcr → mapeo §4 → Acta.
+ * FASE LÓGICA L3 (§5 CAMARA): la fuente CÁMARA reusa EL MISMO pipeline con
+ *   dos entradas —
+ *   · `archivo` (foto ya capturada por ZSL / captureSmart / cámara nativa
+ *     iOS — la ruta del spec §7: "la foto entra al mismo pipeline (como
+ *     ARCHIVO, L2)");
+ *   · `frameActual` (video con stream vivo, último recurso) → grab síncrono
+ *     a canvas a RESOLUCIÓN DEL STREAM → dataUrl → pipeline. El grab debe
+ *     ocurrir ANTES de que React desmonte el visor (el stream se detiene al
+ *     cambiar a ANALIZANDO), por eso se hace en el arranque síncrono de
+ *     escanearActa.
  * Mapeo de score §4.1 (techos por level), gate de legibilidad §4.2 (el OCR
  * manda sobre el score: ILEGIBLE calca la rechazada v2) y timeout global de
  * 15 s que RESUELVE un acta RECHAZADA (nunca congela la UI ni revienta el
- * flujo de toasts del store).
+ * flujo de toasts del store). Etiquetas de etapa idénticas por fuente.
  *
- * La fuente CÁMARA llega en L3 (lanza error explícito — el chip es visible
- * pero no muerto). Lo que sigue simulado (votos/firmas/ubicación) se rellena
- * del seed exacto como hace el MockBridge (§0: no se presenta como extraído).
+ * Lo que sigue simulado (votos/firmas/ubicación) se rellena del seed exacto
+ * como hace el MockBridge (§0: no se presenta como extraído).
  */
 import {
   detectDocumentEdges,
@@ -33,6 +42,28 @@ const DETALLE_TIMEOUT = "TIEMPO DE PROCESADO EXCEDIDO";
 const DETALLE_GENERICO = "SCORE INSUFICIENTE PARA TRANSMISIÓN";
 /** Regla de dominio E-14: la cabecera debe decir E-14 / REGISTRADURÍA. */
 const PATRON_CABECERA = /E\s*-\s*14|REGISTRADURIA|REGISTRADURÍA/i;
+
+/**
+ * Grab del <video> a RESOLUCIÓN DEL STREAM (§5 CAMARA): canvas de
+ * videoWidth×videoHeight → JPEG 0.92. Síncrono (~10 ms) — se llama ANTES de
+ * que el visor se desmonte, mientras el stream sigue vivo.
+ */
+function capturarFrame(video: HTMLVideoElement): string | null {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx || !canvas.width || !canvas.height) return null;
+    ctx.drawImage(video, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } catch {
+    return null;
+  }
+}
+
+/** Entrada del pipeline: File (ARCHIVO o foto CÁMARA) o dataUrl ya crudo. */
+type EntradaPipeline = { archivo: File } | { dataUrl: string };
 
 function dosDigitos(n: number): string {
   return String(n).padStart(2, "0");
@@ -80,12 +111,23 @@ export class RealCoreBridge implements E14Bridge {
   private contador = 0;
 
   escanearActa(opciones: OpcionesEscaneo): Promise<Acta> {
-    if (opciones.fuente === "CAMARA") {
-      // L3 cablea el frame del <video>; en L2 el chip avisa y no llega aquí.
-      return Promise.reject(new Error("CÁMARA LLEGA EN LA FASE L3"));
-    }
-    const archivo = opciones.archivo;
-    if (!archivo) {
+    // Resolución de la entrada (L3 §5 CAMARA):
+    //  · CAMARA + archivo (ZSL/captureSmart/iOS) → MISMO pipeline que ARCHIVO.
+    //  · CAMARA sin archivo + frameActual (video vivo) → grab síncrono.
+    //  · Sin entrada → error explícito (el guard del store ya avisó).
+    let entrada: EntradaPipeline | null = null;
+    if (opciones.archivo) {
+      entrada = { archivo: opciones.archivo };
+    } else if (opciones.fuente === "CAMARA") {
+      const video = opciones.frameActual;
+      const dataUrl = video && video.readyState >= 2 && video.videoWidth
+        ? capturarFrame(video)
+        : null;
+      if (!dataUrl) {
+        return Promise.reject(new Error("SIN CAPTURA PARA ANALIZAR (fuente CÁMARA)"));
+      }
+      entrada = { dataUrl };
+    } else {
       return Promise.reject(new Error("SIN IMAGEN PARA ANALIZAR (fuente ARCHIVO)"));
     }
 
@@ -111,7 +153,7 @@ export class RealCoreBridge implements E14Bridge {
         );
       }, TIMEOUT_MS);
 
-      this.pipeline(opciones, archivo, parcial, emitir).then(
+      this.pipeline(opciones, entrada, parcial, emitir).then(
         (acta) => {
           if (vencido) return; // ya resolvió el timeout: el resultado se descarta
           clearTimeout(timer);
@@ -126,24 +168,28 @@ export class RealCoreBridge implements E14Bridge {
     });
   }
 
-  /** Pipeline §5 por fuente ARCHIVO (los ms por etapa se reportan en consola). */
+  /** Pipeline §5 (ARCHIVO y CAMARA comparten etapas y mapeo; ms por etapa en consola). */
   private async pipeline(
     opciones: OpcionesEscaneo,
-    archivo: File,
+    entrada: EntradaPipeline,
     parcial: { fotoOriginal?: string },
     emitir: (p: ProgresoAnalisis) => void,
   ): Promise<Acta> {
     const ms = { decode: 0, detect: 0, proceso: 0, calidad: 0, ocr: 0, total: 0 };
     const inicio = performance.now();
 
-    // 1) File → data URL crudo (F-IMPORT del core: HEIC/EXIF/12MP seguros).
+    // 1) Entrada → data URL crudo (F-IMPORT del core: HEIC/EXIF/12MP seguros;
+    //    en CAMARA sin archivo el dataUrl ya vino del grab del <video>).
     emitir({ etapa: "DETECTANDO", progreso: 0 });
-    const fotoOriginal = await conRampa(
-      fileToCaptureDataUrl(archivo),
-      700,
-      (f) => ({ etapa: "DETECTANDO", progreso: f * 0.5 }),
-      emitir,
-    );
+    const fotoOriginal =
+      "archivo" in entrada
+        ? await conRampa(
+            fileToCaptureDataUrl(entrada.archivo),
+            700,
+            (f) => ({ etapa: "DETECTANDO", progreso: f * 0.5 }),
+            emitir,
+          )
+        : entrada.dataUrl;
     ms.decode = performance.now() - inicio;
     parcial.fotoOriginal = fotoOriginal;
 
@@ -211,7 +257,8 @@ export class RealCoreBridge implements E14Bridge {
     const status: ActaStatus = legible ? statusDeScore(score) : "RECHAZADA";
 
     console.info(
-      `[e14-L2] pipeline ${opciones.fuente} total=${Math.round(ms.total)}ms ` +
+      `[e14] pipeline ${opciones.fuente}/${"archivo" in entrada ? "file" : "video-grab"} ` +
+        `total=${Math.round(ms.total)}ms ` +
         `(decode=${Math.round(ms.decode)} detect=${Math.round(ms.detect)} ` +
         `proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
         `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +

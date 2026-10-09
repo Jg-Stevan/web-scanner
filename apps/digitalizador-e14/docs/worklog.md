@@ -337,3 +337,97 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   ZSL, ruta iOS). El copy fijo de la tarjeta ILEGIBLE (diseño v2) sigue
   mostrando "CÓDIGO DE BARRAS Y CABECERA NO DETECTADOS" también para el
   timeout — el detalle real vive en `acta.rechazo.detalle` (dato, no UI).
+
+### [2026-10-09 20:25 (Bogotá)] — L3 cámara real + interfaz del lab — Z.ai Code (Task 6-L3)
+- **Hecho:** FASE LÓGICA L3 (SPEC §8-L3 + §7 rev.3) — la fuente CÁMARA es REAL
+  (video + CameraFrameLoop del core) y la interfaz de escaneo del lab
+  (CameraView.tsx) se copió COMPLETA re-vestida con Precision Monitor, sin
+  dependencias nuevas (rg de useScannerStore/framer/vaul/sonner → VACÍO).
+  SIMULACIÓN/IMPORTAR quedan EXACTOS a L2 (diff de píxeles del visor ≈0.8/255).
+  - `scanner-core-bridge.ts`: soporte CAMARA con dos entradas (§5): `archivo`
+    (foto ZSL/captureSmart/iOS) → MISMO pipeline que ARCHIVO; sin archivo y con
+    `frameActual` (video vivo) → grab síncrono a canvas a RESOLUCIÓN DEL STREAM
+    (videoWidth/Height, antes de que React desmonte el visor) → dataUrl →
+    pipeline con ETIQUETAS DE ETAPA idénticas. Timeout 15 s/gate/mapeo intactos.
+    Log `[e14] pipeline CAMARA/file|video-grab …`.
+  - `store.ts`: `framePendiente/setFramePendiente` (video vivo para el grab) +
+    guard CAMARA sin captura (toast warn "CAPTURA UNA FOTO" + vista escanear,
+    espejo de D23) + `frameActual` pasado al bridge.
+  - `ScanView.tsx` (§7 rev.3 completo, copiado del lab):
+    · `<video playsInline muted autoPlay>` dentro del marco existente (mismos
+      corner brackets, z-30); getUserMedia con cascada exact environment
+      (ideal 1920×1080) → environment → video; stop() del stream + loop +
+      ring en unmount y cambio de fuente/vista.
+    · Fallback: permiso denegado / sin HTTPS / sin getUserMedia / track muerto
+      (B3) → toast warn + vuelta automática a SIMULACIÓN (§7, D27).
+    · CameraFrameLoop montado sobre el video: onFrame → telemetría (throttle
+      UI ~10 Hz) + feed del ring ZSL (~5 Hz); onTrigger → gate del lab
+      L1380-1385 (`if (!autoArmado || procesando || cooldown) return` — el gate
+      fino vive en el core); onNoDetectTimeout → toast warn "NO DETECTO EL
+      ACTA" / "Acércala más al encuadre.".
+    · HUD: "CALIDAD 82%" (score.total, ok-tint >80) + "ACTA DETECTADA /
+      NO DETECTADA" + pill "IA · AUTO / IA · MANUAL" (punto pulsante ok-tint).
+    · Pill "BUSCANDO ACTA…" superior centrada (bg-black/60 + blur + spinner
+      ok-tint + texto blanco 12px) mientras corners === null.
+    · Quad overlay SVG en vivo (mapeo object-cover exacto con ResizeObserver,
+      lab L1493-1515) en ok-tint + máscara 32% + 4 puntos blancos, fade 150 ms.
+    · Toggle AUTO default OFF (D22 spec → D24) en la fila [FLASH | shutter |
+      AUTO]; overlay "MANTÉN INMÓVIL EL ACTA…" cuando armado + score>0.8
+      (lab L1802); anillo del shutter verde si score.total > SHUTTER_SCORE.
+    · Flash F-FLASH v3 (lab L486-555/L1404-1416): applyConstraints +
+      verificación getSettings().torch + flashRef con reintentos
+      0/250/700/1500 ms + re-aplicación en "playing"; sin stream → hint
+      "LA LINTERNA NECESITA CÁMARA REAL" (D26).
+    · Disparo POR PLATAFORMA (D25): ImageCapture → captureSmart (takePhoto
+      full-res, carrera 8 s); iOS/Safari sin ImageCapture → input
+      capture="environment" (cámara nativa, mismo pipeline); otros sin IC →
+      best frame ZSL; último recurso → grab del video vivo (frameActual).
+      ZSL ring de 8 canvases, ventana 80-450 ms, liberación R-14.
+    · Destello blanco ~120 ms (flashKey, keyframe nuevo en globals.css) +
+      navegación a ANALIZANDO diferida ~260 ms para que se vea; vibrate(30).
+    · Toast iOS único: "CÁMARA NATIVA EN IPHONE". Fuera de alcance (spec):
+      "Revisar N" + multi-página NO copiados.
+  - `globals.css`: keyframe `animate-capture-flash` (120 ms). `icons.tsx`:
+    FlashIcon + ScanFrameIcon (SVG inline). Fix de estilo: la liberación de
+    canvases del ring vive en función de módulo `liberarCanvas` (espejo del
+    releaseFrame del lab) para satisfacer `react-hooks/immutability` 7.1.x.
+  - QA navegador (agent-browser 390×844, dev :3001):
+    - SIM regresión: ÓPTIMA "✓ 8.2/10 ÓPTIMA"+"ENVIADO CORRECTAMENTE"
+      (auto-envío D4); ADVERTENCIA "⚠ 7.0/10 MODERADA" → ENVIAR A
+      TRANSMISIÓN → "✓ 7.0/10 ENVIADA CON ADVERTENCIA"; RECHAZADA toast
+      "ACTA NO RECONOCIDA Score 4.2/10" + "INTENTO 1 DE 2" + ILEGIBLE;
+      REPETIR → "✓ 9.4/10 ÓPTIMA" (D8). Visor SIM idéntico a L2 (diff píxel
+      0.81/255 muestreado).
+    - ARCHIVO nítida: "✓ 9.3/10 ÓPTIMA" (motor=worker, log `[e14] pipeline
+      ARCHIVO/file total=3359ms … score=9.3`), VER FOTO = warp real centrado
+      sin distorsión (verificado con VLM).
+    - CÁMARA headless (sin cámara): click chip → getUserMedia falla → toast
+      warn "CÁMARA NO DISPONIBLE" / "No hay cámara accesible (permiso
+      denegado, sin hardware o sin conexión segura). VOLVIENDO A
+      SIMULACIÓN." + fuente vuelve a SIMULACIÓN (chip SIM activo, panel
+      Simulación, IMPORTAR IMAGEN visible) y el flujo dorado sigue
+      operativo (ÓPTIMA 9.4 tras el fallback). Cambio rápido de chips
+      CÁMARA→SIM→CÁMARA estable. `agent-browser errors` + consola: 0 errores
+      de app.
+    - Test bun aislado del store: guard CAMARA (toast warn + escanear) y
+      error-path con frameActual inválido (toast crit ERROR DE PROCESADO +
+      escanear, nunca atascado en analizando).
+  - lint:e14 + e14:check: 0 errores. scanner-core/scanner-lab: 0 cambios.
+  - HONESTO: la cámara REAL (preview, quad, HUD, flash, AUTO, iOS nativo) NO
+    es verificable en headless — el dueño la prueba en el teléfono (Pages
+    HTTPS). Lo verificado aquí es el fallback + todo lo no-cámara.
+- **Archivos:** src/lib/e14/{scanner-core-bridge.ts,store.ts},
+  src/components/e14/{icons.tsx,screens/ScanView.tsx},
+  src/app/globals.css, docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run dev:e14` → chip CÁMARA (en teléfono: HTTPS +
+  permiso) → quad verde en vivo + HUD CALIDAD; armar AUTO → dispara sola con
+  el acta quieta; FLASH para la linterna; en iPhone el shutter abre la cámara
+  nativa. Sin cámara (desktop headless) → toast + vuelta a SIMULACIÓN. El
+  modo SIMULACIÓN sigue idéntico (chips ÓPTIMA/ADVERTENCIA/RECHAZADA).
+- **Pendiente/Bloqueado:** L4 — EXPORTAR PDF (adaptador §6 buildDocPdf +
+  CTA "EXPORTAR PDF" en REVISIÓN solo actas reales). Riesgos conocidos para
+  el teléfono real: el preview pide 1920×1080 (más GPU que el 540p del lab
+  en gama baja — si se ve pesado, bajar a 960×540); sin F-LENS v4 del lab
+  (sondeo de lentes) Chrome elige la trasera por defecto; takePhoto sin
+  sensor-profiler (el clamp de 48MP lo cubre maxLongSide del core al decodar).
