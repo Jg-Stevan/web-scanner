@@ -8,10 +8,16 @@
  * documento alterna papel sintético ↔ `fotoProcesada` del core (misma caja,
  * object-contain) y un badge avisa "FOTO REAL DISPONIBLE". En SIMULACIÓN no
  * hay foto → todo queda exactamente como en la fase gráfica.
+ * FASE LÓGICA L5 (§7 ReviewView, toolbar REAL — solo fuente ≠ SIMULACIÓN):
+ * RECORTAR abre el QuadEditor (§7.5, copiado del lab) · ROTAR 90° gira la
+ * foto real (horneada para el PDF) · PANTALLA COMPLETA abre el visor modal.
+ * En SIM los tres siguen como hoy (decorativos / rotación de papel).
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
+import { defaultQuad } from "@jg-stevan/scanner-core/types";
 import { ActaDocument } from "../ActaDocument";
+import { QuadEditor } from "../QuadEditor";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
 import { CropIcon, DownloadIcon, EyeIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
 
@@ -89,7 +95,7 @@ function TarjetaRica({
   );
 }
 
-/** Pill simple flotante (ENVIADA / GENERICO). */
+/** Pill simple flotante (ENVIADA / GENERICO / ÓPTIMA rescatada). */
 function Pill({ tone, children }: { tone: "ok" | "crit"; children: React.ReactNode }) {
   return (
     <div
@@ -107,8 +113,25 @@ function Pill({ tone, children }: { tone: "ok" | "crit"; children: React.ReactNo
 export function ReviewView() {
   const acta = useE14Store((s) => s.actaActual);
   const paginaObjetivo = useE14Store((s) => s.paginaObjetivo);
+  const recortando = useE14Store((s) => s.recortando);
+  const aplicarRecorte = useE14Store((s) => s.aplicarRecorte);
+  const rotarFoto = useE14Store((s) => s.rotarFoto);
   const [rotacion, setRotacion] = useState(0);
   const [verFoto, setVerFoto] = useState(false);
+  // L5 §7.5: editor de recorte y visor a pantalla completa (estado local —
+  // el acta solo cambia por store.aplicarRecorte al APLICAR).
+  const [editando, setEditando] = useState(false);
+  const [visorAbierto, setVisorAbierto] = useState(false);
+
+  // L5: Esc cierra el visor (tap en cualquier lado también).
+  useEffect(() => {
+    if (!visorAbierto) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setVisorAbierto(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [visorAbierto]);
 
   if (!acta) return null;
 
@@ -116,6 +139,7 @@ export function ReviewView() {
   const mesa = paginaObjetivo?.mesaId.replace(/\D/g, "").padStart(3, "0") ?? acta.ubicacion.mesa;
   const status = acta.status;
   const hayFoto = Boolean(acta.fotoProcesada);
+  const esReal = acta.fuente !== undefined && acta.fuente !== "SIMULACION";
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -138,6 +162,19 @@ export function ReviewView() {
               <span className="text-ink-faint text-[10px]">•</span>
               <span className="text-[10px] font-semibold text-white tracking-wide uppercase">
                 Enviado correctamente
+              </span>
+            </Pill>
+          )}
+
+          {status === "OPTIMA" && (
+            <Pill tone="ok">
+              <span className="w-2 h-2 rounded-full bg-ok-tint animate-pulse-sync" />
+              <span className="text-[10px] font-bold text-ok-tint font-mono tracking-wide">
+                ✓ {acta.score.toFixed(1)}/10 ÓPTIMA
+              </span>
+              <span className="text-ink-faint text-[10px]">•</span>
+              <span className="text-[10px] font-semibold text-white tracking-wide uppercase">
+                Recuperada — envío manual
               </span>
             </Pill>
           )}
@@ -258,21 +295,40 @@ export function ReviewView() {
             )}
           </div>
 
-          {/* Toolbar (solo ADVERTENCIA y RECHAZADA — code.html). Con foto real
-              (L2): 4ª columna VER FOTO — alterna papel ↔ foto del core. */}
-          {(status === "ADVERTENCIA" || status === "RECHAZADA") && (
+          {/* Toolbar (ADVERTENCIA/RECHAZADA del code.html + ÓPTIMA rescatada real
+              L5). Con foto real (L2): 4ª columna VER FOTO — alterna papel ↔
+              foto del core. L5 §7 ReviewView: en actas REALES los tres botones
+              son REALES (editor §7.5 / rotación horneada / visor modal); en SIM
+              siguen como hoy (decorativos / rotación del papel). */}
+          {(status === "ADVERTENCIA" ||
+            status === "RECHAZADA" ||
+            (status === "OPTIMA" && esReal)) && (
             <div
               className={`w-full max-w-sm grid ${
                 hayFoto ? "grid-cols-4" : "grid-cols-3"
               } gap-2 pt-2 shrink-0 z-20`}
             >
-              <ToolbarBtn icon={<CropIcon />} label="Recortar" />
+              <ToolbarBtn
+                icon={<CropIcon />}
+                label="Recortar"
+                onClick={esReal && acta.fotoOriginal ? () => setEditando(true) : undefined}
+              />
               <ToolbarBtn
                 icon={<RotateIcon />}
                 label="Rotar 90°"
-                onClick={() => setRotacion((r) => (r + 90) % 360)}
+                onClick={
+                  esReal
+                    ? () => void rotarFoto()
+                    : () => setRotacion((r) => (r + 90) % 360)
+                }
               />
-              <ToolbarBtn icon={<FullscreenIcon />} label="Pantalla completa" />
+              <ToolbarBtn
+                icon={<FullscreenIcon />}
+                label="Pantalla completa"
+                onClick={
+                  esReal && acta.fotoProcesada ? () => setVisorAbierto(true) : undefined
+                }
+              />
               {hayFoto && (
                 <ToolbarBtn
                   icon={<EyeIcon />}
@@ -319,6 +375,44 @@ export function ReviewView() {
           </div>
         )}
       </main>
+
+      {/* L5 §7.5 — EDITOR DE RECORTE (overlay a pantalla completa sobre la
+          foto ORIGINAL; quad inicial = detección automática o defaultQuad).
+          Puro por props (D19): el acta solo cambia vía store.aplicarRecorte
+          al APLICAR; CANCELAR descarta sin tocar nada. */}
+      {editando && acta.fotoOriginal ? (
+        <QuadEditor
+          fotoOriginal={acta.fotoOriginal}
+          quadInicial={acta.quadDetectado ?? defaultQuad()}
+          rotation={acta.rotation ?? 0}
+          aplicando={recortando}
+          onCancelar={() => setEditando(false)}
+          onAplicar={(quad) => {
+            void aplicarRecorte(quad).then(() => setEditando(false));
+          }}
+        />
+      ) : null}
+
+      {/* L5 §7 — PANTALLA COMPLETA: visor modal de la foto procesada
+          (object-contain, tap en cualquier lado o Esc cierra). */}
+      {visorAbierto && acta.fotoProcesada ? (
+        <div
+          role="dialog"
+          aria-label="Foto del acta a pantalla completa"
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 animate-editor-enter"
+          onClick={() => setVisorAbierto(false)}
+        >
+          <img
+            src={acta.fotoProcesada}
+            alt="Foto procesada del acta a pantalla completa"
+            className="max-w-full max-h-full object-contain rounded-sm shadow-2xl shadow-black"
+            draggable={false}
+          />
+          <span className="absolute top-3 inset-x-0 text-center font-data text-[9px] tracking-[0.2em] text-ink-dim uppercase">
+            Toca o ESC para cerrar
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -364,6 +458,22 @@ export function ReviewCtas() {
       >
         <span>seguir escaneando</span>
       </button>
+    );
+  }
+
+  if (status === "OPTIMA") {
+    // L5 D20: ÓPTIMA SOLO llega aquí tras un rescate por recorte (la ÓPTIMA
+    // de captura se auto-envía D4) → CTAs de ENVÍO MANUAL (sin auto-envío:
+    // evita la semántica de doble transmisión). "enviarActa" ya la acepta.
+    return (
+      <div className="flex flex-row items-center gap-2 w-full">
+        <PrimaryBtn variant="ok" onClick={enviarActa}>
+          <span>ENVIAR A TRANSMISIÓN</span>
+        </PrimaryBtn>
+        <PrimaryBtn variant="outline" onClick={repetirFoto}>
+          <span>REPETIR</span>
+        </PrimaryBtn>
+      </div>
     );
   }
 

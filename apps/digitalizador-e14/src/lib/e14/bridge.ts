@@ -7,6 +7,7 @@
 import type { Acta, ActaFirma, EtapaAnalisis, FuenteCaptura, ProgresoAnalisis, TipoPagina } from "./types";
 import { statusDeScore } from "./types";
 import { ACTA_MOCK } from "./seed";
+import type { Quad } from "@jg-stevan/scanner-core/types";
 
 /** Página de mesa a la que apunta el próximo escaneo (D7: vive en el store). */
 export interface PaginaObjetivo {
@@ -33,6 +34,18 @@ export interface E14Bridge {
   escanearActa(opciones: OpcionesEscaneo): Promise<Acta>;
   /** Exporta el acta a PDF (§6; L4 lo cablea solo para actas reales). */
   exportarPdf(acta: Acta): Promise<void>;
+  /**
+   * L5 (§7.5): re-ejecuta el pipeline §5 sobre `fotoOriginal` del acta con el
+   * QUAD MANUAL (F5-MANUAL: respeta el quad al píxel, sin refine) → devuelve
+   * el acta ACTUALIZADA (fotoProcesada/score/status/rechazo/ocr/metricas;
+   * fuente/intento/maxIntentos/paginación IGUALES — el rescate D20 NO consume
+   * intento). La UI nunca lo llama en SIMULACIÓN (no hay foto real).
+   */
+  recortar(
+    acta: Acta,
+    quad: Quad,
+    onProgreso?: (p: ProgresoAnalisis) => void,
+  ): Promise<Acta>;
   /** HH:MM:SS — hora del envío automático. */
   horaEnvio(): string;
   /** HH:MM — hora de las filas del historial. */
@@ -156,6 +169,11 @@ export class MockBridge implements E14Bridge {
     throw new Error("EXPORTACIÓN NO DISPONIBLE EN SIMULACIÓN");
   }
 
+  recortar(): Promise<Acta> {
+    // La UI nunca abre el editor en SIM (no hay foto real) — guard explícito.
+    throw new Error("RECORTAR NO APLICA EN SIMULACIÓN");
+  }
+
   horaEnvio(): string {
     const d = new Date();
     return `${dosDigitos(d.getHours())}:${dosDigitos(d.getMinutes())}:${dosDigitos(d.getSeconds())}`;
@@ -193,6 +211,14 @@ export class CompositeBridge implements E14Bridge {
     }
     // El mock no exporta (SIM): siempre rechaza con su error canónico.
     return this.mock.exportarPdf();
+  }
+
+  recortar(acta: Acta, quad: Quad, onProgreso?: (p: ProgresoAnalisis) => void): Promise<Acta> {
+    if (acta.fuente !== "SIMULACION" && this.real) {
+      return this.real.recortar(acta, quad, onProgreso);
+    }
+    // El mock no recorta (SIM): error canónico (la UI no llega aquí).
+    return Promise.reject(new Error("RECORTAR NO APLICA EN SIMULACIÓN"));
   }
 
   horaEnvio(): string {

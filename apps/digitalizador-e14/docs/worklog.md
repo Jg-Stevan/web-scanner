@@ -458,3 +458,86 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   descarga + toast. En SIM el botón no existe.
 - **Pendiente/Bloqueado:** L5 (QuadEditor copiado del lab + toolbar real +
   rescate D20).
+
+### [2026-10-10 00:55 (Bogotá)] — L5 editor de recorte + toolbar REAL + rescate — Z.ai Code (Task 6-L5)
+- **Hecho:** FASE LÓGICA L5 (SPEC §8-L5 + §7.5 + §7 ReviewView) — el editor de
+  recorte NO se inventó: se COPIÓ el subsistema CROP del lab
+  (EditorView.tsx) y se re-vestió Precision Monitor, sin deps nuevas
+  (rg de store del core/lib de animación/drawer/toasts → VACÍO).
+  - `src/components/e14/QuadEditor.tsx` (NUEVO, ~470 líneas netas): COPIA
+    según el mapa §7.5 — `clampN`/`loupeCenterAt`/`quadsClose` (L127-147
+    literal), estado quad/drag/loupe + refs, `pointerToNormalized`/
+    `updateLoupe`/`onHandleDown`/`onContainerPointerMove`/
+    `onContainerPointerUp` (L950-1050 literal, con setPointerCapture y
+    clamp 0-1), 8 asas 44×44 (4 esquinas + 4 medios que trasladan la arista
+    completa), lupa 3× Ø168 en el lado opuesto al dedo con crosshair ámbar,
+    polígono SVG ok-tint, Escape cancela (bloqueado mientras aplica).
+    Aterrizaje del quad con el rAF del lab (easeOutCubic 280 ms); entrada del
+    overlay y pulso del asa → keyframes CSS (globals.css). loadImage UNA vez;
+    rotación del acta en CSS con la misma inversión de coords del lab.
+    CANCELAR descarta · APLICAR full-width verde con spinner "PROCESANDO…".
+  - `src/lib/e14/image-utils.ts` (NUEVO): `rotateProcessedDataUrl` del lab
+    (L189-224, canvas puro) para ROTAR 90° sin re-procesar el pipeline.
+  - `bridge.ts` + `scanner-core-bridge.ts`: método aditivo `recortar(acta,
+    quad, onProgreso)` — Mock/Composite → error canónico en SIM;
+    RealCoreBridge re-ejecuta §5 con F5-MANUAL (`processImage(fotoOriginal,
+    quad, "original", rotation, { manual: true })`), evaluateQuality +
+    requestOcr + mapeo §4.1 + gate §4.2, emite RECORTANDO/REALZANDO/CALIDAD/
+    OCR, timeout 15 s → RECHAZADA "TIEMPO DE PROCESADO EXCEDIDO", y devuelve
+    el acta por SPREAD (intento/fuente/paginación IGUALES — rescate D20 sin
+    intento) con firmas coherentes al status.
+  - `store.ts`: `aplicarRecorte(quad)` (guard SIN FOTO ORIGINAL → warn;
+    recortando → toasts ACTA RECUPERADA/LISTA PARA ENVÍO MANUAL · SIGUE
+    RECHAZADA (SCORE X.X/10) · ERROR DE RECORTADO) + `rotarFoto()` (gira
+    fotoProcesada y hornea rotation para el PDF §6) + `enviarActa` relajada
+    a ADVERTENCIA u OPTIMA (envío MANUAL tras rescate, sin auto-envío D4).
+  - `ReviewView.tsx`: toolbar REAL con fuente ≠ SIMULACIÓN — RECORTAR abre
+    el QuadEditor (quadInicial = quadDetectado ?? defaultQuad) · ROTAR 90°
+    real/Papel en SIM · PANTALLA COMPLETA = visor modal (tap/Esc cierran).
+    Pill "ÓPTIMA · Recuperada — envío manual" + CTAs OPTIMA rescatada
+    (ENVIAR A TRANSMISIÓN verde + REPETIR). En SIM todo queda como hoy.
+  - `globals.css`: keyframes `editor-enter` (280 ms) y `handle-pulse`
+    (1.3 s) — reemplazo CSS de las animaciones del lab.
+  - **QA (agent-browser 390×844, dev :3001):**
+    - SIM regresión COMPLETA: ÓPTIMA 9.8 auto-enviada (✓ ENVIADO
+      AUTOMÁTICAMENTE + SHA-256) · ADVERTENCIA 7.2 → ENVIAR A TRANSMISIÓN →
+      "ENVIADA CON ADVERTENCIA" · RECHAZADA 4.9 + toast "ACTA NO RECONOCIDA
+      Score 4.9/10" + INTENTO 1 DE 2 · ROTAR papel SIM (rotate(90deg)) ·
+      RECORTAR SIM decorativo (sin dialog) · 2º intento 9.8 ÓPTIMA (D8).
+    - ARCHIVO nítida: 9.3 ÓPTIMA (motor=worker) → ENVIADA → EXPORTAR PDF →
+      blob {name: "ROMA - CONSULADO — MESA 003.pdf"} + toast "PDF GENERADO".
+    - EDITOR con ilegible: 7.8 RECHAZADA (gate) → RECORTAR → overlay con la
+      ORIGINAL + quad detectado → drag de asa (Vértice 1 → 39.9%/20.8%,
+      lupa visible durante el arrastre y desaparece al soltar) → APLICAR →
+      "PROCESANDO…" → pipeline re-corre (log `[e14] recorte ARCHIVO
+      total=1279ms … motor=worker legible=false score=7.8`) → sigue
+      RECHAZADA 7.8 + toast "SIGUE RECHAZADA SCORE 7.8/10" + **INTENTO 1 DE
+      2 IGUAL (no consume intento)** · CANCELAR con drag previo: score
+      antes/después 7.8 idéntico.
+    - RESCATE D20 exitoso (imagen diseñada test-acta-croppable.png: header
+      E-14 fuera del quad auto): 9.2 RECHAZADA por gate → RECORTAR → arista
+      superior 24.5%→0% (incluye header) → APLICAR → **toast "ACTA
+      RECUPERADA / LISTA PARA ENVÍO MANUAL" + "9.2/10 ÓPTIMA" + CTAs
+      ENVIAR A TRANSMISIÓN/REPETIR** (manual, sin auto-envío) → enviar →
+      ENVIADA + "ENVIADO CORRECTAMENTE" (log `recorte … legible=true
+      score=9.2 motor=worker`).
+    - ROTAR real: VER FOTO 1553×1995 → ROTAR 90° → 1995×1553 (girada,
+      rotation horneada) · PANTALLA COMPLETA: abre (img girada) + tap y Esc
+      cierran · VLM del editor: quad verde 8 asas + lupa circular +
+      CANCELAR/AJUSTAR BORDES/APLICAR RECORTE ✓.
+    - `agent-browser errors`: 0 errores de app. lint:e14 + e14:check: 0
+      errores. scanner-core/scanner-lab: 0 cambios.
+- **Archivos:** src/components/e14/QuadEditor.tsx (nuevo),
+  src/lib/e14/{image-utils.ts (nuevo), bridge.ts, scanner-core-bridge.ts,
+  store.ts}, src/components/e14/screens/ReviewView.tsx,
+  src/app/globals.css, docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** IMPORTAR una foto borrosa/sin cabecera → RECHAZADA →
+  RECORTAR → arrastrar las 8 asas (la lupa amplía el punto de corte) →
+  APLICAR → el pipeline re-corre y el acta se actualiza SIN consumir intento
+  (mejoró → CTAs de envío manual). ROTAR 90° gira la foto real; PANTALLA
+  COMPLETA la muestra a pantalla completa. En SIM todo queda como hoy.
+- **Pendiente/Bloqueado:** L6 (opcional, persistencia localStorage+
+  IndexedDB) y L7 (opcional, cámara sintética en SIM). La fase lógica
+  OBLIGATORIA (L0-L5) está COMPLETA — queda la DoD §10 final (regresión
+  dorada ya verificada aquí).

@@ -17,6 +17,11 @@
  * manda sobre el score: ILEGIBLE calca la rechazada v2) y timeout global de
  * 15 s que RESUELVE un acta RECHAZADA (nunca congela la UI ni revienta el
  * flujo de toasts del store). Etiquetas de etapa idénticas por fuente.
+ * FASE LÓGICA L5 (§7.5): `recortar` — re-ejecuta §5 sobre `fotoOriginal` con
+ * el QUAD MANUAL (F5-MANUAL del core: `manual: true` respeta el quad al
+ * píxel, sin refine) → fotoProcesada nueva → evaluateQuality + gate OCR →
+ * acta ACTUALIZADA. El rescate D20 NO consume intento (fuente/intento/
+ * maxIntentos/paginación se preservan por spread del acta de entrada).
  *
  * Lo que sigue simulado (votos/firmas/ubicación) se rellena del seed exacto
  * como hace el MockBridge (§0: no se presenta como extraído).
@@ -295,6 +300,152 @@ export class RealCoreBridge implements E14Bridge {
             ? { tipo: "GENERICO", detalle: DETALLE_GENERICO }
             : null,
     });
+  }
+
+  /**
+   * L5 (§7.5) — RECORTE MANUAL (rescate D20): re-ejecuta el pipeline §5 sobre
+   * `fotoOriginal` con el quad del editor (F5-MANUAL: `manual: true` respeta
+   * el quad al píxel, sin refine) y devuelve el acta ACTUALIZADA. El acta
+   * conserva IDENTIDAD (fuente/intento/maxIntentos/paginación/título…) — el
+   * rescate NO es una captura nueva, no consume intento. Timeout 15 s igual
+   * que escanearActa: resuelve un acta RECHAZADA ILEGIBLE controlada.
+   */
+  recortar(
+    acta: Acta,
+    quad: Quad,
+    onProgreso?: (p: ProgresoAnalisis) => void,
+  ): Promise<Acta> {
+    const fotoOriginal = acta.fotoOriginal;
+    if (!fotoOriginal) {
+      return Promise.reject(new Error("SIN FOTO ORIGINAL PARA RECORTAR"));
+    }
+    const rotacion = acta.rotation ?? 0;
+    let vencido = false; // tras el timeout no se emite más progreso (§5)
+    const emitir = (p: ProgresoAnalisis) => {
+      if (!vencido) onProgreso?.(p);
+    };
+
+    return new Promise<Acta>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        vencido = true;
+        // §5: el timeout NO rechaza la Promise — resuelve el acta RECHAZADA
+        // controlada (el toast sale del flujo normal del store).
+        resolve({
+          ...acta,
+          score: 0,
+          status: "RECHAZADA",
+          rechazo: { tipo: "ILEGIBLE", detalle: DETALLE_TIMEOUT },
+          firmas: this.firmasPorStatus(acta.firmas, "RECHAZADA"),
+        });
+      }, TIMEOUT_MS);
+
+      void this.pipelineRecorte(acta, fotoOriginal, quad, rotacion, emitir).then(
+        (actaNueva) => {
+          if (vencido) return; // ya resolvió el timeout: el resultado se descarta
+          clearTimeout(timer);
+          resolve(actaNueva);
+        },
+        (error) => {
+          if (vencido) return;
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error("ERROR DE PIPELINE"));
+        },
+      );
+    });
+  }
+
+  /** Pipeline §5 del RECORTE (sin decode/detección: la foto y el quad ya son
+   *  conocidos). Reusa los helpers del pipeline L2 (conRampa, scoreDeCalidad,
+   *  PATRON_CABECERA) y el mapeo §4.1 + gate §4.2 idénticos. */
+  private async pipelineRecorte(
+    acta: Acta,
+    fotoOriginal: string,
+    quad: Quad,
+    rotacion: number,
+    emitir: (p: ProgresoAnalisis) => void,
+  ): Promise<Acta> {
+    const ms = { proceso: 0, calidad: 0, ocr: 0, total: 0 };
+    const inicio = performance.now();
+
+    // 1) Recorte + realce (warp real INTER_CUBIC + "original", F5-MANUAL).
+    emitir({ etapa: "RECORTANDO", progreso: 0.2 });
+    const tProceso = performance.now();
+    const resultado = await conRampa(
+      processImage(fotoOriginal, quad, "original", rotacion, { manual: true }),
+      1400,
+      // RECORTANDO .2→.6 (warp) → REALZANDO .4→1 (enhance), interpolado.
+      (f) =>
+        f < 0.55
+          ? { etapa: "RECORTANDO", progreso: 0.2 + (f / 0.55) * 0.4 }
+          : { etapa: "REALZANDO", progreso: 0.4 + ((f - 0.55) / 0.45) * 0.6 },
+      emitir,
+    );
+    ms.proceso = performance.now() - tProceso;
+    emitir({ etapa: "REALZANDO", progreso: 1 });
+    const fotoProcesada = resultado.processed;
+
+    // 2) Calidad de la página (sobre el crudo — misma regla §5 paso 4).
+    emitir({ etapa: "CALIDAD", progreso: 0 });
+    const tCalidad = performance.now();
+    const calidad = await evaluateQuality(fotoOriginal);
+    ms.calidad = performance.now() - tCalidad;
+    emitir({ etapa: "CALIDAD", progreso: 1 });
+
+    // 3) OCR sobre la PROCESADA + gate §4.2 (progreso real 0→1).
+    const tOcr = performance.now();
+    const texto = await requestOcr(fotoProcesada, (p) => {
+      emitir({ etapa: "OCR", progreso: Math.min(1, Math.max(0, p)) });
+    });
+    ms.ocr = performance.now() - tOcr;
+    emitir({ etapa: "OCR", progreso: 1 });
+    ms.total = performance.now() - inicio;
+
+    const motor = resultado.precision?.engine ?? "canvas";
+
+    // 4) Mapeo §4 → status/score/rechazo (idéntico al escaneo).
+    const score = scoreDeCalidad(calidad);
+    const legible = ocrTextIsValid(texto) && PATRON_CABECERA.test(texto);
+    const status: ActaStatus = legible ? statusDeScore(score) : "RECHAZADA";
+
+    console.info(
+      `[e14] recorte ${acta.fuente} total=${Math.round(ms.total)}ms ` +
+        `(proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
+        `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +
+        `metricas={sharpness:${calidad.sharpness} brightness:${calidad.brightness} ` +
+        `contrast:${calidad.contrast} level:${calidad.level}})`,
+    );
+
+    // Acta ACTUALIZADA: identidad intacta (spread), campos reales nuevos y
+    // rechazo LIMPIO si el rescate mejora el estado (D20).
+    return {
+      ...acta,
+      fotoProcesada,
+      quadDetectado: quad,
+      ocrTexto: texto,
+      metricas: {
+        sharpness: calidad.sharpness,
+        brightness: calidad.brightness,
+        contrast: calidad.contrast,
+      },
+      motor,
+      score,
+      status,
+      rechazo: !legible
+        ? { tipo: "ILEGIBLE", detalle: DETALLE_ILEGIBLE }
+        : status === "RECHAZADA"
+          ? { tipo: "GENERICO", detalle: DETALLE_GENERICO }
+          : null,
+      firmas: this.firmasPorStatus(acta.firmas, status),
+    };
+  }
+
+  /** Firmas coherentes con el estado (misma regla del mock/§7.5):
+   *  ADVERTENCIA → firma 2 TENUE · RECHAZADA → NO_DETECTADO · resto OK. */
+  private firmasPorStatus(firmas: ActaFirma[], status: ActaStatus): ActaFirma[] {
+    if (firmas.length < 2) return firmas;
+    const estadoFirma2: ActaFirma["estado"] =
+      status === "ADVERTENCIA" ? "TENUE" : status === "RECHAZADA" ? "NO_DETECTADO" : "OK";
+    return firmas.map((f, i) => (i === 1 ? { ...f, estado: estadoFirma2 } : { ...f }));
   }
 
   /** Acta final: relleno simulado (seed, igual que el mock) + campos reales §3.1. */

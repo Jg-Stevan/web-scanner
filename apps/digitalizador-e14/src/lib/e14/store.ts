@@ -5,8 +5,10 @@
  */
 import { create } from "zustand";
 import { getBridge } from "./get-bridge";
+import { rotateProcessedDataUrl } from "./image-utils";
 import type { PaginaObjetivo, Forzado } from "./bridge";
 import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
+import type { Quad } from "@jg-stevan/scanner-core/types";
 import {
   COLA_OFFLINE_INICIAL,
   SOLICITUDES_RESCANEO_INICIAL,
@@ -42,6 +44,8 @@ interface E14Store {
   progresoAnalisis: ProgresoAnalisis | null;
   /** true cuando el pipeline resolvió (piso escénico D16 de ANALIZANDO). */
   analisisResuelto: boolean;
+  /** L5 §7.5: true mientras el bridge re-corre el pipeline del RECORTE. */
+  recortando: boolean;
   actasSesion: number;
   mesas: Mesa[];
   completadas: number;
@@ -67,6 +71,18 @@ interface E14Store {
   enviarRevisionHumana: () => void;
   /** L4 §6: exporta el acta REAL (fotoProcesada) a PDF vía buildDocPdf del core. */
   exportarPdfActa: () => Promise<void>;
+  /**
+   * L5 §7.5 (rescate D20): aplica el recorte manual del QuadEditor —
+   * bridge.recortar re-ejecuta el pipeline con el quad manual (F5-MANUAL) y
+   * NO consume intento. Toast según el resultado del rescate.
+   */
+  aplicarRecorte: (quad: Quad) => Promise<void>;
+  /**
+   * L5 §7 ReviewView: gira fotoProcesada 90° (rotateProcessedDataUrl del lab,
+   * canvas puro) y hornea rotation para el PDF §6. SOLO actas reales — en
+   * SIMULACIÓN ReviewView conserva su rotación local del papel.
+   */
+  rotarFoto: () => Promise<void>;
   descartarNotificacion: (id: number) => void;
 }
 
@@ -103,6 +119,10 @@ function hashMock(): string {
 }
 
 let idNotificacion = 0;
+
+/** Guard anti doble-rotación (espejo del rotatingRef del lab L1054 — la
+ *  rotación rápida es async y un doble tap giraría 180°). */
+let rotandoFotoEnVuelo = false;
 
 export const useE14Store = create<E14Store>((set, get) => {
   const bridge = getBridge();
@@ -172,6 +192,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     framePendiente: null,
     progresoAnalisis: null,
     analisisResuelto: false,
+    recortando: false,
     actasSesion: 0,
     mesas: mesasIniciales(),
     completadas: progresoInicial().completadas,
@@ -306,7 +327,13 @@ export const useE14Store = create<E14Store>((set, get) => {
 
     enviarActa: () => {
       const { actaActual } = get();
-      if (!actaActual || actaActual.status !== "ADVERTENCIA") {
+      // D20 (L5): envío MANUAL para ADVERTENCIA y también para ÓPTIMA tras un
+      // rescate por recorte (el auto-envío D4 solo dispara al capturar — el
+      // rescate nunca se auto-envía, evita la doble transmisión).
+      if (
+        !actaActual ||
+        (actaActual.status !== "ADVERTENCIA" && actaActual.status !== "OPTIMA")
+      ) {
         return;
       }
       registrarEnvio(tituloPaginaActual());
@@ -355,6 +382,59 @@ export const useE14Store = create<E14Store>((set, get) => {
         notificar("ok", "PDF GENERADO", "Acta exportada y descargada.");
       } catch {
         notificar("crit", "ERROR DE EXPORTACIÓN", "No se pudo generar el PDF del acta.");
+      }
+    },
+
+    aplicarRecorte: async (quad) => {
+      const { actaActual } = get();
+      if (!actaActual?.fotoOriginal) {
+        notificar("warn", "SIN FOTO ORIGINAL", "Solo las actas escaneadas se pueden recortar.");
+        return;
+      }
+      if (get().recortando) return;
+      set({ recortando: true, progresoAnalisis: null });
+      try {
+        // RecorTE manual → pipeline §5 re-ejecutado con F5-MANUAL; el acta
+        // conserva identidad (intento/fuente/paginación) — rescate sin intento.
+        const acta = await bridge.recortar(actaActual, quad, (p) =>
+          set({ progresoAnalisis: p }),
+        );
+        set({ actaActual: acta, progresoAnalisis: null });
+        if (acta.status === "OPTIMA" || acta.status === "ADVERTENCIA") {
+          notificar("ok", "ACTA RECUPERADA", "LISTA PARA ENVÍO MANUAL");
+        } else {
+          notificar("warn", "SIGUE RECHAZADA", `SCORE ${acta.score.toFixed(1)}/10 — prueba otro recorte o repite la foto.`);
+        }
+      } catch {
+        notificar("crit", "ERROR DE RECORTADO", "No se pudo re-procesar el acta.");
+      } finally {
+        set({ recortando: false });
+      }
+    },
+
+    rotarFoto: async () => {
+      const { actaActual } = get();
+      // SOLO actas reales con foto procesada (en SIM ReviewView rota el papel
+      // sintético localmente y JAMÁS llama aquí — spec §7 ReviewView).
+      if (!actaActual?.fotoProcesada || actaActual.fuente === "SIMULACION") return;
+      if (rotandoFotoEnVuelo) return;
+      rotandoFotoEnVuelo = true;
+      try {
+        // F-ROT-RAPID del lab (L1080): gira la PROCESADA sin re-ejecutar el
+        // pipeline; la rotación queda HORNEADA (rotation += 90) para que el
+        // PDF §6 y un eventual re-recorte la respeten.
+        const { url } = await rotateProcessedDataUrl(actaActual.fotoProcesada, 90);
+        set({
+          actaActual: {
+            ...actaActual,
+            fotoProcesada: url,
+            rotation: ((actaActual.rotation ?? 0) + 90) % 360,
+          },
+        });
+      } catch {
+        notificar("crit", "ERROR DE ROTACIÓN", "No se pudo girar la foto.");
+      } finally {
+        rotandoFotoEnVuelo = false;
       }
     },
 
