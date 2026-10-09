@@ -4,22 +4,20 @@
  * REVISIÓN (§7.4–§7.5) — documento + banner por estado + CTAs.
  * Estados: ENVIADA · ADVERTENCIA · RECHAZADA (ILEGIBLE rica / GENERICO pill)
  * · EN_REVISION_HUMANA.
- * FASE LÓGICA L2 (§7 ReviewView): VER FOTO — con actas reales el área del
- * documento alterna papel sintético ↔ `fotoProcesada` del core (misma caja,
- * object-contain) y un badge avisa "FOTO REAL DISPONIBLE". En SIMULACIÓN no
- * hay foto → todo queda exactamente como en la fase gráfica.
- * FASE LÓGICA L5 (§7 ReviewView, toolbar REAL — solo fuente ≠ SIMULACIÓN):
- * RECORTAR abre el QuadEditor (§7.5, copiado del lab) · ROTAR 90° gira la
- * foto real (horneada para el PDF) · PANTALLA COMPLETA abre el visor modal.
- * En SIM los tres siguen como hoy (decorativos / rotación de papel).
+ * UX-REAL F1/F3 (SPEC-ux-real-bn-editor, D35–D37): el visor es ÚNICO y es la
+ * FOTO REAL del core (el papel sintético/ActaDocument se retiró — petición
+ * del dueño: «no la quiero volver a ver»). VER FOTO dejó de existir: la foto
+ * procesada es el contenido por defecto de la tarjeta. L5 (§7 ReviewView):
+ * RECORTAR abre el QuadEditor (§7.5) · ROTAR 90° gira la foto (horneada para
+ * el PDF) · PANTALLA COMPLETA abre el visor modal. F5: barra de controles
+ * FIJA en la parte inferior del editor (fuera de la tarjeta — D38).
  */
 import { useEffect, useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
 import { defaultQuad } from "@jg-stevan/scanner-core/types";
-import { ActaDocument } from "../ActaDocument";
 import { QuadEditor } from "../QuadEditor";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
-import { CropIcon, DownloadIcon, EyeIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
+import { CropIcon, DownloadIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
 
 /** Color de brackets según el estado del acta. */
 function tonoBrackets(status: string) {
@@ -116,8 +114,6 @@ export function ReviewView() {
   const recortando = useE14Store((s) => s.recortando);
   const aplicarRecorte = useE14Store((s) => s.aplicarRecorte);
   const rotarFoto = useE14Store((s) => s.rotarFoto);
-  const [rotacion, setRotacion] = useState(0);
-  const [verFoto, setVerFoto] = useState(false);
   // L5 §7.5: editor de recorte y visor a pantalla completa (estado local —
   // el acta solo cambia por store.aplicarRecorte al APLICAR).
   const [editando, setEditando] = useState(false);
@@ -268,7 +264,10 @@ export function ReviewView() {
           )}
         </div>
 
-        {/* Visor con brackets */}
+        {/* Visor con brackets — F3: la FOTO REAL es el visor ÚNICO (el papel
+            sintético se retiró — petición del dueño). El placeholder (solo
+            posible si el pipeline agotó el timeout sin procesar) es la MISMA
+            caja con brackets y texto centrado font-data. */}
         <section className="relative bg-surface-1 rounded-xl border border-line p-3 flex flex-col items-center justify-between w-full h-full min-h-0 max-h-[calc(100vh-260px)]">
           <div className="w-full flex-1 relative flex items-center justify-center py-2 px-1 min-h-0">
             <div className="absolute inset-x-1 inset-y-1 pointer-events-none z-10" aria-hidden>
@@ -277,37 +276,29 @@ export function ReviewView() {
               <div className={`absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 ${tonoBrackets(status)}`} />
               <div className={`absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 ${tonoBrackets(status)}`} />
             </div>
-            {/* L2 §7: papel sintético (default) ↔ foto real del core. */}
-            {hayFoto && verFoto ? (
+            {hayFoto ? (
               <img
                 src={acta.fotoProcesada}
                 alt="Foto real del acta procesada por el core"
                 className="w-full h-full object-contain rounded-sm"
               />
             ) : (
-              <ActaDocument acta={acta} rotacion={rotacion} />
-            )}
-            {hayFoto && !verFoto && (
-              <span
-                className="absolute bottom-1.5 left-1.5 z-20 font-data text-[8px] font-bold tracking-[0.18em] text-ok-tint bg-black/55 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none"
-              >
-                FOTO REAL DISPONIBLE
-              </span>
+              <div className="flex items-center justify-center w-full h-full">
+                <span className="font-data text-[10px] tracking-[0.2em] text-ink-faint uppercase">
+                  FOTO NO DISPONIBLE
+                </span>
+              </div>
             )}
           </div>
 
           {/* Toolbar (ADVERTENCIA/RECHAZADA del code.html + ÓPTIMA rescatada real
-              L5). Con foto real (L2): 4ª columna VER FOTO — alterna papel ↔
-              foto del core. L5 §7 ReviewView: en actas REALES los tres botones
-              son REALES (editor §7.5 / rotación horneada / visor modal); en SIM
-              siguen como hoy (decorativos / rotación del papel). */}
+              L5). F3: sin VER FOTO — la foto es el visor único; ROTAR 90° siempre
+              real (SIMULACIÓN también rota real vía store.rotarFoto — D35). */}
           {(status === "ADVERTENCIA" ||
             status === "RECHAZADA" ||
             (status === "OPTIMA" && esReal)) && (
             <div
-              className={`w-full max-w-sm grid ${
-                hayFoto ? "grid-cols-4" : "grid-cols-3"
-              } gap-2 pt-2 shrink-0 z-20`}
+              className={`w-full max-w-sm grid grid-cols-3 gap-2 pt-2 shrink-0 z-20`}
             >
               <ToolbarBtn
                 icon={<CropIcon />}
@@ -317,11 +308,7 @@ export function ReviewView() {
               <ToolbarBtn
                 icon={<RotateIcon />}
                 label="Rotar 90°"
-                onClick={
-                  esReal
-                    ? () => void rotarFoto()
-                    : () => setRotacion((r) => (r + 90) % 360)
-                }
+                onClick={esReal ? () => void rotarFoto() : undefined}
               />
               <ToolbarBtn
                 icon={<FullscreenIcon />}
@@ -329,25 +316,6 @@ export function ReviewView() {
                 onClick={
                   esReal && acta.fotoProcesada ? () => setVisorAbierto(true) : undefined
                 }
-              />
-              {hayFoto && (
-                <ToolbarBtn
-                  icon={<EyeIcon />}
-                  label={verFoto ? "VER PAPEL" : "VER FOTO"}
-                  onClick={() => setVerFoto((v) => !v)}
-                />
-              )}
-            </div>
-          )}
-
-          {/* VER FOTO en ENVIADA real (el diseño original no trae toolbar para
-              ENVIADA — solo el toggle de la foto, compacto y centrado). */}
-          {status === "ENVIADA" && hayFoto && (
-            <div className="w-full max-w-[200px] mx-auto grid grid-cols-1 gap-2 pt-2 shrink-0 z-20">
-              <ToolbarBtn
-                icon={<EyeIcon />}
-                label={verFoto ? "VER PAPEL" : "VER FOTO"}
-                onClick={() => setVerFoto((v) => !v)}
               />
             </div>
           )}
