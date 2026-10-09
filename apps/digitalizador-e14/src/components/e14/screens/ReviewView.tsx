@@ -145,8 +145,10 @@ export function ReviewView() {
         <Breadcrumb mesa={mesa} tipo={tipo} pagina={acta.pagina.index} total={acta.pagina.total} />
       ) : null}
 
-      {/* Visor del documento */}
-      <main className="flex-1 relative overflow-hidden flex flex-col items-center justify-center px-4 py-2 max-w-md mx-auto w-full min-h-0">
+      {/* Visor del documento — F5 (D38): la tarjeta es SOLO visual (sin
+          toolbar dentro); mide lo que mida el documento. La barra de
+          controles vive FUERA, anclada abajo con alto CONSTANTE. */}
+      <main className="flex-1 relative overflow-hidden flex flex-col items-center px-4 py-2 max-w-md mx-auto w-full min-h-0">
         {/* Banner flotante superpuesto (no desplaza el visor) */}
         <div className="absolute top-2 inset-x-0 z-30 flex justify-center pointer-events-none">
           {status === "ENVIADA" && (
@@ -267,9 +269,10 @@ export function ReviewView() {
         {/* Visor con brackets — F3: la FOTO REAL es el visor ÚNICO (el papel
             sintético se retiró — petición del dueño). El placeholder (solo
             posible si el pipeline agotó el timeout sin procesar) es la MISMA
-            caja con brackets y texto centrado font-data. */}
-        <section className="relative bg-surface-1 rounded-xl border border-line p-3 flex flex-col items-center justify-between w-full h-full min-h-0 max-h-[calc(100vh-260px)]">
-          <div className="w-full flex-1 relative flex items-center justify-center py-2 px-1 min-h-0">
+            caja con brackets y texto centrado font-data. F5: la tarjeta es SOLO
+            visual (flex-1) — sin toolbar dentro (barra fija abajo, D38). */}
+        <section className="relative bg-surface-1 rounded-xl border border-line p-3 flex items-center justify-center w-full flex-1 min-h-0">
+          <div className="w-full h-full relative flex items-center justify-center py-2 px-1 min-h-0">
             <div className="absolute inset-x-1 inset-y-1 pointer-events-none z-10" aria-hidden>
               <div className={`absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 ${tonoBrackets(status)}`} />
               <div className={`absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 ${tonoBrackets(status)}`} />
@@ -290,38 +293,10 @@ export function ReviewView() {
               </div>
             )}
           </div>
-
-          {/* Toolbar (ADVERTENCIA/RECHAZADA del code.html + ÓPTIMA rescatada real
-              L5). F3: sin VER FOTO — la foto es el visor único; ROTAR 90° siempre
-              real (SIMULACIÓN también rota real vía store.rotarFoto — D35). */}
-          {(status === "ADVERTENCIA" ||
-            status === "RECHAZADA" ||
-            (status === "OPTIMA" && esReal)) && (
-            <div
-              className={`w-full max-w-sm grid grid-cols-3 gap-2 pt-2 shrink-0 z-20`}
-            >
-              <ToolbarBtn
-                icon={<CropIcon />}
-                label="Recortar"
-                onClick={esReal && acta.fotoOriginal ? () => setEditando(true) : undefined}
-              />
-              <ToolbarBtn
-                icon={<RotateIcon />}
-                label="Rotar 90°"
-                onClick={esReal ? () => void rotarFoto() : undefined}
-              />
-              <ToolbarBtn
-                icon={<FullscreenIcon />}
-                label="Pantalla completa"
-                onClick={
-                  esReal && acta.fotoProcesada ? () => setVisorAbierto(true) : undefined
-                }
-              />
-            </div>
-          )}
         </section>
 
-        {/* Chips de envío automático (§7.4) */}
+        {/* Chips de envío automático (§7.4) — F5: quedan como están (ENVIADA
+            no tiene barra: los CTAs de abajo ya dan EXPORTAR PDF/SEGUIR). */}
         {status === "ENVIADA" && (
           <div className="w-full max-w-sm flex items-center justify-center gap-1.5 pt-2 flex-wrap">
             <Chip tone="ok" solid>
@@ -341,6 +316,33 @@ export function ReviewView() {
                 SHA-256: {acta.hashSha256}
               </span>
             )}
+          </div>
+        )}
+
+        {/* ── BARRA DE CONTROLES FIJA (F5/D38): full width del editor, shrink-0,
+            alto CONSTANTE, anclada al borde inferior (justo encima de los
+            CTAs/BottomNav que renderiza page.tsx). Al girar el documento
+            RETRATO↔APAISADO la tarjeta absorbe el cambio (flex-1) — la barra
+            NO se mueve ni un píxel. F2 (C5) añade FILTROS → grid-cols-4. */}
+        {(status === "ADVERTENCIA" ||
+          status === "RECHAZADA" ||
+          (status === "OPTIMA" && esReal)) && (
+          <div className="w-full grid grid-cols-3 gap-2 pt-2 shrink-0 z-20">
+            <ToolbarBtn
+              icon={<CropIcon />}
+              label="Recortar"
+              onClick={esReal && acta.fotoOriginal ? () => setEditando(true) : undefined}
+            />
+            <ToolbarBtn
+              icon={<RotateIcon />}
+              label="Rotar 90°"
+              onClick={esReal ? () => void rotarFoto() : undefined}
+            />
+            <ToolbarBtn
+              icon={<FullscreenIcon />}
+              label="Pantalla completa"
+              onClick={esReal && acta.fotoProcesada ? () => setVisorAbierto(true) : undefined}
+            />
           </div>
         )}
       </main>

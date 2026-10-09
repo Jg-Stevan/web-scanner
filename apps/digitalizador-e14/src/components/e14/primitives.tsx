@@ -122,7 +122,9 @@ export function SegmentedBar({
   );
 }
 
-/** Botón de la toolbar del documento (Recortar / Rotar / Pantalla completa). */
+/** Botón de la barra fija de revisión (Recortar / Rotar / Filtros / Pantalla
+ *  completa). F5/D38: alto táctil 44px GARANTIZADO y label `truncate` — la
+ *  barra nunca cambia de tamaño al girar el documento o cambiar de estado. */
 export function ToolbarBtn({
   icon,
   label,
@@ -136,10 +138,10 @@ export function ToolbarBtn({
     <button
       type="button"
       onClick={onClick}
-      className="flex-1 h-11 px-2.5 py-1.5 rounded-xl bg-surface-4/90 hover:bg-surface-5 border border-outline-dim/40 active:scale-95 transition-all text-ink flex items-center justify-center gap-1.5 text-xs font-semibold tracking-wide"
+      className="flex-1 min-w-0 min-h-11 h-11 px-2.5 py-1.5 rounded-xl bg-surface-4/90 hover:bg-surface-5 border border-outline-dim/40 active:scale-95 transition-all text-ink flex items-center justify-center gap-1.5 text-xs font-semibold tracking-wide"
     >
       <span className="text-ok-tint shrink-0 flex items-center justify-center">{icon}</span>
-      <span>{label}</span>
+      <span className="truncate">{label}</span>
     </button>
   );
 }
