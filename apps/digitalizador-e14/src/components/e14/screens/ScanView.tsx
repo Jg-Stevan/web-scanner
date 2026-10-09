@@ -87,12 +87,146 @@ const HINT_LINTERNA = "LA LINTERNA NECESITA CÁMARA REAL";
 const DESC_LINTERNA =
   "El navegador no controla el LED aquí (en iPhone usa Safari 17.4+; las apps integradas no lo permiten). Reabre el escáner o prueba otro navegador.";
 
-/** QA/diagnóstico: telemetría viva del loop desde la consola. */
+/** QA/diagnóstico: telemetría viva del loop + lente elegida (F-LENS v4)
+ *  desde la consola. */
 declare global {
   interface Window {
     __e14Telemetria?: FrameLoopTelemetry;
+    __cameraChoice?: unknown;
   }
 }
+
+/* ── F-LENS v4 — selección de la cámara PRINCIPAL (puerto EXACTO del lab) ────
+ *  Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L76-L92
+ *  (comentario E4/F-LENS v4) + L116-L223 (código). Remedición H1 del
+ *  SPEC-auditoria-copias.md: la fase lógica dejó solo la cascada
+ *  facingMode (la red de seguridad del lab) y el bug visible en producción
+ *  fue la GRAN ANGULAR en vez de la principal 50MP. */
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L76-L92 (E4/F-LENS v4):
+// E4: facingMode NO es confiable en iPhone (puede ganar la frontal o
+//     ignorarse) → tras permiso se re-selecciona por LABEL + deviceId
+//     exact, con facingMode como constrain inicial únicamente.
+// F-LENS v4 (bug v3: "no cambia nada ni el flash" — y codigo-test SÍ
+// funciona en el MISMO teléfono): dos causas de raíz encontradas al
+// comparar con el CameraController de codigo-test:
+//     A) v3 sondeaba las demás lentes CON el stream actual aún abierto →
+//        en muchos Android abrir una 2ª cámara con otra activa lanza
+//        NotReadableError → TODAS las sondas fallaban → nunca cambiaba
+//        de lente ni encontraba el LED. codigo-test sondea SECUENCIAL-
+//        MENTE cerrando cada cámara antes de abrir la siguiente y ANTES
+//        de abrir la definitiva (puerto exacto de probeDevice +
+//        chooseMainCamera: autofocus real → mayor resolución).
+//     B) el botón flash se deshabilitaba salvo que getCapabilities()
+//        reportara torch; hay Chrome que NO lo anuncian pero SÍ lo
+//        aplican → ahora el botón está habilitado en cámara real y la
+//        verdad se descubre APLICANDO y leyendo getSettings().torch.
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L116-L117
+const BACK_CAMERA_RE = /back|rear|environment|trasera|posterior|arri[eè]re/i;
+const FRONT_CAMERA_RE = /front|delantera|anterior|face|facial|selfie/i;
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L129-L137
+/** Resultado de sondear UNA cámara (puerto de CameraProbe de codigo-test). */
+interface CameraProbeResult {
+  deviceId: string;
+  label: string;
+  focusModes: string[];
+  torch: boolean;
+  maxWidth: number;
+  maxHeight: number;
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L139-L144
+/** Modos de foco que cuentan como autofocus REAL (regla D3 de codigo-test). */
+const REAL_AF_MODES = new Set(["continuous", "single-shot"]);
+
+function hasRealAF(modes: string[]): boolean {
+  return modes.some((m) => REAL_AF_MODES.has(m.toLowerCase()));
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L146-L148
+function readCapsNum(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L150-L188
+/** Abre UNA cámara SOLO para leer sus capabilities y la CIERRA (puerto de
+ *  probeDevice de codigo-test). SIN constraints de resolución en la sonda:
+ *  medir el sensor real requiere abrir la cámara "pelada". Devuelve null
+ *  si la cámara no se pudo abrir (queda descartada). El `finally` CIERRA
+ *  el stream SIEMPRE — nunca hay dos cámaras abiertas a la vez (era la
+ *  causa del bug v3: sondas con el stream vivo → NotReadableError). */
+async function probeCamera(
+  media: MediaDevices,
+  deviceId: string,
+  label: string
+): Promise<CameraProbeResult | null> {
+  let stream: MediaStream | null = null;
+  try {
+    stream = await media.getUserMedia({
+      video: { deviceId: { exact: deviceId } },
+      audio: false,
+    });
+    const track = stream.getVideoTracks()[0];
+    if (!track) return null;
+    const caps = (track.getCapabilities?.() ?? {}) as {
+      focusMode?: string[];
+      torch?: boolean;
+      width?: { max?: number };
+      height?: { max?: number };
+    };
+    return {
+      deviceId,
+      label: label || track.label,
+      focusModes: Array.isArray(caps.focusMode) ? caps.focusMode : [],
+      torch: caps.torch === true,
+      maxWidth: readCapsNum(caps.width?.max),
+      maxHeight: readCapsNum(caps.height?.max),
+    };
+  } catch {
+    return null; // cámara ocupada/no accesible → descartada
+  } finally {
+    stream?.getTracks().forEach((t) => t.stop()); // CIERRA antes de la siguiente
+  }
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L190-L223
+/** Elige la cámara principal (puerto de chooseMainCamera de codigo-test):
+ *  · Entre traseras con AUTOFOCUS REAL gana la de MAYOR resolución de
+ *    sensor (maxWidth×maxHeight) — la principal es siempre el sensor
+ *    grande; el torch desempata resoluciones idénticas.
+ *  · Sin AF en ninguna (típico iOS, regla D6): grupo de label más SIMPLE
+ *    (sin palabras de lente), luego menos palabras, luego más resolución. */
+function chooseMainProbe(probes: CameraProbeResult[]): CameraProbeResult | null {
+  if (probes.length === 0) return null;
+  const backs = probes.filter(
+    (p) => BACK_CAMERA_RE.test(p.label) && !FRONT_CAMERA_RE.test(p.label)
+  );
+  const pool = backs.length > 0 ? backs : probes;
+  const byRes = (a: CameraProbeResult, b: CameraProbeResult): number =>
+    b.maxWidth * b.maxHeight - a.maxWidth * a.maxHeight;
+  const withAf = pool.filter((p) => hasRealAF(p.focusModes));
+  if (withAf.length > 0) {
+    return [...withAf].sort(
+      (a, b) => byRes(a, b) || (a.torch !== b.torch ? (a.torch ? -1 : 1) : 0)
+    )[0];
+  }
+  const lensWords = /ultra|gran angular|wide|angular|tele|teleobjetivo/i;
+  const wordCount = (label: string): number =>
+    label.split(/\s+/).filter((w) => w.length > 0).length;
+  const simples = pool.filter((p) => !lensWords.test(p.label));
+  const ranked =
+    simples.length > 0
+      ? [...simples].sort(
+          (a, b) => wordCount(a.label) - wordCount(b.label) || byRes(a, b)
+        )
+      : [...pool].sort(
+          (a, b) => a.label.length - b.label.length || byRes(a, b)
+        );
+  return ranked[0];
+}
+
 
 /* ── ZSL §5.4 del lab — medidas SIN encode/decode extra (L311-356) ───────── */
 
@@ -513,7 +647,8 @@ export function ScanView() {
   const capturarRef = useRef(capturarInteligente);
   capturarRef.current = capturarInteligente;
 
-  /* ── Arranque de cámara (lab L996-1252, simplificado: real o fallback SIM) ── */
+  /* ── Arranque de cámara (lab L996-1252: F-LENS v4 + cascada de respaldo,
+     fallback a SIMULACIÓN propio de e14 — remediado H1) ───────────────── */
 
   useEffect(() => {
     if (fuente !== "CAMARA") return;
@@ -531,43 +666,171 @@ export function ScanView() {
       return;
     }
 
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+    // L1049-1053 (isPermError) — equivalente exacto (§3 auditoría: reutilizar,
+    // no duplicar; aquí ya existía con este nombre desde L3).
     const esErrorPermiso = (e: unknown): boolean =>
       e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError");
 
-    // E3 (lab): SOLO anchos/altos IDEALES — sin exact/min (ideal nunca
-    // rechaza getUserMedia). Cascada: exact environment → environment → video.
-    const intentos: MediaStreamConstraints[] = [
-      {
-        video: {
-          facingMode: { exact: "environment" },
-          width: { ideal: IDEAL_PREVIEW_WIDTH },
-          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+    // L1055-1093 (openWithCascade) — E3 + DUAL PIPELINE: SOLO anchos/altos
+    // IDEALES (ideal nunca rechaza getUserMedia). F-LENS: el primer intento
+    // fuerza EXACT la trasera (en algunos móviles "environment" a secas
+    // negocia la gran angular); si el exact falla se relaja a ideal →
+    // {video:true}. Es la RED DE SEGURIDAD que corre SOLO si las sondas de
+    // F-LENS v4 no lograron abrir la principal.
+    const abrirConCascada = async (): Promise<MediaStream | null> => {
+      const intentos: MediaStreamConstraints[] = [
+        {
+          video: {
+            facingMode: { exact: "environment" },
+            width: { ideal: IDEAL_PREVIEW_WIDTH },
+            height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          },
+          audio: false,
         },
-        audio: false,
-      },
-      {
-        video: {
-          facingMode: "environment",
-          width: { ideal: IDEAL_PREVIEW_WIDTH },
-          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+        {
+          video: {
+            facingMode: "environment",
+            width: { ideal: IDEAL_PREVIEW_WIDTH },
+            height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          },
+          audio: false,
         },
-        audio: false,
-      },
-      { video: { facingMode: "environment" }, audio: false },
-      { video: true, audio: false },
-    ];
-
-    void (async () => {
-      let stream: MediaStream | null = null;
+        { video: { facingMode: "environment" }, audio: false },
+        { video: true, audio: false },
+      ];
       for (const c of intentos) {
         try {
-          stream = await media.getUserMedia(c);
-          break;
+          return await media.getUserMedia(c);
         } catch (e) {
-          if (esErrorPermiso(e)) break; // permiso: la cascada no ayuda
+          if (esErrorPermiso(e)) return null; // permiso: la cascada no ayuda
           /* siguiente nivel */
         }
       }
+      return null;
+    };
+
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+    // L1095-1207 (openMainCamera) — F-LENS v4 arranque estilo codigo-test
+    // (donde el flash SÍ funciona):
+    // 1) desbloquea labels con un stream genérico que se cierra al instante;
+    // 2) sondea TODAS las cámaras UNA POR UNA cerrando cada una antes de
+    //    abrir la siguiente (v3 las sondeaba con el stream vivo → en muchos
+    //    Android la 2ª apertura lanza NotReadableError y NADA cambiaba);
+    // 3) elige la principal con la regla D3/D6 (autofocus real → mayor
+    //    resolución; torch desempata; sin AF → label más simple);
+    // 4) abre SOLO la ganadora con el preview ligero (aquí 1920×1080 ideal —
+    //    D27, decisión documentada de e14; la captura hi-res va por
+    //    takePhoto al sensor).
+    // Devuelve el stream de la principal o null (→ cascade/SIM).
+    // (Nota e14: el lab marca permisoDenegado aquí para su aviso B2 con CTA
+    //  «Activar cámara»; e14 no tiene ese overlay — el fallback unificado a
+    //  SIMULACIÓN con toast cubre el caso, ver fila 16 de la auditoría.)
+    const abrirCamaraPrincipal = async (): Promise<MediaStream | null> => {
+      // 1) Desbloqueo de etiquetas (F1-a de codigo-test): sin permiso previo
+      //    los labels/deviceIds llegan vacíos en enumerateDevices.
+      try {
+        const unlock = await media.getUserMedia({ video: true, audio: false });
+        unlock.getTracks().forEach((t) => t.stop());
+      } catch {
+        /* sin permiso: los probes fallarán y se cae al cascade */
+      }
+      // 2) Sondeo secuencial: cada cámara se ABRE, se MIDE y se CIERRA.
+      let devices: MediaDeviceInfo[] = [];
+      try {
+        devices = (await media.enumerateDevices()).filter(
+          (d) => d.kind === "videoinput" && d.deviceId
+        );
+      } catch {
+        devices = [];
+      }
+      const probes: CameraProbeResult[] = [];
+      for (const d of devices) {
+        const p = await probeCamera(media, d.deviceId, d.label);
+        if (p) probes.push(p);
+      }
+      // 3) Elección de la principal (D3: AF real → mayor resolución).
+      const main = chooseMainProbe(probes);
+      // 4) Apertura SOLO de la ganadora (con fallbacks en cascada).
+      const attempts: MediaStreamConstraints[] = main
+        ? [
+            {
+              video: {
+                deviceId: { exact: main.deviceId },
+                width: { ideal: IDEAL_PREVIEW_WIDTH },
+                height: { ideal: IDEAL_PREVIEW_HEIGHT },
+              },
+              audio: false,
+            },
+            { video: { deviceId: { exact: main.deviceId } }, audio: false },
+          ]
+        : [];
+      attempts.push({ video: true, audio: false }); // último recurso
+      for (const c of attempts) {
+        try {
+          const stream = await media.getUserMedia(c);
+          // Vía zoom: si el track abrió con zoom < 1 (equivalente 0.5× del
+          // MISMO track), súbelo a 1 para el FOV de la principal.
+          try {
+            const track = stream.getVideoTracks()[0];
+            const zcaps = track?.getCapabilities?.() as
+              | { zoom?: { min?: number; max?: number } }
+              | undefined;
+            const zst = track?.getSettings?.() as { zoom?: number } | undefined;
+            if (
+              zcaps?.zoom &&
+              typeof zcaps.zoom.min === "number" &&
+              zcaps.zoom.min < 1 &&
+              typeof zst?.zoom === "number" &&
+              zst.zoom < 1
+            ) {
+              await track
+                ?.applyConstraints({
+                  advanced: [{ zoom: 1 }],
+                } as MediaTrackConstraints & { advanced: unknown[] })
+                .catch(() => undefined);
+            }
+          } catch {
+            /* sin soporte de zoom */
+          }
+          // Telemetría de QA (window.__cameraChoice): qué lente quedó abierta
+          // y qué se midió en las sondas — útil para depurar remotamente.
+          try {
+            const track = stream.getVideoTracks()[0];
+            const st = track?.getSettings?.() as {
+              width?: number;
+              height?: number;
+            } | undefined;
+            (window as unknown as { __cameraChoice?: unknown }).__cameraChoice = {
+              elegida: main?.label ?? track?.label ?? "",
+              torch: main?.torch ?? false,
+              focusModes: main?.focusModes ?? [],
+              width: st?.width ?? 0,
+              height: st?.height ?? 0,
+              sondas: probes.map((p) => ({
+                label: p.label,
+                torch: p.torch,
+                af: p.focusModes,
+                max: `${p.maxWidth}x${p.maxHeight}`,
+              })),
+            };
+          } catch {
+            /* solo telemetría */
+          }
+          return stream;
+        } catch {
+          /* siguiente nivel */
+        }
+      }
+      return null;
+    };
+
+    void (async () => {
+      // F-LENS v4: primero el camino de codigo-test (sondas secuenciales +
+      // principal por resolución/AF); cascade facingMode como red de seguridad.
+      let stream = await abrirCamaraPrincipal();
+      if (!stream) stream = await abrirConCascada();
       if (!stream) {
         if (cancelado) return;
         // Permiso denegado / sin cámara / sin HTTPS (headless cae aquí):
