@@ -611,3 +611,37 @@ se toca — tocarlas sería regresión.
 **Remediación (orden §6.1):** H1 → H2 → H3 → H4 → H5, todo con copia verbatim + comentarios de
 origen (`// Fuente: apps/scanner-lab/... L…`). Commits separados: audit / F-LENS v4 / F-SENSOR-
 PROFILER / snapA+TORCH_HINT+accept.
+
+### [2026-10-10 10:30 (Bogotá)] — H1: F-LENS v4 completo (§12 fase lógica Rev. 4) — Z.ai Code (rama fix/e14-fidelidad-lab)
+- **Hecho:** Arranque de cámara de ScanView ahora abre la PRINCIPAL, no la lente por defecto de Chrome:
+  - Bloques de módulo copiados verbatim con comentarios de origen: `BACK_CAMERA_RE`/`FRONT_CAMERA_RE` (lab L116-117), `CameraProbeResult` (L129-137), `REAL_AF_MODES`+`hasRealAF` (L139-144), `readCapsNum` (L146-148), `probeCamera` (L150-188 — abre, mide, CIERRA; `finally` garantiza nunca dos cámaras abiertas), `chooseMainProbe` (L190-223 — D3/D6: AF real → mayor resolución, torch desempata, sin AF → label más simple) + comentario E4/F-LENS v4 A/B (L76-92).
+  - Efecto de arranque: `abrirCamaraPrincipal` (lab `openMainCamera` L1095-1207 verbatim: unlock de labels → sondas secuenciales → elección → apertura SOLO de la ganadora con fallbacks) + fix de zoom (<1 → 1, L1152-1175) + telemetría `window.__cameraChoice` (L1176-1199, misma forma que el lab para el QA del dueño). La cascada facingMode anterior quedó como `abrirConCascada` (red de seguridad, lab L1055-1093). Fallback e14 a SIMULACIÓN intacto.
+  - `window.__cameraChoice` declarado en `declare global`.
+- **Archivos:** src/components/e14/screens/ScanView.tsx
+- **Commits:** de056aa
+- **Cómo probar:** en el teléfono Android: abrir CÁMARA → `window.__cameraChoice.elegida` muestra la principal (label sin palabras de lente) y `sondas` con las resoluciones medidas.
+- **Pendiente/Bloqueado:** verificación en hardware real del dueño (headless sin cámara: probes fallan → cascade → SIM, verificado).
+
+### [2026-10-10 10:50 (Bogotá)] — H2: F-SENSOR-PROFILER (5 bloques del lab) — Z.ai Code (rama fix/e14-fidelidad-lab)
+- **Hecho:** El pipeline de e14 nunca toca una foto por encima del tope seguro de memoria:
+  - Imports del core (lab L61-67): `profileSensor`, `buildCappedPhotoSettings`, `clampBlobToSafeCap`, `getSensorSafeCap`, `SensorProfile` — cero cambios en el core.
+  - `downscaleImage` COPIADA del lab (L245-290, canvas puro, NO existe en el core — regla de oro 6) con sus comentarios (bug v3 de CALIDAD, C13 toBlob async).
+  - `sensorProfileRef` + `profileActiveSensor` (lab L433-454) invocado al abrir el stream ganador (L1032-1034 del lab).
+  - `tomarFoto` = takePhotoBlob COMPLETO (lab L637-681): capa 1 photoSettings al ISP + retry sin settings + carrera 8 s + capa 2 `clampBlobToSafeCap`.
+  - Capa 3 en el punto de entrada: `archivoDentroDeTope` (lab L574-589 decode único + tope por GAMA) + `blobToDataUrl` (L625-635) + `despacharArchivo` — cubre CÁMARA (takePhoto/ZSL), IMPORTAR (12-48 MP vía F-IMPORT robusto del core) y foto nativa iOS (HEIC); el File llega al bridge YA ≤tope. Error F-IMPORT → toast (lab L954-961 re-vestido).
+- **QA (agent-browser 390×844, dev :3001):** IMPORTAR 1553×1995 → 8.5 ÓPTIMA real (motor=worker) SIN re-encode (dentro del tope, fetch-probe vacío = original intacto, F-RES-PRIORITY). IMPORTAR 6000×4800 → análisis OK sin freeze (7.9). Con benchmark simulado gama media (3200): fetch-probe capturó el re-encode de la capa 3 + decode del bridge 523→98 ms (la foto llega ya ≤tope). 0 errores de página.
+- **Archivos:** src/components/e14/screens/ScanView.tsx
+- **Commits:** 103aa89
+- **Cómo probar:** importar una foto grande de galería — entra al análisis sin freeze; en gama media/baja el decode de ANALIZANDO es visiblemente más corto.
+- **Pendiente/Bloqueado:** verificación en el 50MP del dueño (capa 1+2 requieren ImageCapture real).
+
+### [2026-10-10 11:05 (Bogotá)] — H3+H4+H5: snapA + TORCH_HINT + accept HEIC — Z.ai Code (rama fix/e14-fidelidad-lab)
+- **Hecho:**
+  - H3: `snapA = instantanea()` ANTES de `await tomarFoto()` (lab §5.4 L843-845 + comentario verbatim) — si takePhoto cuelga 8 s ya queda un candidato medido del momento real del tap; snapB queda tras la foto (bracket); burst `[zsl, snapA, snapB]` como hoy con snapA del instante correcto; liberación R-14 de snapA cuando la foto gana. (Seguro: empujarAnillo hace copia dedicada — el canvas de snapA es independiente del ring, misma invariante del lab.)
+  - H4: TORCH_HINT verbatim (lab L119-127) reemplaza el hint abreviado — diagnóstico completo de campo (Safari 17.4+/iOS, Chrome/Firefox iOS, WebViews in-app, lente sin LED, qué hacer) vía toast "LINTERNA NO CONTROLADA".
+  - H5: `accept="image/*,.heic,.heif"` en AMBOS inputs (lab L1536; la cámara nativa iOS también entrega HEIC) + guard `pareceImagen`/`esHeic` del lab (L927-948) en ambos handlers + toast "CONVIRTIENDO HEIC…" y error de conversión (L954-961 re-vestido).
+- **QA:** SIM dorado completo (ÓPTIMA 8.6 auto-envío · RECHAZADA + INTENTO 1 DE 2 · REPETIR → 2º intento ÓPTIMA) · CÁMARA headless → probes fallan → cascade → toast + vuelta a SIM (chip activo) · `agent-browser errors` limpio · lint:e14 + e14:check 0 errores · build estático BUILD_STATIC=1 basePath /web-scanner (worker+opencv en out/, F-LENS presente en chunks).
+- **Archivos:** src/components/e14/screens/ScanView.tsx
+- **Commits:** baa4990
+- **Cómo probar:** lint+check limpios; flujo dorado SIM idéntico; IMPORTAR archivo no-imagen → toast "ARCHIVO NO VÁLIDO".
+- **Pendiente/Bloqueado:** QA en el teléfono del dueño (checklist §6.2 del spec de auditoría) + push/PR/merge/deploy.
