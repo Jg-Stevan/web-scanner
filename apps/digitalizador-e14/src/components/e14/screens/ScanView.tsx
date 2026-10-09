@@ -40,6 +40,19 @@
  */
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { warmUpScannerWorker } from "@jg-stevan/scanner-core/detector-client";
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L61-L67
+// (imports del sensor-profiler — el core YA exporta todo: cero cambios en el core).
+import {
+  buildCappedPhotoSettings,
+  clampBlobToSafeCap,
+  getSensorSafeCap,
+  profileSensor,
+  type SensorProfile,
+} from "@jg-stevan/scanner-core/sensor-profiler";
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L48-L54
+// (loadImage/fileToCaptureDataUrl) — la capa 3 del dispatch decodifica UNA
+// vez antes de que la foto entre al pipeline del bridge.
+import { fileToCaptureDataUrl, loadImage } from "@jg-stevan/scanner-core/image-processor";
 import { CameraFrameLoop, type FrameLoopTelemetry } from "@jg-stevan/scanner-core/frame-loop";
 import { SHUTTER_SCORE } from "@jg-stevan/scanner-core/quality";
 import type { Quad } from "@jg-stevan/scanner-core/types";
@@ -228,6 +241,56 @@ function chooseMainProbe(probes: CameraProbeResult[]): CameraProbeResult | null 
 }
 
 
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L245-L290
+// (downscaleImage — función de módulo del lab, canvas puro. NO existe en el
+// core → se COPIA, regla de oro 6 del SPEC-auditoria-copias.md; remediación H2.)
+/** Reduce imágenes enormes de galería para no reventar la memoria del store.
+ *  4032 (bug v3 de CALIDAD: estaba en 3400 y re-escalaba la foto nativa del
+ *  iPhone de 4032px, añadiendo un re-encode JPEG extra — codigo-test guarda
+ *  la foto full-res con una sola compresión). Con el Dual Pipeline ya no hay
+ *  downscale en capturas de GAMAS ALTAS (4032×3024 ≈ 12.2 MP, lejos del
+ *  límite de canvas de iOS); en media/baja el F-SENSOR-PROFILER pide 3200 px
+ *  al sensor y ESTE tope es la segunda red de seguridad (imports incluidos).
+ *  Recibe el elemento YA decodificado (decode único de la captura) y devuelve
+ *  null si no hace falta re-escalar. */
+/** C13: ahora ASÍNCRONA con toBlob (no bloquea el hilo ~1 s con imports de
+ *  48 MP — mismo patrón canvasToDataUrl de más abajo). */
+async function downscaleImage(
+  img: HTMLImageElement,
+  max = 4032
+): Promise<string | null> {
+  const big = Math.max(img.naturalWidth || 0, img.naturalHeight || 0);
+  if (big <= max || !big) return null;
+  const scale = max / big;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  try {
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((b) => resolve(b), "image/jpeg", 0.95)
+    );
+    if (blob && blob.size > 0) {
+      return await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(blob);
+      });
+    }
+  } catch {
+    /* respaldo abajo */
+  }
+  try {
+    return canvas.toDataURL("image/jpeg", 0.95);
+  } catch {
+    return null;
+  }
+}
+
 /* ── ZSL §5.4 del lab — medidas SIN encode/decode extra (L311-356) ───────── */
 
 /** Medidas de una candidata del burst: varianza Laplaciano + exposición. */
@@ -356,6 +419,11 @@ export function ScanView() {
   const puedeTomarFotoRef = useRef(false);
   const toastIOSYaRef = useRef(false);
   const telemetriaAtRef = useRef(0);
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L433-L440
+  /** F-SENSOR-PROFILER (PASO 2): perfil del sensor de FOTO del track vivo
+   *  (resolución nativa vía getPhotoCapabilities + tope seguro 4032/3200 px
+   *  según la gama medida). null = aún sin sondear. */
+  const sensorProfileRef = useRef<SensorProfile | null>(null);
   // F-ZSL — buffer circular Best-Shot (lab L407-411).
   const anilloRef = useRef<FrameAnillo[]>([]);
   const anilloFeedAtRef = useRef(0);
@@ -426,6 +494,19 @@ export function ScanView() {
   }, [ponerLinterna]);
 
   /* ── Captura ZSL (lab L710-770) ───────────────────────────────────── */
+
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L444-L454
+  /** F-SENSOR-PROFILER: sondea el sensor del stream REAL una vez por
+   *  apertura (getPhotoCapabilities → nativa + tope por gama). Falla en
+   *  silencio (Safari) → takePhoto dispara a secas y el clamp post-decode
+   *  protege la RAM. */
+  const profileActiveSensor = useCallback((stream: MediaStream): void => {
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    void profileSensor(track).then((p) => {
+      sensorProfileRef.current = p;
+    });
+  }, []);
 
   /** Copia el fotograma al ring (máx 8) y suelta YA el backing store del
    *  expulsado (disciplina de memoria iOS, error #22). */
@@ -510,24 +591,63 @@ export function ScanView() {
     return { canvas: ganador.canvas, lapVar: ganador.lapVar };
   }, []);
 
-  /** DUAL PIPELINE (lab L645-681, simplificado sin sensor-profiler): foto a
-   *  RESOLUCIÓN DEL SENSOR vía takePhoto() — ignora la resolución del
-   *  preview. Carrera de 8 s; null → el llamador cae al ZSL pre-tap. */
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L625-L635
+  /** Blob → data URL (para el takePhoto hi-res). */
+  const blobToDataUrl = useCallback(
+    (blob: Blob) =>
+      new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result ?? ""));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(blob);
+      }),
+    []
+  );
+
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L637-L681
+  // (takePhotoBlob COMPLETO — remediación H2: capas 1 y 2 del F-SENSOR-PROFILER).
+  /** DUAL PIPELINE (pilar 2) — Captura a RESOLUCIÓN DEL SENSOR como Blob
+   *  (aún SIN convertir a data URL): takePhoto() IGNORA la resolución del
+   *  <video> del preview y dispara directo al sensor físico (12–48 MP, p.ej.
+   *  4000×3000). Carrera de 8 s (takePhoto puede colgarse — error #29); null
+   *  → el llamador cae al ZSL pre-tap y a los frames del video. La
+   *  orientación EXIF la aplica el pipeline al decodificar (loadImage). */
   const tomarFoto = useCallback(async (): Promise<Blob | null> => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track || typeof ImageCapture === "undefined") return null;
     try {
       const capture = new ImageCapture(track);
-      const blob = await Promise.race([
-        capture.takePhoto(),
-        new Promise<never>((_, reject) =>
-          window.setTimeout(
-            () => reject(new Error("takePhoto timeout")),
-            TAKEPHOTO_TIMEOUT_MS,
-          ),
-        ),
-      ]);
-      return blob && blob.size > 0 ? blob : null;
+      // Dispara a resolución completa del hardware (4000×3000 / 3840×2160):
+      // sin photoConstraints — el sensor manda, el preview no limita...
+      // EXCEPTO cuando el sensor excede el tope seguro (48/108 MP): el
+      // F-SENSOR-PROFILER pide al ISP una foto dentro del tope EN la captura
+      // (capa 1) y el blob del gigante jamás llega a decodificarse.
+      const profile = sensorProfileRef.current;
+      const settings = profile ? buildCappedPhotoSettings(profile) : undefined;
+      const attempt = async (ps?: PhotoSettings): Promise<Blob | null> => {
+        try {
+          const blob = await Promise.race([
+            capture.takePhoto(ps),
+            new Promise<never>((_, reject) =>
+              window.setTimeout(
+                () => reject(new Error("takePhoto timeout 8s")),
+                TAKEPHOTO_TIMEOUT_MS,
+              ),
+            ),
+          ]);
+          return blob && blob.size > 0 ? blob : null;
+        } catch {
+          return null;
+        }
+      };
+      let blob = await attempt(settings);
+      // Reintento sin photoSettings si el ajuste del profiler fue rechazado
+      // (hardware exótico): mejor foto sin tope que perder la captura.
+      if (!blob && settings) blob = await attempt(undefined);
+      if (!blob) return null;
+      // Capa 2 — red de seguridad post-decode (solo recorta si el blob
+      // excede el tope; si no, el blob original pasa intacto).
+      return await clampBlobToSafeCap(blob, profile?.safeCapPx ?? getSensorSafeCap());
     } catch {
       return null;
     }
@@ -560,6 +680,66 @@ export function ScanView() {
     [dispararEscaneo, setArchivoPendiente],
   );
 
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L574-L589
+  // (dispatch de handleCaptureDataUrl — decode ÚNICO + capa 3 del
+  //  F-SENSOR-PROFILER, remediación H2). Adaptación e14 (fila 4 de la
+  //  auditoría): el lab entrega dataUrl a su pipeline; el bridge de e14
+  //  recibe File → esta función decodifica UNA vez, aplica el tope por GAMA
+  //  y devuelve el File YA dentro del tope — el pipeline de e14 recibe la
+  //  foto ya dentro del tope, SIN IMPORTAR LA FUENTE (CÁMARA takePhoto/ZSL +
+  //  IMPORTAR 12–48 MP + foto nativa iOS). `robusto` = Files del picker
+  //  (F-IMPORT del core: HEIC/EXIF/12-48MP seguros — el lab hace exactamente
+  //  esto en onFilePicked); false = File nacido del blob del sensor (base64
+  //  barato, sin re-decode). Devuelve null SOLO si la ruta robusta falló.
+  const archivoDentroDeTope = useCallback(
+    async (archivo: File, robusto: boolean): Promise<File | null> => {
+      try {
+        const rawDataUrl = robusto
+          ? await fileToCaptureDataUrl(archivo)
+          : await blobToDataUrl(archivo);
+        if (!rawDataUrl) return null; // F-IMPORT falló → el llamador avisa (lab L954-961)
+        // Decode ÚNICO de la captura (antes: downscale + detect + quality
+        // decodificaban la misma foto de 12 MP tres veces). El elemento se
+        // reutiliza en las etapas; solo se re-decodifica si hubo que
+        // re-escalar una imagen de galería más grande que el sensor.
+        const decoded = await loadImage(rawDataUrl);
+        // F-SENSOR-PROFILER: el tope del downscale sigue la GAMA medida
+        // (4032 alta / 3200 media-baja) — segunda red de seguridad por si
+        // la foto llegó por encima del tope (photoSettings no aplicado).
+        const scaledUrl = await downscaleImage(
+          decoded,
+          sensorProfileRef.current?.safeCapPx ?? getSensorSafeCap()
+        );
+        // Dentro del tope → el archivo original pasa INTACTO (F-RES-PRIORITY:
+        // la resolución del sensor manda, cero re-encode extra).
+        if (!scaledUrl) return archivo;
+        const blob = await (await fetch(scaledUrl)).blob();
+        if (!blob.size) return archivo;
+        return new File([blob], archivo.name, { type: blob.type || "image/jpeg" });
+      } catch {
+        return archivo; // el bridge reintenta con su propio pipeline robusto
+      }
+    },
+    [blobToDataUrl],
+  );
+
+  /** Despacha la captura FINAL (ya dentro del tope H2): destello + vibrate +
+   *  File → store → ANALIZANDO. La navegación se demora ~260 ms para que el
+   *  destello (~120 ms) se vea ANTES de desmontar el visor. */
+  const despacharArchivo = useCallback(
+    async (blobOArchivo: Blob, robusto: boolean) => {
+      const base =
+        blobOArchivo instanceof File
+          ? blobOArchivo
+          : new File([blobOArchivo], `acta-camara-${Date.now()}.jpg`, {
+              type: blobOArchivo.type || "image/jpeg",
+            });
+      const final = (await archivoDentroDeTope(base, robusto)) ?? base;
+      despacharCaptura(final);
+    },
+    [archivoDentroDeTope, despacharCaptura],
+  );
+
   /** Captura inteligente (lab captureSmart L785-885, adaptada a e14: el
    *  resultado entra al pipeline del bridge como File):
    *  1. ZSL pre-tap (ganador del ring, anti tap-shock).
@@ -580,11 +760,10 @@ export function ScanView() {
     if (fotoBlob) {
       // La foto full-sensor gana: suelta los frames de respaldo (R-14).
       if (zsl) liberarCanvas(zsl.canvas);
-      despacharCaptura(
-        new File([fotoBlob], `acta-camara-${Date.now()}.jpg`, {
-          type: fotoBlob.type || "image/jpeg",
-        }),
-      );
+      // Capa 3 H2: decode único + tope por GAMA antes del bridge (el blob ya
+      // viene ≤tope de las capas 1-2 — aquí es verificación barata, como el
+      // dispatch L574-589 del lab).
+      void despacharArchivo(fotoBlob, false);
       return;
     }
     if (puedeTomarFotoRef.current && camEstado === "viva") {
@@ -624,9 +803,9 @@ export function ScanView() {
       if (c !== ganador) liberarCanvas(c.canvas);
     }
     if (blob) {
-      despacharCaptura(
-        new File([blob], `acta-camara-${Date.now()}.jpg`, { type: "image/jpeg" }),
-      );
+      // Capa 3 H2: el frame ganador también pasa por el tope (decode único,
+      // verificación barata — frames de preview, muy por debajo del tope).
+      void despacharArchivo(blob, false);
     } else {
       procesandoRef.current = false;
       setProcesando(false);
@@ -637,7 +816,7 @@ export function ScanView() {
     tomarFoto,
     instantanea,
     canvasABlob,
-    despacharCaptura,
+    despacharArchivo,
     dispararEscaneo,
     camEstado,
     notificar,
@@ -850,6 +1029,10 @@ export function ScanView() {
 
       streamRef.current = stream;
       setCamEstado("viva");
+      // F-SENSOR-PROFILER (PASO 2) — Fuente: apps/scanner-lab/... L1032-1034:
+      // mide la nativa de FOTO del sensor y fija el tope seguro (4032/3200
+      // px) para tomarFoto, una vez por apertura (remediación H2).
+      profileActiveSensor(stream);
       // §5.2: Safari/iOS no implementa ImageCapture → el shutter manual abre
       // la cámara NATIVA; auto-captura usa frames del video.
       puedeTomarFotoRef.current = typeof ImageCapture !== "undefined";
@@ -1013,23 +1196,40 @@ export function ScanView() {
     inputCamaraRef.current?.click(); // cámara iniciando → picker
   }, [fuente, camEstado, dispararEscaneo, capturarInteligente]);
 
-  /** Elegir imagen = fuente ARCHIVO + análisis inmediato (L2, intacto). */
+  /** Elegir imagen = fuente ARCHIVO + análisis inmediato (L2) + capa 3 H2:
+   *  la foto de galería (12–48 MP) entra al pipeline YA dentro del tope
+   *  (decode único + downscaleImage por GAMA — dispatch L574-589 del lab). */
   const alElegirArchivo = (e: ChangeEvent<HTMLInputElement>) => {
     const archivo = e.target.files?.[0];
     e.target.value = ""; // permite re-elegir el MISMO archivo (REPETIR FOTO)
     if (!archivo) return;
-    setArchivoPendiente(archivo);
-    setFuente("ARCHIVO");
-    void dispararEscaneo();
+    void (async () => {
+      const final = await archivoDentroDeTope(archivo, true);
+      if (!final) {
+        // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+        // L954-L961 (error path de F-IMPORT) — re-vestido al toast de e14.
+        notificar(
+          "crit",
+          "NO SE PUDO PROCESAR LA IMAGEN",
+          "El archivo puede estar corrupto o ser un formato no soportado. Prueba con otro.",
+        );
+        return;
+      }
+      setArchivoPendiente(final);
+      setFuente("ARCHIVO");
+      void dispararEscaneo();
+    })();
   };
 
   /** Ruta iOS (HQ-iOS §5.2): la foto de la cámara nativa entra como archivo
-   *  al MISMO pipeline (fuente ya es CÁMARA — spec §7 "como ARCHIVO, L2"). */
+   *  al MISMO pipeline (fuente ya es CÁMARA — spec §7 "como ARCHIVO, L2") +
+   *  capa 3 H2: la foto nativa (12–48 MP, puede ser HEIC) pasa por el tope
+   *  y la conversión robusta del core ANTES de tocar el bridge. */
   const alElegirFotoCamara = (e: ChangeEvent<HTMLInputElement>) => {
     const archivo = e.target.files?.[0];
     e.target.value = "";
     if (!archivo) return;
-    despacharCaptura(archivo);
+    void despacharArchivo(archivo, true);
   };
 
   /* ── Overlay: quad REAL con mapeo object-cover (lab L1493-1515) ────── */
