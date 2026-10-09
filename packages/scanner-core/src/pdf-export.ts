@@ -15,8 +15,8 @@
  */
 
 import { jsPDF } from "jspdf";
-import { loadImage } from "@/lib/scanner/image-processor";
-import { PNG_FILTERS, type ScanDocument } from "@/lib/scanner/types";
+import { loadImage } from "./image-processor";
+import { PNG_FILTERS, type ScanDocument } from "./types";
 
 const MB = 1024 * 1024;
 

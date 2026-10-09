@@ -1,0 +1,20 @@
+{
+  "name": "@jg-stevan/scanner-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Motor headless de escaneo de documentos: cámara, detección de bordes, procesado, OCR, calidad y exportación. Sin UI.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "types": "./src/index.ts",
+  "peerDependencies": {
+    "zustand": "^5.0.6"
+  },
+  "dependencies": {
+    "jspdf": "^4.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}
