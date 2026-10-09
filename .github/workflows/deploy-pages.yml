@@ -46,15 +46,16 @@ jobs:
       # incompatibles con el export estático. Se excluyen SOLO del build
       # de Pages (en local con `bun run dev` siguen disponibles).
       - name: Remove server-only API routes
-        run: rm -rf src/app/api
+        run: rm -rf apps/scanner-lab/src/app/api
 
-      - name: Build estático (salida en ./out)
+      - name: Build estático (salida en apps/scanner-lab/out)
         run: bunx next build
+        working-directory: apps/scanner-lab
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: ./out
+          path: apps/scanner-lab/out
 
   deploy:
     needs: build
