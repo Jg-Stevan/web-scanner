@@ -1,5 +1,7 @@
 # 📱 Escáner de Documentos — Clon iOS
 
+> ⚠️ **Regla de oro:** lee [`AGENTS.md`](./AGENTS.md) antes de escribir código — lo que existe en el lab se copia, no se re-inventa.
+
 Aplicación web de digitalización de documentos con estética **pixel-perfect de iOS**, construida como reproducción fiel de 4 diseños originales (Cámara, Editor de perspectiva, Digitalización y Biblioteca). Toda la interfaz está en **español**.
 
 ![Versión](https://img.shields.io/badge/versión-6.3.0-007AFF)
