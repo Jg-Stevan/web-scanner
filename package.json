@@ -4,11 +4,15 @@
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "dev": "cd apps/scanner-lab && bun run dev",
+    "dev:e14": "cd apps/digitalizador-e14 && bun run dev",
     "start": "cd apps/scanner-lab && bun run start",
     "lint": "cd apps/scanner-lab && bun run lint",
+    "lint:e14": "cd apps/digitalizador-e14 && bun run lint",
     "build:static": "cd apps/scanner-lab && BUILD_STATIC=1 bunx next build",
+    "build:e14": "cd apps/digitalizador-e14 && BUILD_STATIC=1 bunx next build",
     "core:check": "cd packages/scanner-core && bunx tsc --noEmit",
     "app:check": "cd apps/scanner-lab && bunx tsc --noEmit",
+    "e14:check": "cd apps/digitalizador-e14 && bunx tsc --noEmit",
     "db:push": "cd apps/scanner-lab && bun run db:push"
   }
 }

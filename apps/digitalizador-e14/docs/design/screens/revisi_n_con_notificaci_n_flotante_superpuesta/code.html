@@ -1,0 +1,226 @@
+<!DOCTYPE html><html class="h-full bg-black" lang="es" style=""><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport">
+<title>Revisión de Acta y Envío Automático - E-14</title>
+<!-- Tailwind CSS CDN with forms and container queries -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Custom Configuration -->
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              DEFAULT: '#00E676',
+              50: '#E8FDF0',
+              100: '#C7F9D8',
+              400: '#25E884',
+              500: '#00E676',
+              600: '#00B85C',
+              900: '#063B20',
+              dark: '#0A1810',
+            },
+            surface: {
+              50: '#1E1E1E',
+              100: '#171717',
+              200: '#121212',
+              300: '#0D0D0D',
+              border: '#1F3327'
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'Roboto', 'sans-serif'],
+            mono: ['"SF Mono"', 'Menlo', 'monospace']
+          },
+          boxShadow: {
+            'glow-emerald': '0 0 25px -4px rgba(0, 230, 118, 0.35)',
+            'glow-pill': '0 0 12px rgba(0, 230, 118, 0.45)',
+          }
+        }
+      }
+    }
+  </script>
+<!-- BEGIN: Custom Styles -->
+<style data-purpose="base-enhancements">
+    /* iOS Momentum Scrolling & Touch Targets */
+    body {
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    /* Subtle pulsing effect for live transmission indicator */
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.65; transform: scale(1.08); }
+    }
+    .animate-pulse-sync {
+      animation: pulse-subtle 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    /* Pattern watermark for simulated scanned document */
+    .barcode-lines {
+      background: repeating-linear-gradient(
+        90deg,
+        #111,
+        #111 2px,
+        transparent 2px,
+        transparent 4px,
+        #111 4px,
+        #111 7px,
+        transparent 7px,
+        transparent 9px
+      );
+    }
+  </style>
+<!-- END: Custom Styles -->
+</head>
+<body class="h-full text-slate-100 flex flex-col justify-between overflow-hidden selection:bg-brand-500 selection:text-black">
+<!-- BEGIN: MainHeader -->
+<header class="relative z-40 bg-black/95 backdrop-blur-md border-b border-white/5 pt-safe shrink-0" data-purpose="header-navigation">
+<div class="max-w-md mx-auto px-4 h-14 flex items-center justify-between">
+<!-- Back / Exit Action (44x44px ergonomic touch area) -->
+<button aria-label="Volver al menú de escaneo" class="w-11 h-11 -ml-2 rounded-full flex items-center justify-center text-brand active:bg-white/10 active:scale-95 transition-transform duration-150" type="button">
+<svg class="w-6 h-6 stroke-current stroke-2 fill-none" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+<path d="M19 12H5M12 19l-7-7 7-7"></path>
+</svg>
+</button>
+<!-- Center Title -->
+<div class="flex flex-col items-center">
+<h1 class="text-base font-extrabold tracking-wider text-brand-500 uppercase text-center flex items-center gap-1.5">
+          REVISIÓN DE ACTA
+        </h1>
+<span class="text-[10px] text-zinc-400 uppercase tracking-widest font-mono">E-14&nbsp;</span>
+</div>
+<!-- Sync Status & Cloud Indicator -->
+<div class="w-11 h-11 -mr-2 flex items-center justify-center" title="Sincronizado en tiempo real con servidor central">
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-full bg-brand-900/60 border border-brand-500/40">
+<span class="w-2 h-2 rounded-full bg-brand-500 animate-pulse-sync"></span>
+<svg class="w-3.5 h-3.5 text-brand-400 fill-current" viewBox="0 0 24 24">
+<path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM10 17l-3.5-3.5 1.41-1.41L10 14.17 15.09 9.09 16.5 10.5 10 17z"></path>
+</svg>
+</div>
+</div>
+</div>
+</header>
+<!-- END: MainHeader -->
+<!-- BEGIN: MainEditorContainer (Full viewport area between header and footer) -->
+<main class="flex-1 relative overflow-hidden flex flex-col items-center justify-center px-4 py-2 max-w-md mx-auto w-full">
+<!-- BEGIN: Floating Overlay Notification / Banner Desplegable -->
+<!-- Superpuesto sobre el visor sin desplazarlo ni redimensionarlo hacia abajo -->
+<aside class="absolute top-2 inset-x-4 z-30 transition-all duration-300" data-purpose="floating-status-banner"><div class="rounded-xl bg-[#09150E]/95 backdrop-blur-xl border border-brand-500/30 p-3 shadow-2xl shadow-black/80 ring-1 ring-brand-500/20 flex flex-col gap-2.5"><div class="flex items-center justify-between gap-2"><div class="flex items-center gap-2 min-w-0"><span class="w-2 h-2 rounded-full bg-brand-500 ring-4 ring-brand-500/20 shrink-0"></span><h2 class="text-xs font-bold text-white tracking-wide uppercase truncate">ROMA - CONSULADO</h2></div><div class="flex items-center gap-1 text-[9px] font-bold text-brand-400 bg-brand-500/15 px-2 py-0.5 rounded border border-brand-500/25 shrink-0"><span class="text-[8px]">✓</span><span class="">9.8/10 ÓPTIMA</span></div></div><div class="flex items-center gap-1.5 text-[9px] text-zinc-400 font-mono tracking-wide px-0.5"><span class="text-zinc-300 font-semibold">ITALIA &gt; ZONA 10 &gt; PUESTO 02 &gt; MESA 001 &gt; TRANSMISIÓN &gt; PAG 1 DE 2</span></div><div class="flex items-center justify-between border-t border-brand-500/20 pt-2 text-[9px] font-mono"><div class="flex items-center gap-1.5"><span class="font-bold uppercase tracking-wider text-black bg-brand-500 px-2 py-0.5 rounded font-mono">TRANSMISIÓN</span><span class="text-zinc-300 bg-black/60 border border-brand-500/20 px-2 py-0.5 rounded font-semibold">PÁG 1 DE 2</span></div><div class="flex items-center gap-1 text-zinc-400 font-medium shrink-0"><span class="text-brand-400 font-bold">✓ ENVIADO AUTOMATICAMENTE</span><span class="text-zinc-300">16:42:09</span></div></div></div></aside>
+<!-- END: Floating Overlay Notification -->
+<!-- BEGIN: ScannedDocumentViewer (Full height without compression) -->
+<section class="relative bg-zinc-950 rounded-2xl border border-zinc-800 p-3 flex flex-col items-center justify-between w-full h-full max-h-[calc(100vh-210px)]" data-purpose="document-viewer">
+<!-- OCR Crop Frame Corner Indicators & Acta Preview Container -->
+<div class="w-full flex-1 relative flex items-center justify-center py-2 px-1 min-h-0">
+<!-- Framing Target Brackets (Camera Scanner Visuals) -->
+<div class="absolute inset-x-1 inset-y-1 pointer-events-none z-10">
+<div class="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-brand-500"></div>
+<div class="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-brand-500"></div>
+<div class="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-brand-500"></div>
+<div class="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-brand-500"></div>
+</div>
+<!-- Rendered E-14 Realistic Form Document - Generous Full Size -->
+<article class="w-full max-w-sm h-full bg-[#EAEAEA] text-neutral-900 rounded-sm shadow-2xl overflow-hidden border border-neutral-300 flex flex-col justify-between" data-purpose="acta-preview">
+<!-- Acta Header Section -->
+<div class="p-3 border-b border-neutral-400 bg-[#F4F4F4] shrink-0">
+<div class="flex items-center justify-between mb-1.5">
+<span class="text-[10px] font-black uppercase tracking-tight text-neutral-800">REGISTRADURÍA NACIONAL</span>
+<span class="text-[9px] font-mono font-bold bg-neutral-200 px-1.5 py-0.5 rounded text-neutral-700">ACTA E-14</span>
+</div>
+<div class="w-full h-11 barcode-lines rounded-sm"></div>
+<div class="flex justify-between items-center text-[9px] font-mono text-neutral-600 mt-1 px-0.5">
+<span class="">*E14-SEN-2026-001*</span>
+<span class="">PÁG 01 DE 02</span>
+</div>
+</div>
+<!-- Acta Location Info -->
+<div class="px-3 py-2 text-[9px] uppercase font-mono grid grid-cols-2 gap-1.5 border-b border-neutral-300 bg-white shrink-0">
+<div class=""><strong class="text-neutral-500">DEP:</strong> CONSULADOS</div>
+<div class=""><strong class="text-neutral-500">MUN:</strong> ROMA</div>
+<div class=""><strong class="text-neutral-500">ZONA:</strong> 10 &nbsp; <strong class="text-neutral-500">PUESTO:</strong> 02</div>
+<div class=""><strong class="text-neutral-500">MESA:</strong> 001</div>
+</div>
+<!-- Acta Table of Results -->
+<div class="p-3 bg-neutral-100/90 text-center border-b border-neutral-300 flex-1 flex flex-col justify-center">
+<span class="text-[10px] font-bold tracking-tight uppercase block text-neutral-800 mb-2">SENADO DE LA REPÚBLICA</span>
+<div class="grid grid-cols-4 gap-2 text-[9px] text-neutral-600 font-mono">
+<span class="border border-neutral-300 bg-white py-2 font-bold shadow-sm">101 : 25</span>
+<span class="border border-neutral-300 bg-white py-2 font-bold shadow-sm">102 : 42</span>
+<span class="border border-neutral-300 bg-white py-2 font-bold shadow-sm">103 : 18</span>
+<span class="border border-neutral-300 bg-white py-2 font-bold shadow-sm">104 : 30</span>
+</div>
+</div>
+<!-- Acta Signatures -->
+<div class="p-3 bg-white flex justify-around items-end h-20 border-t border-dashed border-neutral-400 shrink-0">
+<div class="text-center w-1/3">
+<div class="text-xs font-serif italic text-blue-950 opacity-80 -mb-1">C. Gomez</div>
+<div class="border-t border-neutral-400 pt-1 text-[8px] text-neutral-500 font-mono">JURADO 1</div>
+</div>
+<div class="text-center w-1/3">
+<div class="text-xs font-serif italic text-blue-950 opacity-80 -mb-1">L. Rossi</div>
+<div class="border-t border-neutral-400 pt-1 text-[8px] text-neutral-500 font-mono">JURADO 2</div>
+</div>
+<div class="text-center w-1/3">
+<div class="text-xs font-serif italic text-blue-950 opacity-80 -mb-1">M. Torres</div>
+<div class="border-t border-neutral-400 pt-1 text-[8px] text-neutral-500 font-mono">JURADO 3</div>
+</div>
+</div>
+</article>
+</div>
+<!-- Quick Document Toolbar (Rotar, Zoom, Ajustar) -->
+
+</section>
+<!-- END: ScannedDocumentViewer -->
+</main>
+<!-- END: MainEditorContainer -->
+<!-- BEGIN: BottomNavigationAndActions -->
+<footer class="relative z-40 bg-black/95 backdrop-blur-xl border-t border-white/10 pb-safe shrink-0" data-purpose="bottom-controls">
+<div class="max-w-md mx-auto px-4 pt-3 pb-2 flex flex-col gap-2.5">
+<!-- Primary Action CTA Button: Scan Next Page -->
+<button class="w-full h-12 py-3 px-5 bg-brand-500 hover:bg-brand-400 active:bg-brand-600 text-black font-extrabold text-sm uppercase tracking-wider rounded-xl flex items-center justify-center gap-2.5 shadow-glow-pill transition-all transform active:scale-[0.98]" type="button">
+<span class="">seguir escaneando</span>
+</button>
+<!-- App Bottom Bar Navigation -->
+<nav class="grid grid-cols-3 pt-1 text-center border-t border-white/5" data-purpose="main-tab-bar">
+<!-- Tab 1: Escanear (Active state with green indicator) -->
+<a class="flex flex-col items-center py-1 text-brand-500 font-bold group" href="#escanear">
+<div class="w-10 h-7 rounded-lg bg-brand-500/20 border border-brand-500/40 flex items-center justify-center text-brand-500 mb-0.5">
+<svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+<circle cx="12" cy="12" r="3.2"></circle>
+<path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"></path>
+</svg>
+</div>
+<span class="text-[10px] tracking-wider uppercase font-semibold">Escanear</span>
+</a>
+<!-- Tab 2: Actas (Stored / Sent List) -->
+<a class="flex flex-col items-center py-1 text-zinc-400 hover:text-white group" href="#actas">
+<div class="w-10 h-7 flex items-center justify-center text-zinc-400 group-hover:text-white mb-0.5">
+<svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+<path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"></path>
+</svg>
+</div>
+<span class="text-[10px] tracking-wider uppercase font-medium">Actas (1)</span>
+</a>
+<!-- Tab 3: Resumen (Stats / Metrics) -->
+<a class="flex flex-col items-center py-1 text-zinc-400 hover:text-white group" href="#resumen">
+<div class="w-10 h-7 flex items-center justify-center text-zinc-400 group-hover:text-white mb-0.5">
+<svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"></path>
+</svg>
+</div>
+<span class="text-[10px] tracking-wider uppercase font-medium">Resumen</span>
+</a>
+</nav>
+<!-- iOS Home Indicator -->
+<div class="w-32 h-1 bg-white/30 rounded-full mx-auto mt-1 mb-0.5"></div>
+</div>
+</footer>
+<!-- END: BottomNavigationAndActions -->
+
+
+
+
+
+
+</body></html>
