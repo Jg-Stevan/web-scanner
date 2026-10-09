@@ -18,7 +18,12 @@ export default function Page() {
   const vista = useE14Store((s) => s.vista);
 
   return (
-    <div className="min-h-dvh bg-bg text-ink flex flex-col font-sans">
+    // D38 (F5): shell candado a h-dvh (NO min-h) — la cadena de alturas de
+    // REVISIÓN queda DEFINITA (main flex-1 → tarjeta flex-1 → img h-full) y la
+    // barra de controles vive SIEMPRE pegada a los CTAs/BottomNav, sin importar
+    // la orientación del documento. Cada vista gestiona su propio scroll
+    // (Actas/Resumen ya son overflow-y-auto; ScanView cabe por diseño).
+    <div className="h-dvh bg-bg text-ink flex flex-col font-sans overflow-hidden">
       {vista === "revision" && <TopBar />}
 
       <main className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
