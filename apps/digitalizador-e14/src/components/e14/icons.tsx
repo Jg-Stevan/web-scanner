@@ -219,3 +219,13 @@ export const ScanFrameIcon = ({ className = "w-4 h-4" }: IconProps) => (
     <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
   </svg>
 );
+
+export const DownloadIcon = ({ className = "w-3.5 h-3.5" }: IconProps) => (
+  <svg
+    className={`${className} fill-none stroke-current stroke-2`}
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+  </svg>
+);

@@ -65,6 +65,8 @@ interface E14Store {
   enviarActa: () => void;
   repetirFoto: () => void;
   enviarRevisionHumana: () => void;
+  /** L4 §6: exporta el acta REAL (fotoProcesada) a PDF vía buildDocPdf del core. */
+  exportarPdfActa: () => Promise<void>;
   descartarNotificacion: (id: number) => void;
 }
 
@@ -340,6 +342,20 @@ export const useE14Store = create<E14Store>((set, get) => {
         historial: [fila, ...get().historial],
       });
       notificar("warn", "ENVIADA A REVISIÓN HUMANA", "Un auditor validará esta acta.");
+    },
+
+    exportarPdfActa: async () => {
+      const { actaActual } = get();
+      if (!actaActual?.fotoProcesada) {
+        notificar("warn", "SIN FOTO REAL", "Solo las actas escaneadas se exportan.");
+        return;
+      }
+      try {
+        await bridge.exportarPdf(actaActual);
+        notificar("ok", "PDF GENERADO", "Acta exportada y descargada.");
+      } catch {
+        notificar("crit", "ERROR DE EXPORTACIÓN", "No se pudo generar el PDF del acta.");
+      }
     },
 
     descartarNotificacion: (id) =>

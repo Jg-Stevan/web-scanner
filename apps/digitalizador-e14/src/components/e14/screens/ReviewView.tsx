@@ -13,7 +13,7 @@ import { useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
 import { ActaDocument } from "../ActaDocument";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
-import { CropIcon, EyeIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
+import { CropIcon, DownloadIcon, EyeIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
 
 /** Color de brackets según el estado del acta. */
 function tonoBrackets(status: string) {
@@ -330,11 +330,32 @@ export function ReviewCtas() {
   const enviarActa = useE14Store((s) => s.enviarActa);
   const repetirFoto = useE14Store((s) => s.repetirFoto);
   const enviarRevisionHumana = useE14Store((s) => s.enviarRevisionHumana);
+  const exportarPdfActa = useE14Store((s) => s.exportarPdfActa);
 
   if (!acta) return null;
   const status = acta.status;
+  const esReal = acta.fuente !== undefined && acta.fuente !== "SIMULACION";
 
   if (status === "ENVIADA") {
+    // L4 §6: EXPORTAR PDF junto a SEGUIR ESCANEANDO — solo actas REALES
+    // (en SIMULACIÓN no hay foto que exportar: el botón se oculta).
+    if (esReal) {
+      return (
+        <div className="flex flex-row items-center gap-2 w-full">
+          <PrimaryBtn variant="outline" onClick={() => void exportarPdfActa()}>
+            <DownloadIcon className="w-4 h-4" />
+            <span>EXPORTAR PDF</span>
+          </PrimaryBtn>
+          <button
+            type="button"
+            onClick={() => navegar("escanear")}
+            className="flex-1 h-12 py-3 px-5 bg-ok-tint hover:bg-ok active:bg-ok text-ok-ink font-extrabold text-sm uppercase tracking-wider rounded-xl flex items-center justify-center gap-2.5 shadow-[0_0_12px_rgba(63,229,108,0.45)] transition-all transform active:scale-[0.98]"
+          >
+            <span>seguir escaneando</span>
+          </button>
+        </div>
+      );
+    }
     return (
       <button
         type="button"

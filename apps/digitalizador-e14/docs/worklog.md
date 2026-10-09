@@ -431,3 +431,30 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   en gama baja — si se ve pesado, bajar a 960×540); sin F-LENS v4 del lab
   (sondeo de lentes) Chrome elige la trasera por defecto; takePhoto sin
   sensor-profiler (el clamp de 48MP lo cubre maxLongSide del core al decodar).
+
+### [2026-10-09 15:35 (Bogotá)] — L4 EXPORTAR PDF — Z.ai Code (Task 6-L4)
+- **Hecho:** export real §6 con el core tal cual:
+  - `scanner-core-bridge.ts`: `exportarPdf(acta)` implementado — adaptador
+    Acta→ScanDocument (pages[0] con processed=fotoProcesada, filter "original",
+    quad unitario en Points, quality de metricas vía `makeQuality` o
+    `excellentQuality`, `ocrDone`/`createdAt` requeridos por la interfaz
+    congelada) → `buildDocPdf(doc, "standard")` → `pdf.output("blob")` →
+    `downloadBlob(blob, sanitizeFileName(title)+".pdf")` (patrón canónico del
+    lab). Sin foto real → throw "SIN FOTO REAL PARA EXPORTAR".
+  - `store.ts`: acción `exportarPdfActa` (guard SIN FOTO REAL → toast warn;
+    try/catch → toast ok "PDF GENERADO" / crit "ERROR DE EXPORTACIÓN").
+  - `ReviewView.tsx` (ReviewCtas): ENVIADA + acta REAL → fila con EXPORTAR PDF
+    (outline + DownloadIcon) JUNTO a SEGUIR ESCANEANDO (flex-1 verde). En
+    SIMULACIÓN el botón se OCULTA (spec §6). DownloadIcon añadido a icons.tsx.
+- **QA (agent-browser 390×844, dev :3001):**
+  - ARCHIVO nítida → ÓPTIMA → ENVIADA → EXPORTAR PDF → blob capturado con spy
+    de anchor.click: **{size: 333721, type: "application/pdf", name: "ROMA -
+    CONSULADO — MESA 002.pdf"}** + toast "PDF GENERADO" ✓
+  - SIM ÓPTIMA → ENVIADA → footer SOLO "seguir escaneando" (botón oculto) ✓
+  - lint:e14 + e14:check: 0 errores · sin page errors.
+- **Archivos:** scanner-core-bridge.ts, store.ts, ReviewView.tsx, icons.tsx
+- **Commits:** (este commit)
+- **Cómo probar:** IMPORTAR imagen → esperar ÓPTIMA/ENVIADA → EXPORTAR PDF →
+  descarga + toast. En SIM el botón no existe.
+- **Pendiente/Bloqueado:** L5 (QuadEditor copiado del lab + toolbar real +
+  rescate D20).
