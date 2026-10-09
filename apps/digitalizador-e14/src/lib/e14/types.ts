@@ -3,7 +3,7 @@
  * FASE LÓGICA L1: campos async opcionales (§3.1) — el mock y el seed siguen
  * compatibles (todo es opcional).
  */
-import type { Quad } from "@jg-stevan/scanner-core/types";
+import type { PageFilter, Quad } from "@jg-stevan/scanner-core/types";
 
 // ---------- Captura y análisis (SPEC fase lógica §3.1) ----------
 export type FuenteCaptura = "SIMULACION" | "CAMARA" | "ARCHIVO";
@@ -79,6 +79,8 @@ export interface Acta {
   quadDetectado?: Quad;
   /** 0|90|180|270 — horneada en fotoProcesada. */
   rotation?: number;
+  /** F2 (D36): filtro con el que se procesó (default del producto = "bw"). */
+  filtro?: PageFilter;
 }
 
 // ---------- Control de mesas (vista ACTAS) ----------

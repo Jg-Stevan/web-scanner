@@ -45,6 +45,7 @@ import {
 } from "@jg-stevan/scanner-core/pdf-export";
 import {
   excellentQuality,
+  defaultQuad,
   makeQuality,
 } from "@jg-stevan/scanner-core/types";
 import type {
@@ -266,11 +267,14 @@ export class RealCoreBridge implements E14Bridge {
     ms.detect = performance.now() - tDetect;
     emitir({ etapa: "DETECTANDO", progreso: 1 });
 
-    // 3) Recorte + realce (warp real INTER_CUBIC + "original").
+    // 3) Recorte + realce (warp real INTER_CUBIC + filtro default "bw").
     emitir({ etapa: "RECORTANDO", progreso: 0.2 });
     const tProceso = performance.now();
     const resultado = await conRampa(
-      processImage(fotoOriginal, quad, "original"),
+      // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L602-604
+      // (captura arranca en B/N adaptativo) + types.ts L50 (default del
+      // producto) — D36: e14 no tiene ajustes → el default fijo es "bw".
+      processImage(fotoOriginal, quad, "bw"),
       1400,
       // RECORTANDO .2→.6 (warp) → REALZANDO .4→1 (enhance), interpolado.
       (f) =>
@@ -312,6 +316,7 @@ export class RealCoreBridge implements E14Bridge {
         `(decode=${Math.round(ms.decode)} detect=${Math.round(ms.detect)} ` +
         `proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
         `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +
+        `filtro=${"bw"} ` +
         `metricas={sharpness:${calidad.sharpness} brightness:${calidad.brightness} ` +
         `contrast:${calidad.contrast} level:${calidad.level}})`,
     );
@@ -397,12 +402,14 @@ export class RealCoreBridge implements E14Bridge {
   ): Promise<Acta> {
     const ms = { proceso: 0, calidad: 0, ocr: 0, total: 0 };
     const inicio = performance.now();
+    // F2/D36: el recorte conserva el filtro del acta (default del producto "bw").
+    const filtro: PageFilter = acta.filtro ?? "bw";
 
-    // 1) Recorte + realce (warp real INTER_CUBIC + "original", F5-MANUAL).
+    // 1) Recorte + realce (warp real INTER_CUBIC + filtro del acta, F5-MANUAL).
     emitir({ etapa: "RECORTANDO", progreso: 0.2 });
     const tProceso = performance.now();
     const resultado = await conRampa(
-      processImage(fotoOriginal, quad, "original", rotacion, { manual: true }),
+      processImage(fotoOriginal, quad, filtro, rotacion, { manual: true }),
       1400,
       // RECORTANDO .2→.6 (warp) → REALZANDO .4→1 (enhance), interpolado.
       (f) =>
@@ -442,6 +449,7 @@ export class RealCoreBridge implements E14Bridge {
       `[e14] recorte ${acta.fuente} total=${Math.round(ms.total)}ms ` +
         `(proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
         `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +
+        `filtro=${filtro} ` +
         `metricas={sharpness:${calidad.sharpness} brightness:${calidad.brightness} ` +
         `contrast:${calidad.contrast} level:${calidad.level}})`,
     );
@@ -468,6 +476,32 @@ export class RealCoreBridge implements E14Bridge {
           : null,
       firmas: this.firmasPorStatus(acta.firmas, status),
     };
+  }
+
+  /**
+   * F2 (§F2.2, D36) — FILTRO: re-procesa la foto con el filtro elegido,
+   * IGUAL que setFilterOnPage del core (apps/scanner-lab/src/components/
+   * scanner/…/store.ts L644-669): SOLO processImage — sin re-OCR, sin
+   * re-calidad (el gate ya resolvió). Devuelve el acta con fotoProcesada y
+   * filtro actualizados. Sin timeout: es un ÚNICO processImage con fallback
+   * canvas (misma exposición al cuelgue que tiene el lab aquí — documentado
+   * en worklog como ADAPTACIÓN de la opción «timeout 15 s» del spec).
+   */
+  async revelar(acta: Acta, filtro: PageFilter): Promise<Acta> {
+    const fotoOriginal = acta.fotoOriginal;
+    if (!fotoOriginal) {
+      throw new Error("SIN FOTO ORIGINAL PARA FILTRAR");
+    }
+    // Fuente: apps/scanner-lab/…/store.ts L644-669 (setFilterOnPage) —
+    // processImage(original, quad, filter, rotation, { manual }).
+    const resultado = await processImage(
+      fotoOriginal,
+      acta.quadDetectado ?? defaultQuad(),
+      filtro,
+      acta.rotation ?? 0,
+      { manual: true },
+    );
+    return { ...acta, fotoProcesada: resultado.processed, filtro };
   }
 
   /** Firmas coherentes con el estado (misma regla del mock/§7.5):
@@ -544,6 +578,9 @@ export class RealCoreBridge implements E14Bridge {
       motor: campos.motor ?? "canvas",
       quadDetectado: campos.quadDetectado,
       rotation: 0,
+      // F2/D36: default del producto (types.ts L50 del core) — toda captura
+      // nace en B/N adaptativo (Fuente: CameraView.tsx L602-604 del lab).
+      filtro: "bw" as PageFilter,
     };
   }
 
@@ -571,7 +608,8 @@ export class RealCoreBridge implements E14Bridge {
           original: acta.fotoOriginal ?? foto,
           processed: foto,
           thumbnail: foto,
-          filter: "original" as PageFilter,
+          // F2/D36: el PDF se genera con el filtro del acta (default "bw").
+          filter: (acta.filtro ?? "bw") as PageFilter,
           quad: [
             { x: 0, y: 0 },
             { x: 1, y: 0 },

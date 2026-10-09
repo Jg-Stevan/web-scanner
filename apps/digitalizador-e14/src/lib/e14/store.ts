@@ -6,6 +6,8 @@
 import { create } from "zustand";
 import { getBridge } from "./get-bridge";
 import { rotateProcessedDataUrl } from "./image-utils";
+import { FILTER_PRESETS } from "@jg-stevan/scanner-core/types";
+import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import type { PaginaObjetivo } from "./bridge";
 import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
 import type { Quad } from "@jg-stevan/scanner-core/types";
@@ -44,6 +46,8 @@ interface E14Store {
   analisisResuelto: boolean;
   /** L5 §7.5: true mientras el bridge re-corre el pipeline del RECORTE. */
   recortando: boolean;
+  /** F2 §F2.2: true mientras el bridge re-procesa la foto con un filtro. */
+  revelando: boolean;
   actasSesion: number;
   mesas: Mesa[];
   completadas: number;
@@ -75,9 +79,15 @@ interface E14Store {
    */
   aplicarRecorte: (quad: Quad) => Promise<void>;
   /**
+   * F2 (§F2.2, D36): cambia el filtro del acta — bridge.revelar re-procesa
+   * la foto (SOLO processImage, sin re-OCR/re-calidad — igual que
+   * setFilterOnPage del core) y el toast copia el texto del lab (L1214-1218).
+   */
+  cambiarFiltro: (filtro: PageFilter) => Promise<void>;
+  /**
    * L5 §7 ReviewView: gira fotoProcesada 90° (rotateProcessedDataUrl del lab,
-   * canvas puro) y hornea rotation para el PDF §6. SOLO actas reales — en
-   * SIMULACIÓN ReviewView conserva su rotación local del papel.
+   * canvas puro) y hornea rotation para el PDF §6. Gate: foto (D35 — la
+   * SIMULACIÓN también rota real).
    */
   rotarFoto: () => Promise<void>;
   descartarNotificacion: (id: number) => void;
@@ -189,6 +199,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     progresoAnalisis: null,
     analisisResuelto: false,
     recortando: false,
+    revelando: false,
     actasSesion: 0,
     mesas: mesasIniciales(),
     completadas: progresoInicial().completadas,
@@ -428,6 +439,30 @@ export const useE14Store = create<E14Store>((set, get) => {
         notificar("crit", "ERROR DE ROTACIÓN", "No se pudo girar la foto.");
       } finally {
         rotandoFotoEnVuelo = false;
+      }
+    },
+
+    cambiarFiltro: async (filtro) => {
+      const { actaActual } = get();
+      if (!actaActual?.fotoOriginal) {
+        notificar("warn", "SIN FOTO ORIGINAL", "Solo las actas escaneadas se pueden filtrar.");
+        return;
+      }
+      if (get().revelando) return;
+      set({ revelando: true });
+      try {
+        // F2/D36: revelar = SOLO processImage (sin re-OCR/re-calidad — igual
+        // que setFilterOnPage del core); el acta conserva identidad por spread.
+        const acta = await bridge.revelar(actaActual, filtro);
+        set({ actaActual: acta });
+        // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L1214-1218
+        // (handleFilter — toast de éxito + cierre del sheet; el sheet lo cierra ReviewView).
+        const label = FILTER_PRESETS.find((f) => f.id === filtro)?.label ?? filtro;
+        notificar("ok", "FILTRO APLICADO", `Filtro aplicado: ${label}`);
+      } catch {
+        notificar("crit", "ERROR DE FILTRADO", "No se pudo re-procesar el acta.");
+      } finally {
+        set({ revelando: false });
       }
     },
 

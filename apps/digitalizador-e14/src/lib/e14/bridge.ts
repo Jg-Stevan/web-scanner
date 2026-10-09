@@ -12,7 +12,7 @@
  * SIMULACIÓN = pipeline real sobre el acta incluida).
  */
 import type { Acta, ProgresoAnalisis, FuenteCaptura, TipoPagina } from "./types";
-import type { Quad } from "@jg-stevan/scanner-core/types";
+import type { PageFilter, Quad } from "@jg-stevan/scanner-core/types";
 
 /** Página de mesa a la que apunta el próximo escaneo (D7: vive en el store). */
 export interface PaginaObjetivo {
@@ -48,6 +48,13 @@ export interface E14Bridge {
     quad: Quad,
     onProgreso?: (p: ProgresoAnalisis) => void,
   ): Promise<Acta>;
+  /**
+   * F2 (§F2.2, D36): re-procesa la foto con el filtro elegido — IGUAL que
+   * setFilterOnPage del core (apps/scanner-lab/…/store.ts L644-669): solo
+   * processImage, SIN re-OCR ni re-calidad (el gate ya resolvió) → acta
+   * actualizada (fotoProcesada + filtro).
+   */
+  revelar(acta: Acta, filtro: PageFilter): Promise<Acta>;
   /** HH:MM:SS — hora del envío automático. */
   horaEnvio(): string;
   /** HH:MM — hora de las filas del historial. */
@@ -96,6 +103,17 @@ export class CompositeBridge implements E14Bridge {
       return Promise.reject(new Error("RECORTAR NO APLICA SIN FOTO REAL"));
     }
     return this.real.recortar(acta, quad, onProgreso);
+  }
+
+  revelar(acta: Acta, filtro: PageFilter): Promise<Acta> {
+    if (!this.real) {
+      return Promise.reject(new Error("FUENTE REAL NO IMPLEMENTADA (L2)"));
+    }
+    // D35: el gate es la foto, no la fuente (SIMULACIÓN tiene foto real).
+    if (!acta.fotoOriginal) {
+      return Promise.reject(new Error("FILTRAR NO APLICA SIN FOTO REAL"));
+    }
+    return this.real.revelar(acta, filtro);
   }
 
   horaEnvio(): string {

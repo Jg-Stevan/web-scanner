@@ -14,10 +14,20 @@
  */
 import { useEffect, useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
-import { defaultQuad } from "@jg-stevan/scanner-core/types";
+import { defaultQuad, FILTER_PRESETS } from "@jg-stevan/scanner-core/types";
+import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import { QuadEditor } from "../QuadEditor";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
-import { CropIcon, DownloadIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
+import { CropIcon, DownloadIcon, FullscreenIcon, RefreshIcon, RotateIcon, SlidersIcon, WarnTriangleIcon } from "../icons";
+
+// Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L89-L93
+// (CSS_FILTERS — aproximación CSS de cada filtro para las previews en vivo:
+// solo cosmética; el procesado real ocurre al elegir, vía store.cambiarFiltro).
+const CSS_FILTERS: Record<PageFilter, string> = {
+  original: "none",
+  text: "brightness(1.12) contrast(1.35)",
+  bw: "grayscale(1) contrast(2.6) brightness(1.05)",
+};
 
 /** Color de brackets según el estado del acta. */
 function tonoBrackets(status: string) {
@@ -112,12 +122,16 @@ export function ReviewView() {
   const acta = useE14Store((s) => s.actaActual);
   const paginaObjetivo = useE14Store((s) => s.paginaObjetivo);
   const recortando = useE14Store((s) => s.recortando);
+  const revelando = useE14Store((s) => s.revelando);
   const aplicarRecorte = useE14Store((s) => s.aplicarRecorte);
   const rotarFoto = useE14Store((s) => s.rotarFoto);
+  const cambiarFiltro = useE14Store((s) => s.cambiarFiltro);
   // L5 §7.5: editor de recorte y visor a pantalla completa (estado local —
   // el acta solo cambia por store.aplicarRecorte al APLICAR).
   const [editando, setEditando] = useState(false);
   const [visorAbierto, setVisorAbierto] = useState(false);
+  // F2 (§F2.2): sheet de filtros (copia del lab EditorView L2253-2309).
+  const [filtrosAbierto, setFiltrosAbierto] = useState(false);
 
   // L5: Esc cierra el visor (tap en cualquier lado también).
   useEffect(() => {
@@ -323,11 +337,11 @@ export function ReviewView() {
             alto CONSTANTE, anclada al borde inferior (justo encima de los
             CTAs/BottomNav que renderiza page.tsx). Al girar el documento
             RETRATO↔APAISADO la tarjeta absorbe el cambio (flex-1) — la barra
-            NO se mueve ni un píxel. F2 (C5) añade FILTROS → grid-cols-4. */}
+            NO se mueve ni un píxel. F2 (§F2.2): FILTROS → grid-cols-4. */}
         {(status === "ADVERTENCIA" ||
           status === "RECHAZADA" ||
           (status === "OPTIMA" && esReal)) && (
-          <div className="w-full grid grid-cols-3 gap-2 pt-2 shrink-0 z-20">
+          <div className="w-full grid grid-cols-4 gap-2 pt-2 shrink-0 z-20">
             <ToolbarBtn
               icon={<CropIcon />}
               label="Recortar"
@@ -337,6 +351,17 @@ export function ReviewView() {
               icon={<RotateIcon />}
               label="Rotar 90°"
               onClick={esReal ? () => void rotarFoto() : undefined}
+            />
+            {/* Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx
+                L2200-2204 (gatillo «Filtros» del toolbar del lab). */}
+            <ToolbarBtn
+              icon={<SlidersIcon />}
+              label="Filtros"
+              onClick={
+                esReal && acta.fotoOriginal && !revelando
+                  ? () => setFiltrosAbierto(true)
+                  : undefined
+              }
             />
             <ToolbarBtn
               icon={<FullscreenIcon />}
@@ -362,6 +387,74 @@ export function ReviewView() {
             void aplicarRecorte(quad).then(() => setEditando(false));
           }}
         />
+      ) : null}
+
+      {/* ── F2 (§F2.2) — SHEET DE FILTROS: copia del sheet del lab
+          (EditorView.tsx L2253-2309), re-vestida: vaul → fixed bottom sheet
+          + animate-editor-enter (e14 NO instala deps nuevas — SPEC §C);
+          #007AFF/#1c1c1e → tokens ok-tint/surface-1; page.original →
+          acta.fotoOriginal; activo por acta.filtro (default "bw", D36). */}
+      {filtrosAbierto && acta.fotoOriginal ? (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setFiltrosAbierto(false)}
+            aria-hidden
+          />
+          <div
+            role="dialog"
+            aria-label="Filtros del acta"
+            className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[22px] bg-surface-1 pb-safe outline-none animate-editor-enter"
+          >
+            <div className="mx-auto mt-2.5 h-1.5 w-9 rounded-full bg-white/25" />
+            <h3 className="px-5 pb-1 pt-3 text-center text-[17px] font-semibold text-white">
+              Filtros
+            </h3>
+            <p className="sr-only">Elige un filtro para el acta en edición</p>
+            <div className="flex gap-3 overflow-x-auto px-5 pb-5 pt-2">
+              {FILTER_PRESETS.map((f) => {
+                const activo = acta.filtro === f.id;
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx
+                    // L1214-1218 (handleFilter — aplica y cierra; el toast
+                    // «Filtro aplicado: …» lo emite el store.cambiarFiltro).
+                    onClick={() => {
+                      void cambiarFiltro(f.id);
+                      setFiltrosAbierto(false);
+                    }}
+                    className="flex w-[78px] shrink-0 flex-col items-center gap-1.5"
+                  >
+                    <span
+                      className={`block h-[104px] w-full overflow-hidden rounded-xl border-2 ${
+                        activo
+                          ? "border-ok-tint shadow-[0_0_0_3px_rgba(63,229,108,0.25)]"
+                          : "border-white/10"
+                      }`}
+                    >
+                      <img
+                        src={acta.fotoOriginal}
+                        alt=""
+                        draggable={false}
+                        style={{ filter: CSS_FILTERS[f.id] ?? "none" }}
+                        className="h-full w-full object-cover"
+                      />
+                    </span>
+                    <span
+                      className={`text-[11px] ${
+                        activo ? "font-medium text-white" : "text-ink-faint"
+                      }`}
+                    >
+                      {f.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
       ) : null}
 
       {/* L5 §7 — PANTALLA COMPLETA: visor modal de la foto procesada
