@@ -541,3 +541,24 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   IndexedDB) y L7 (opcional, cámara sintética en SIM). La fase lógica
   OBLIGATORIA (L0-L5) está COMPLETA — queda la DoD §10 final (regresión
   dorada ya verificada aquí).
+
+### [2026-10-09 16:30 (Bogotá)] — Cierre de FASE LÓGICA: QA integral + build estático — Z.ai Code (Task 6-final)
+- **Hecho:** QA integral de cierre (DoD §10):
+  - `bun install --frozen-lockfile` ✓ · `lint:e14` ✓ · `e14:check` ✓.
+  - SIM dorado completo (ADVERTENCIA manual → "✓ 7.8/10 ENVIADA CON ADVERTENCIA").
+  - ARCHIVO croppable: RECHAZADA 9.2 (gate) → RECORTAR (drag asa superior real con
+    mouse) → APLICAR → "✓ 9.2/10 ÓPTIMA" + ENVIAR A TRANSMISIÓN manual (rescate
+    D20 SIN auto-envío, SIN consumir intento) → ENVIADA con EXPORTAR PDF en footer.
+  - Build estático (BUILD_STATIC=1, basePath /web-scanner): out/ con
+    scanner/detection-worker.js + vendor/opencv×2; URL del worker inlinada
+    `/web-scanner/scanner/detection-worker.js` en el chunk; servido bajo prefijo
+    /web-scanner/ → pipeline REAL en navegador: upload nítida → "✓ 9.3/10 ÓPTIMA"
+    (tesseract CDN 200, motor worker). Todos los assets 200.
+  - D32 registrada (no-useScannerStore, spec D18) — cierra la cobertura D12-D22
+    del spec (→ repo D14-D31 + D32).
+- **Archivos:** docs/{DECISIONS,worklog,ROADMAP}.md
+- **Commits:** (docs final de cierre)
+- **Cómo probar:** ver entradas L0-L5. DoD 5 (cámara real en móvil) queda para el
+  teléfono del dueño en Pages (headless sin cámara: fallback verificado).
+- **Pendiente/Bloqueado:** push + PR feat/e14-fase-logica → main + deploy Pages +
+  smoke test producción (DoD 8). L6/L7 opcionales sin hacer (no bloquean).
