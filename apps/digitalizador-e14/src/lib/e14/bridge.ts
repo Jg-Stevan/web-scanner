@@ -41,12 +41,14 @@ export interface E14Bridge {
    * QUAD MANUAL (F5-MANUAL: respeta el quad al píxel, sin refine) → devuelve
    * el acta ACTUALIZADA (fotoProcesada/score/status/rechazo/ocr/metricas;
    * fuente/intento/maxIntentos/paginación IGUALES — el rescate D20 NO consume
-   * intento).
+   * intento). F4/D37: `rotacionOverride` hornea la rotación LOCAL del editor
+   * de recorte (undefined = conserva `acta.rotation`).
    */
   recortar(
     acta: Acta,
     quad: Quad,
     onProgreso?: (p: ProgresoAnalisis) => void,
+    rotacionOverride?: number,
   ): Promise<Acta>;
   /**
    * F2 (§F2.2, D36): re-procesa la foto con el filtro elegido — IGUAL que
@@ -94,6 +96,7 @@ export class CompositeBridge implements E14Bridge {
     acta: Acta,
     quad: Quad,
     onProgreso?: (p: ProgresoAnalisis) => void,
+    rotacionOverride?: number,
   ): Promise<Acta> {
     if (!this.real) {
       return Promise.reject(new Error("FUENTE REAL NO IMPLEMENTADA (L2)"));
@@ -102,7 +105,7 @@ export class CompositeBridge implements E14Bridge {
     if (!acta.fotoOriginal) {
       return Promise.reject(new Error("RECORTAR NO APLICA SIN FOTO REAL"));
     }
-    return this.real.recortar(acta, quad, onProgreso);
+    return this.real.recortar(acta, quad, onProgreso, rotacionOverride);
   }
 
   revelar(acta: Acta, filtro: PageFilter): Promise<Acta> {

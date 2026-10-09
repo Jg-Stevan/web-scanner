@@ -75,9 +75,10 @@ interface E14Store {
   /**
    * L5 §7.5 (rescate D20): aplica el recorte manual del QuadEditor —
    * bridge.recortar re-ejecuta el pipeline con el quad manual (F5-MANUAL) y
-   * NO consume intento. Toast según el resultado del rescate.
+   * NO consume intento. F4/D37: `rotacionNueva` hornea la rotación LOCAL
+   * del editor (undefined = conserva acta.rotation). Toast según resultado.
    */
-  aplicarRecorte: (quad: Quad) => Promise<void>;
+  aplicarRecorte: (quad: Quad, rotacionNueva?: number) => Promise<void>;
   /**
    * F2 (§F2.2, D36): cambia el filtro del acta — bridge.revelar re-procesa
    * la foto (SOLO processImage, sin re-OCR/re-calidad — igual que
@@ -389,7 +390,7 @@ export const useE14Store = create<E14Store>((set, get) => {
       }
     },
 
-    aplicarRecorte: async (quad) => {
+    aplicarRecorte: async (quad, rotacionNueva) => {
       const { actaActual } = get();
       if (!actaActual?.fotoOriginal) {
         notificar("warn", "SIN FOTO ORIGINAL", "Solo las actas escaneadas se pueden recortar.");
@@ -400,8 +401,12 @@ export const useE14Store = create<E14Store>((set, get) => {
       try {
         // RecorTE manual → pipeline §5 re-ejecutado con F5-MANUAL; el acta
         // conserva identidad (intento/fuente/paginación) — rescate sin intento.
-        const acta = await bridge.recortar(actaActual, quad, (p) =>
-          set({ progresoAnalisis: p }),
+        // F4/D37: la rotación LOCAL del editor se hornea en fotoProcesada.
+        const acta = await bridge.recortar(
+          actaActual,
+          quad,
+          (p) => set({ progresoAnalisis: p }),
+          rotacionNueva,
         );
         set({ actaActual: acta, progresoAnalisis: null });
         if (acta.status === "OPTIMA" || acta.status === "ADVERTENCIA") {

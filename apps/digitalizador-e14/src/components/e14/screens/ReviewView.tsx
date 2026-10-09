@@ -375,7 +375,9 @@ export function ReviewView() {
       {/* L5 §7.5 — EDITOR DE RECORTE (overlay a pantalla completa sobre la
           foto ORIGINAL; quad inicial = detección automática o defaultQuad).
           Puro por props (D19): el acta solo cambia vía store.aplicarRecorte
-          al APLICAR; CANCELAR descarta sin tocar nada. */}
+          al APLICAR; CANCELAR descarta sin tocar nada (rotaciones y
+          detecciones del editor incluidas). F4/D37: APLICAR entrega
+          quad + rotación LOCAL del editor → quedan horneadas. */}
       {editando && acta.fotoOriginal ? (
         <QuadEditor
           fotoOriginal={acta.fotoOriginal}
@@ -383,8 +385,8 @@ export function ReviewView() {
           rotation={acta.rotation ?? 0}
           aplicando={recortando}
           onCancelar={() => setEditando(false)}
-          onAplicar={(quad) => {
-            void aplicarRecorte(quad).then(() => setEditando(false));
+          onAplicar={(quad, rotacion) => {
+            void aplicarRecorte(quad, rotacion).then(() => setEditando(false));
           }}
         />
       ) : null}

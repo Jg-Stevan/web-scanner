@@ -345,17 +345,20 @@ export class RealCoreBridge implements E14Bridge {
    * conserva IDENTIDAD (fuente/intento/maxIntentos/paginación/título…) — el
    * rescate NO es una captura nueva, no consume intento. Timeout 15 s igual
    * que escanearActa: resuelve un acta RECHAZADA ILEGIBLE controlada.
+   * F4/D37: `rotacionOverride` (4º parámetro) hornea la rotación LOCAL del
+   * editor — el retorno de pipelineRecorte fija `rotation: rotacionUsada`.
    */
   recortar(
     acta: Acta,
     quad: Quad,
     onProgreso?: (p: ProgresoAnalisis) => void,
+    rotacionOverride?: number,
   ): Promise<Acta> {
     const fotoOriginal = acta.fotoOriginal;
     if (!fotoOriginal) {
       return Promise.reject(new Error("SIN FOTO ORIGINAL PARA RECORTAR"));
     }
-    const rotacion = acta.rotation ?? 0;
+    const rotacion = rotacionOverride ?? acta.rotation ?? 0;
     let vencido = false; // tras el timeout no se emite más progreso (§5)
     const emitir = (p: ProgresoAnalisis) => {
       if (!vencido) onProgreso?.(p);
@@ -455,11 +458,14 @@ export class RealCoreBridge implements E14Bridge {
     );
 
     // Acta ACTUALIZADA: identidad intacta (spread), campos reales nuevos y
-    // rechazo LIMPIO si el rescate mejora el estado (D20).
+    // rechazo LIMPIO si el rescate mejora el estado (D20). F4/D37: la
+    // rotación usada queda HORNEADA (rotation) — la respeta el PDF §6 y un
+    // eventual re-recorte/filtrado.
     return {
       ...acta,
       fotoProcesada,
       quadDetectado: quad,
+      rotation: rotacion,
       ocrTexto: texto,
       metricas: {
         sharpness: calidad.sharpness,
