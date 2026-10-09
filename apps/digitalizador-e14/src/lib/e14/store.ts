@@ -53,6 +53,8 @@ interface E14Store {
   setForzado: (forzado: Forzado) => void;
   setFuente: (fuente: FuenteCaptura) => void;
   setArchivoPendiente: (archivo: File | null) => void;
+  /** Toast flotante genérico (L2: aviso CÁMARA→L3 del chip de fuente; L3 lo reusa para permisos). */
+  notificar: (tone: Notificacion["tone"], titulo: string, descripcion?: string) => void;
   alternarConexion: () => void;
   dispararEscaneo: (intento?: number) => Promise<void>;
   analisisCompletado: () => void;
@@ -180,6 +182,8 @@ export const useE14Store = create<E14Store>((set, get) => {
 
     setArchivoPendiente: (archivo) => set({ archivoPendiente: archivo }),
 
+    notificar,
+
     alternarConexion: () => {
       const { online, colaOffline, actaActual } = get();
       if (online) {
@@ -204,6 +208,13 @@ export const useE14Store = create<E14Store>((set, get) => {
 
     dispararEscaneo: async (intento = 1) => {
       const { forzado, mesas, fuente, archivoPendiente } = get();
+      // L2: en fuente ARCHIVO el disparo necesita imagen (REPETIR FOTO vuelve
+      // al picker en vez de reventar el pipeline sin archivo).
+      if (fuente === "ARCHIVO" && !archivoPendiente) {
+        notificar("warn", "ELIGE UNA IMAGEN", "La fuente IMPORTAR analiza la imagen que elijas.");
+        set({ vista: "escanear" });
+        return;
+      }
       const objetivo = proximaPagina(mesas);
       set({
         vista: "analizando",

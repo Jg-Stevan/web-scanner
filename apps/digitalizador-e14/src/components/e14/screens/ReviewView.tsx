@@ -4,12 +4,16 @@
  * REVISIÓN (§7.4–§7.5) — documento + banner por estado + CTAs.
  * Estados: ENVIADA · ADVERTENCIA · RECHAZADA (ILEGIBLE rica / GENERICO pill)
  * · EN_REVISION_HUMANA.
+ * FASE LÓGICA L2 (§7 ReviewView): VER FOTO — con actas reales el área del
+ * documento alterna papel sintético ↔ `fotoProcesada` del core (misma caja,
+ * object-contain) y un badge avisa "FOTO REAL DISPONIBLE". En SIMULACIÓN no
+ * hay foto → todo queda exactamente como en la fase gráfica.
  */
 import { useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
 import { ActaDocument } from "../ActaDocument";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
-import { CropIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
+import { CropIcon, EyeIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
 
 /** Color de brackets según el estado del acta. */
 function tonoBrackets(status: string) {
@@ -104,12 +108,14 @@ export function ReviewView() {
   const acta = useE14Store((s) => s.actaActual);
   const paginaObjetivo = useE14Store((s) => s.paginaObjetivo);
   const [rotacion, setRotacion] = useState(0);
+  const [verFoto, setVerFoto] = useState(false);
 
   if (!acta) return null;
 
   const tipo = paginaObjetivo?.tipo ?? "TRANSMISIÓN";
   const mesa = paginaObjetivo?.mesaId.replace(/\D/g, "").padStart(3, "0") ?? acta.ubicacion.mesa;
   const status = acta.status;
+  const hayFoto = Boolean(acta.fotoProcesada);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -233,12 +239,33 @@ export function ReviewView() {
               <div className={`absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 ${tonoBrackets(status)}`} />
               <div className={`absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 ${tonoBrackets(status)}`} />
             </div>
-            <ActaDocument acta={acta} rotacion={rotacion} />
+            {/* L2 §7: papel sintético (default) ↔ foto real del core. */}
+            {hayFoto && verFoto ? (
+              <img
+                src={acta.fotoProcesada}
+                alt="Foto real del acta procesada por el core"
+                className="w-full h-full object-contain rounded-sm"
+              />
+            ) : (
+              <ActaDocument acta={acta} rotacion={rotacion} />
+            )}
+            {hayFoto && !verFoto && (
+              <span
+                className="absolute bottom-1.5 left-1.5 z-20 font-data text-[8px] font-bold tracking-[0.18em] text-ok-tint bg-black/55 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none"
+              >
+                FOTO REAL DISPONIBLE
+              </span>
+            )}
           </div>
 
-          {/* Toolbar (solo ADVERTENCIA y RECHAZADA — code.html) */}
+          {/* Toolbar (solo ADVERTENCIA y RECHAZADA — code.html). Con foto real
+              (L2): 4ª columna VER FOTO — alterna papel ↔ foto del core. */}
           {(status === "ADVERTENCIA" || status === "RECHAZADA") && (
-            <div className="w-full max-w-sm grid grid-cols-3 gap-2 pt-2 shrink-0 z-20">
+            <div
+              className={`w-full max-w-sm grid ${
+                hayFoto ? "grid-cols-4" : "grid-cols-3"
+              } gap-2 pt-2 shrink-0 z-20`}
+            >
               <ToolbarBtn icon={<CropIcon />} label="Recortar" />
               <ToolbarBtn
                 icon={<RotateIcon />}
@@ -246,6 +273,25 @@ export function ReviewView() {
                 onClick={() => setRotacion((r) => (r + 90) % 360)}
               />
               <ToolbarBtn icon={<FullscreenIcon />} label="Pantalla completa" />
+              {hayFoto && (
+                <ToolbarBtn
+                  icon={<EyeIcon />}
+                  label={verFoto ? "VER PAPEL" : "VER FOTO"}
+                  onClick={() => setVerFoto((v) => !v)}
+                />
+              )}
+            </div>
+          )}
+
+          {/* VER FOTO en ENVIADA real (el diseño original no trae toolbar para
+              ENVIADA — solo el toggle de la foto, compacto y centrado). */}
+          {status === "ENVIADA" && hayFoto && (
+            <div className="w-full max-w-[200px] mx-auto grid grid-cols-1 gap-2 pt-2 shrink-0 z-20">
+              <ToolbarBtn
+                icon={<EyeIcon />}
+                label={verFoto ? "VER PAPEL" : "VER FOTO"}
+                onClick={() => setVerFoto((v) => !v)}
+              />
             </div>
           )}
         </section>

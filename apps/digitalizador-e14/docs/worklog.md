@@ -247,3 +247,93 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   evaluateQuality → requestOcr + gate ILEGIBLE §4.2), mapeo §4.1, ReviewView
   "VER FOTO", inyectar RealCoreBridge en get-bridge.ts y chips de fuente en
   ScanView. La numeración de DECISIONS sigue el corrimiento D12→D14 del spec.
+
+### [2026-10-09 19:55 (Bogotá)] — L2 fuente ARCHIVO real — Z.ai Code (Task 6-L2)
+- **Hecho:** FASE LÓGICA L2 (SPEC §8-L2, §5+§4+§7) — el pipeline REAL del
+  core analiza imágenes importadas; SIMULACIÓN intacta (regresión cero
+  verificada de los 4 caminos dorados).
+  - `scanner-core-bridge.ts` (NUEVO): `RealCoreBridge implements E14Bridge`.
+    Pipeline §5: `fileToCaptureDataUrl → detectDocumentEdges →
+    processImage(quad, "original") → evaluateQuality → requestOcr → mapeo §4
+    → Acta`. Mapeo §4.1 (bruto .4/.3/.3 /10, techos fair≤7.9 y poor≤6.4);
+    gate §4.2 `ocrTextIsValid && /E-?14|REGISTRADURÍA/i` → ILEGIBLE calca la
+    rechazada v2 (score real queda); legible → statusDeScore (RECHAZADA
+    GENERICO "SCORE INSUFICIENTE…"). Timeout global 15 s: RESUELVE acta
+    RECHAZADA ILEGIBLE "TIEMPO DE PROCESADO EXCEDIDO" (nunca reject — el
+    toast crit sale del flujo normal del store) + flag `vencido` para no
+    emitir progreso/descartar el resultado tardío. Excepción de
+    detectDocumentEdges → RECHAZADA ILEGIBLE inmediata (el core SIEMPRE
+    devuelve Quad: excepción = no detectable). Progreso: rampas interpoladas
+    en las esperas opacas (DETECTANDO 0→.5→.9→1 · RECORTANDO .2→.6 ·
+    REALZANDO .4→1 · CALIDAD 0→1) y progreso REAL del Tesseract en OCR.
+    Relleno simulado idéntico al mock (seed ACTA_MOCK, firma2 TENUE/
+    NO_DETECTADO coherente) + campos reales (fuente, fotoOriginal,
+    fotoProcesada, ocrTexto, metricas, motor=precision.engine??"canvas",
+    quadDetectado, rotation 0). CAMARA → throw "CÁMARA LLEGA EN LA FASE L3";
+    exportarPdf → throw "…L4". Log `[e14-L2] pipeline …ms` por etapa
+    (decode/detect/proceso/calidad/ocr + motor + metricas).
+  - `get-bridge.ts`: `new CompositeBridge(new RealCoreBridge())` — punto
+    único intacto (D1/D17).
+  - `store.ts`: `notificar` expuesto como acción (L2: toast CÁMARA→L3; L3
+    lo reusará para permisos). Guard ARCHIVO: disparo sin archivo → toast
+    warn "ELIGE UNA IMAGEN" + vista escanear (REPETIR FOTO en fuente ARCHIVO
+    vuelve al picker en vez de reventar).
+  - `ScanView.tsx` (§7): fila de chips de FUENTE (SIMULACIÓN · CÁMARA ·
+    IMPORTAR, activa en verde tint) encima del panel; CÁMARA → toast warn
+    "CÁMARA LLEGA EN LA FASE L3" (visible, no muerto); IMPORTAR/chip/botón
+    IMPORTAR IMAGEN → picker real → `setArchivoPendiente +
+    setFuente("ARCHIVO") + dispararEscaneo()` (análisis inmediato); chips de
+    resultado solo en SIMULACIÓN (panel no-SIM = estado de fuente + botón
+    IMPORTAR; PASAR A OFFLINE siempre); label del visor según fuente;
+    `warmUpScannerWorker()` al montar (§9).
+  - `ReviewView.tsx` (§7): `ToolbarBtn "VER FOTO"` (ADVERTENCIA/RECHAZADA:
+    4ª columna; ENVIADA real: toggle centrado) — alterna papel sintético ↔
+    `<img fotoProcesada>` (misma caja, object-contain); badge
+    "FOTO REAL DISPONIBLE" (font-data ok-tint) cuando hay foto y se muestra
+    el papel. En SIM (sin foto) todo queda como la fase gráfica. EyeIcon
+    nuevo en icons.tsx (mismo patrón SVG inline).
+  - QA navegador (agent-browser 390×844, dev :3001):
+    - SIM: ÓPTIMA → "✓ 9.1/10 ÓPTIMA"+"ENVIADO CORRECTAMENTE"+auto-envío;
+      ADVERTENCIA → "⚠ 7.2/10 MODERADA" → ENVIAR A TRANSMISIÓN → "✓ 7.2/10
+      ENVIADA CON ADVERTENCIA"; RECHAZADA → toast crit "ACTA NO RECONOCIDA
+      (Score 3.8/10)" + ILEGIBLE + "INTENTO 1 DE 2"; REPETIR → "✓ 9.4/10
+      ÓPTIMA" (D8). Chips de fuente presentes, SIM por defecto.
+    - ARCHIVO nítida (test-acta-nitida.png): pipeline motor=worker,
+      legible=true, **score 9.3 → ÓPTIMA auto-enviada**, VER FOTO muestra
+      el warp del core (PNG 1466×1988, centrado, sin distorsión — verificado
+      con VLM); metricas reales {sharpness 100, brightness 77, contrast
+      100, level excellent} → bruto 9.31 → 9.3 coherente.
+    - ARCHIVO ilegible (test-acta-ilegible.png): gate OCR → **RECHAZADA**
+      (score REAL 7.8 — el estado manda sobre el score) + toast crit
+      "ACTA NO RECONOCIDA Score 7.8/10" + CTAs de rechazo; metricas
+      {sharpness 61, brightness 78, contrast 100, level good}.
+    - CÁMARA chip → toast "CÁMARA LLEGA EN LA FASE L3". REPETIR en ARCHIVO
+      sin archivo → toast warn + picker (nunca atascado en analizando).
+    - Timeout (QA con TIMEOUT_MS=800 temporal, revertido): acta RECHAZADA
+      "TIEMPO DE PROCESADO EXCEDIDO" + toast crit; el pipeline tardío se
+      descarta sin unhandled rejection.
+    - Tiempos REALES del pipeline (log `[e14-L2]`, headless): nítida 1ª vez
+      total=3719 ms (decode 84 · detect 57 · proceso 382 · calidad 29 · OCR
+      3168 — 1ª descarga del motor Tesseract CDN); nítida 2ª (WASM cacheado)
+      total=2164 ms (85 · 32 · 306 · 28 · 1713); ilegible total=1082 ms
+      (85 · 33 · 275 · 27 · 665). Muy por debajo del timeout de 15 s (no
+      hizo falta reintentar). `window.__scannerPrecision()` → {ready:true,
+      dead:false} (worker OpenCV vivo — motor "worker" en las 3 corridas).
+    - `agent-browser errors` + consola: 0 errores de app. Único ruido
+      esperado: `POST /api/ocr 404` en dev (requestOcr del core intenta el
+      endpoint antes de caer al Tesseract local — fallback documentado del
+      core, no error de e14).
+  - lint:e14 + e14:check: 0 errores. scanner-core/scanner-lab: 0 cambios.
+- **Archivos:** src/lib/e14/{scanner-core-bridge.ts(get nuevo),get-bridge.ts,store.ts},
+  src/components/e14/{icons.tsx,screens/ScanView.tsx,screens/ReviewView.tsx},
+  docs/{worklog.md,DECISIONS.md,ROADMAP.md}
+- **Commits:** (commit único de esta entrada — ver git log de feat/e14-fase-logica)
+- **Cómo probar:** `bun run dev:e14` → chip IMPORTAR (o IMPORTAR IMAGEN) →
+  elegir foto de un acta → ANALIZANDO con etapas reales → REVISIÓN con VER
+  FOTO. Con imagen borrosa/sin cabecera → RECHAZADA ILEGIBLE. El modo
+  SIMULACIÓN sigue idéntico (chips ÓPTIMA/ADVERTENCIA/RECHAZADA).
+- **Pendiente/Bloqueado:** L3 — fuente CÁMARA real + interfaz de escaneo
+  del lab COMPLETA (HUD, BUSCANDO ACTA…, quad en vivo, IA·AUTO, flash,
+  ZSL, ruta iOS). El copy fijo de la tarjeta ILEGIBLE (diseño v2) sigue
+  mostrando "CÓDIGO DE BARRAS Y CABECERA NO DETECTADOS" también para el
+  timeout — el detalle real vive en `acta.rechazo.detalle` (dato, no UI).
