@@ -11,5 +11,5 @@ Leyenda: [ ] pendiente · [~] en progreso · [x] hecho
 - [x] G6 — REVISIÓN: documento (§7.3) + 4 estados (§7.4) + banner rico rechazada (§7.5) + flotantes
 - [x] G7 — ACTAS: CONTROL ACTAS E-14 con acordeón de mesas (§7.6)
 - [x] G8 — RESUMEN: dashboard de trabajo (§7.7)
-- [~] G9 — GitHub Pages: basePath + workflow parametrizado + verificación en /web-scanner/
-- [~] G10 — DoD completa (§10) + revisión visual lado a lado con screen.png
+- [x] G9 — GitHub Pages: basePath + workflow parametrizado + verificación en /web-scanner/ (luego supersedido por Pages dual — ver D13)
+- [x] G10 — DoD completa (§10) + revisión visual lado a lado con screen.png + QA externa (FIXES-e14-qa.md: 2 fixes aplicados y verificados)
