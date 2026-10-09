@@ -35,6 +35,18 @@
  *  · onNoDetectTimeout → toast "NO DETECTO EL ACTA · ACÉRCALA AL ENCUADRE".
  *  · Permiso denegado / sin HTTPS / sin getUserMedia → toast warn + vuelta
  *    automática a SIMULACIÓN (spec §7).
+ *
+ * FIDELIDAD AL LAB (fix/e14-fidelidad-lab — SPEC-auditoria-copias.md):
+ *  · F-LENS v4 COMPLETO (H1): sondas secuenciales cerrando cada cámara +
+ *    chooseMainProbe (autofocus real → mayor resolución) + fix zoom +
+ *    telemetría window.__cameraChoice — la cascada facingMode quedó como red
+ *    de seguridad (lab L116-223 + L1095-1207).
+ *  · F-SENSOR-PROFILER (H2): perfilado del track + takePhotoBlob con capa 1
+ *    (photoSettings al ISP) y capa 2 (clampBlobToSafeCap) + capa 3 (decode
+ *    único + downscaleImage por GAMA) en el punto de entrada del pipeline —
+ *    CÁMARA, IMPORTAR y cámara nativa iOS reciben el tope ANTES del bridge.
+ *  · captureSmart §5.4 (H3): snapA ANTES del disparo; TORCH_HINT verbatim
+ *    (H4); accept .heic/.heif + guard F-IMPORT/HEIC (H5).
  * Fuera de alcance (spec): "Revisar N" + contador multi-página (1 acta = 1
  * captura). En SIMULACIÓN/IMPORTAR la vista queda EXACTAMENTE como en L2.
  */
@@ -95,10 +107,18 @@ const NAVEGACION_TRAS_MS = 260;
 /** takePhoto puede colgarse (lab error #29): carrera de 8 s. */
 const TAKEPHOTO_TIMEOUT_MS = 8000;
 
-/** Hints de la linterna (F-FLASH v3 — TORCH_HINT del lab, abreviado). */
-const HINT_LINTERNA = "LA LINTERNA NECESITA CÁMARA REAL";
-const DESC_LINTERNA =
-  "El navegador no controla el LED aquí (en iPhone usa Safari 17.4+; las apps integradas no lo permiten). Reabre el escáner o prueba otro navegador.";
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L119-L127
+// (TORCH_HINT verbatim — remediación H4: es copy de UX de campo; el operador
+//  electoral necesita el diagnóstico completo, no la versión corta).
+/** F-FLASH v3 — diagnóstico del flash: cubre navegador sin soporte (iPhone:
+ *  Safari 17.4+, Chrome/Firefox de iOS no exponen torch; WebViews in-app
+ *  tampoco), cámara sin LED (gran angular/macro) y permisos WebView. */
+const TORCH_HINT =
+  "No se pudo controlar la linterna aquí. Causas típicas: navegador sin " +
+  "soporte (en iPhone usa Safari 17.4 o posterior; Chrome/Firefox de iOS " +
+  "no lo permiten), cámara abierta sin LED (gran angular o macro) o la " +
+  "app corre dentro de otra app (Instagram, WhatsApp…). Cierra el " +
+  "escáner y vuelve a abrirlo; si persiste, prueba en otro navegador.";
 
 /** QA/diagnóstico: telemetría viva del loop + lente elegida (F-LENS v4)
  *  desde la consola. */
@@ -345,6 +365,26 @@ function medirPixeles(src: CanvasImageSource, sw: number, sh: number): Medidas |
     gray[j] = 0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!;
   }
   return medirGris(gray, w, h);
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L927-L948
+// (F-IMPORT robusto + F-HEIC — el MISMO onFilePicked del lab sirve a sus dos
+//  inputs, galería y cámara nativa iOS; aquí igual, remediación H5).
+/** ¿El archivo es una imagen visible en el picker? (el picker filtra por
+ *  accept, pero en desktop se puede elegir «todos los archivos»). */
+function pareceImagen(archivo: File): boolean {
+  return (
+    archivo.type.startsWith("image/") ||
+    /\.(heic|heif|jpe?g|png|webp|bmp|gif|avif)$/i.test(archivo.name)
+  );
+}
+
+/** ¿Parece HEIC? Heurística del lab: los «.jpg» de iPhone transportados por
+ *  apps pueden traer contenido HEIC; si la decodificación nativa falla
+ *  también irán al rescate (F-HEIC del core), pero no se puede saber de
+ *  antemano → aviso solo si es HEIC explícito. */
+function esHeic(archivo: File): boolean {
+  return /heic|heif/i.test(archivo.type) || /\.hei[cf]$/i.test(archivo.name);
 }
 
 /** iOS/Safari NO implementa ImageCapture en ninguna versión (lab §5.2). */
@@ -756,10 +796,17 @@ export function ScanView() {
     setProcesando(true);
 
     const zsl = tomarZsl();
+    // §5.4 — frame A ANTES de la foto: si takePhoto cuelga y cae (8 s),
+    // ya queda un candidato válido medido del momento real del tap.
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L843-L845
+    // (remediación H3 — snapA existe antes del disparo; el burst de respaldo
+    //  queda [zsl, snapA, snapB] con snapA del instante correcto).
+    const snapA = instantanea();
     const fotoBlob = puedeTomarFotoRef.current ? await tomarFoto() : null;
     if (fotoBlob) {
       // La foto full-sensor gana: suelta los frames de respaldo (R-14).
       if (zsl) liberarCanvas(zsl.canvas);
+      if (snapA) liberarCanvas(snapA.canvas);
       // Capa 3 H2: decode único + tope por GAMA antes del bridge (el blob ya
       // viene ≤tope de las capas 1-2 — aquí es verificación barata, como el
       // dispatch L574-589 del lab).
@@ -774,7 +821,6 @@ export function ScanView() {
         "La foto del sensor no respondió; se analiza el mejor fotograma reciente.",
       );
     }
-    const snapA = instantanea();
     const snapB = instantanea();
     const candidatos = [zsl, snapA, snapB].filter(
       (f): f is { canvas: HTMLCanvasElement; lapVar: number } => f !== null,
@@ -1153,10 +1199,11 @@ export function ScanView() {
   }, [camaraViva]);
 
   /** Linterna — botón SIEMPRE activo con cámara; la verdad al pulsar (lab
-   *  toggleTorch L1404-1422). Sin cámara viva → hint. */
+   *  toggleTorch L1404-1422). Sin cámara viva o sin verificación → hint
+   *  completo del lab (TORCH_HINT verbatim — remediación H4). */
   const alternarLinterna = useCallback(async () => {
     if (camEstado !== "viva") {
-      notificar("warn", HINT_LINTERNA, DESC_LINTERNA);
+      notificar("warn", "LINTERNA NO CONTROLADA", TORCH_HINT);
       return;
     }
     const siguiente = !torchOn;
@@ -1167,7 +1214,7 @@ export function ScanView() {
         notificar("ok", "FLASH ENCENDIDO", "Linterna del dispositivo activa.");
       }
     } else {
-      notificar("warn", HINT_LINTERNA, DESC_LINTERNA);
+      notificar("warn", "LINTERNA NO CONTROLADA", TORCH_HINT);
     }
   }, [camEstado, torchOn, ponerLinterna, notificar]);
 
@@ -1198,11 +1245,21 @@ export function ScanView() {
 
   /** Elegir imagen = fuente ARCHIVO + análisis inmediato (L2) + capa 3 H2:
    *  la foto de galería (12–48 MP) entra al pipeline YA dentro del tope
-   *  (decode único + downscaleImage por GAMA — dispatch L574-589 del lab). */
+   *  (decode único + downscaleImage por GAMA — dispatch L574-589 del lab).
+ *  Guard F-IMPORT/HEIC del lab L937-948 (remediación H5). */
   const alElegirArchivo = (e: ChangeEvent<HTMLInputElement>) => {
     const archivo = e.target.files?.[0];
     e.target.value = ""; // permite re-elegir el MISMO archivo (REPETIR FOTO)
     if (!archivo) return;
+    if (!pareceImagen(archivo)) {
+      notificar("crit", "ARCHIVO NO VÁLIDO", "El archivo seleccionado no es una imagen.");
+      return;
+    }
+    // HEIC explícito → aviso de conversión (puede tardar unos segundos; la
+    // conversión vive en el F-HEIC del core, dentro del pipeline).
+    if (esHeic(archivo)) {
+      notificar("warn", "CONVIRTIENDO HEIC…", "La conversión puede tardar unos segundos.");
+    }
     void (async () => {
       const final = await archivoDentroDeTope(archivo, true);
       if (!final) {
@@ -1211,7 +1268,9 @@ export function ScanView() {
         notificar(
           "crit",
           "NO SE PUDO PROCESAR LA IMAGEN",
-          "El archivo puede estar corrupto o ser un formato no soportado. Prueba con otro.",
+          esHeic(archivo)
+            ? "No se pudo convertir el HEIC. El archivo parece dañado o protegido. Prueba con otro."
+            : "El archivo puede estar corrupto o ser un formato no soportado. Prueba con otro.",
         );
         return;
       }
@@ -1224,11 +1283,20 @@ export function ScanView() {
   /** Ruta iOS (HQ-iOS §5.2): la foto de la cámara nativa entra como archivo
    *  al MISMO pipeline (fuente ya es CÁMARA — spec §7 "como ARCHIVO, L2") +
    *  capa 3 H2: la foto nativa (12–48 MP, puede ser HEIC) pasa por el tope
-   *  y la conversión robusta del core ANTES de tocar el bridge. */
+   *  y la conversión robusta del core ANTES de tocar el bridge. Guard
+   *  F-IMPORT/HEIC del lab L937-948 (remediación H5 — el mismo handler del
+   *  lab sirve a sus dos inputs). */
   const alElegirFotoCamara = (e: ChangeEvent<HTMLInputElement>) => {
     const archivo = e.target.files?.[0];
     e.target.value = "";
     if (!archivo) return;
+    if (!pareceImagen(archivo)) {
+      notificar("crit", "ARCHIVO NO VÁLIDO", "El archivo seleccionado no es una imagen.");
+      return;
+    }
+    if (esHeic(archivo)) {
+      notificar("warn", "CONVIRTIENDO HEIC…", "La conversión puede tardar unos segundos.");
+    }
     void despacharArchivo(archivo, true);
   };
 
@@ -1267,11 +1335,15 @@ export function ScanView() {
 
   return (
     <div className="flex-1 flex flex-col bg-bg pt-safe">
-      {/* Inputs ocultos: IMPORTAR (galería) + cámara nativa iOS (capture) */}
+      {/* Inputs ocultos: IMPORTAR (galería) + cámara nativa iOS (capture).
+          accept con .heic/.heif (lab L1536, remediación H5): en Android/Chrome
+          los HEIC llegan con MIME vacío o raro y «image/*» a secas los deja
+          FUERA del picker — sin el accept, la conversión F-HEIC del core
+          jamás se ejercita. La cámara nativa iOS también entrega HEIC. */}
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.heic,.heif"
         className="hidden"
         aria-label="Importar imagen"
         onChange={alElegirArchivo}
@@ -1279,7 +1351,7 @@ export function ScanView() {
       <input
         ref={inputCamaraRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.heic,.heif"
         capture="environment"
         className="hidden"
         aria-label="Tomar foto con la cámara del sistema"
