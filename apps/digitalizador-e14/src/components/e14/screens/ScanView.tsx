@@ -35,11 +35,36 @@
  *  · onNoDetectTimeout → toast "NO DETECTO EL ACTA · ACÉRCALA AL ENCUADRE".
  *  · Permiso denegado / sin HTTPS / sin getUserMedia → toast warn + vuelta
  *    automática a SIMULACIÓN (spec §7).
+ *
+ * FIDELIDAD AL LAB (fix/e14-fidelidad-lab — SPEC-auditoria-copias.md):
+ *  · F-LENS v4 COMPLETO (H1): sondas secuenciales cerrando cada cámara +
+ *    chooseMainProbe (autofocus real → mayor resolución) + fix zoom +
+ *    telemetría window.__cameraChoice — la cascada facingMode quedó como red
+ *    de seguridad (lab L116-223 + L1095-1207).
+ *  · F-SENSOR-PROFILER (H2): perfilado del track + takePhotoBlob con capa 1
+ *    (photoSettings al ISP) y capa 2 (clampBlobToSafeCap) + capa 3 (decode
+ *    único + downscaleImage por GAMA) en el punto de entrada del pipeline —
+ *    CÁMARA, IMPORTAR y cámara nativa iOS reciben el tope ANTES del bridge.
+ *  · captureSmart §5.4 (H3): snapA ANTES del disparo; TORCH_HINT verbatim
+ *    (H4); accept .heic/.heif + guard F-IMPORT/HEIC (H5).
  * Fuera de alcance (spec): "Revisar N" + contador multi-página (1 acta = 1
  * captura). En SIMULACIÓN/IMPORTAR la vista queda EXACTAMENTE como en L2.
  */
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { warmUpScannerWorker } from "@jg-stevan/scanner-core/detector-client";
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L61-L67
+// (imports del sensor-profiler — el core YA exporta todo: cero cambios en el core).
+import {
+  buildCappedPhotoSettings,
+  clampBlobToSafeCap,
+  getSensorSafeCap,
+  profileSensor,
+  type SensorProfile,
+} from "@jg-stevan/scanner-core/sensor-profiler";
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L48-L54
+// (loadImage/fileToCaptureDataUrl) — la capa 3 del dispatch decodifica UNA
+// vez antes de que la foto entre al pipeline del bridge.
+import { fileToCaptureDataUrl, loadImage } from "@jg-stevan/scanner-core/image-processor";
 import { CameraFrameLoop, type FrameLoopTelemetry } from "@jg-stevan/scanner-core/frame-loop";
 import { SHUTTER_SCORE } from "@jg-stevan/scanner-core/quality";
 import type { Quad } from "@jg-stevan/scanner-core/types";
@@ -82,15 +107,207 @@ const NAVEGACION_TRAS_MS = 260;
 /** takePhoto puede colgarse (lab error #29): carrera de 8 s. */
 const TAKEPHOTO_TIMEOUT_MS = 8000;
 
-/** Hints de la linterna (F-FLASH v3 — TORCH_HINT del lab, abreviado). */
-const HINT_LINTERNA = "LA LINTERNA NECESITA CÁMARA REAL";
-const DESC_LINTERNA =
-  "El navegador no controla el LED aquí (en iPhone usa Safari 17.4+; las apps integradas no lo permiten). Reabre el escáner o prueba otro navegador.";
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L119-L127
+// (TORCH_HINT verbatim — remediación H4: es copy de UX de campo; el operador
+//  electoral necesita el diagnóstico completo, no la versión corta).
+/** F-FLASH v3 — diagnóstico del flash: cubre navegador sin soporte (iPhone:
+ *  Safari 17.4+, Chrome/Firefox de iOS no exponen torch; WebViews in-app
+ *  tampoco), cámara sin LED (gran angular/macro) y permisos WebView. */
+const TORCH_HINT =
+  "No se pudo controlar la linterna aquí. Causas típicas: navegador sin " +
+  "soporte (en iPhone usa Safari 17.4 o posterior; Chrome/Firefox de iOS " +
+  "no lo permiten), cámara abierta sin LED (gran angular o macro) o la " +
+  "app corre dentro de otra app (Instagram, WhatsApp…). Cierra el " +
+  "escáner y vuelve a abrirlo; si persiste, prueba en otro navegador.";
 
-/** QA/diagnóstico: telemetría viva del loop desde la consola. */
+/** QA/diagnóstico: telemetría viva del loop + lente elegida (F-LENS v4)
+ *  desde la consola. */
 declare global {
   interface Window {
     __e14Telemetria?: FrameLoopTelemetry;
+    __cameraChoice?: unknown;
+  }
+}
+
+/* ── F-LENS v4 — selección de la cámara PRINCIPAL (puerto EXACTO del lab) ────
+ *  Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L76-L92
+ *  (comentario E4/F-LENS v4) + L116-L223 (código). Remedición H1 del
+ *  SPEC-auditoria-copias.md: la fase lógica dejó solo la cascada
+ *  facingMode (la red de seguridad del lab) y el bug visible en producción
+ *  fue la GRAN ANGULAR en vez de la principal 50MP. */
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L76-L92 (E4/F-LENS v4):
+// E4: facingMode NO es confiable en iPhone (puede ganar la frontal o
+//     ignorarse) → tras permiso se re-selecciona por LABEL + deviceId
+//     exact, con facingMode como constrain inicial únicamente.
+// F-LENS v4 (bug v3: "no cambia nada ni el flash" — y codigo-test SÍ
+// funciona en el MISMO teléfono): dos causas de raíz encontradas al
+// comparar con el CameraController de codigo-test:
+//     A) v3 sondeaba las demás lentes CON el stream actual aún abierto →
+//        en muchos Android abrir una 2ª cámara con otra activa lanza
+//        NotReadableError → TODAS las sondas fallaban → nunca cambiaba
+//        de lente ni encontraba el LED. codigo-test sondea SECUENCIAL-
+//        MENTE cerrando cada cámara antes de abrir la siguiente y ANTES
+//        de abrir la definitiva (puerto exacto de probeDevice +
+//        chooseMainCamera: autofocus real → mayor resolución).
+//     B) el botón flash se deshabilitaba salvo que getCapabilities()
+//        reportara torch; hay Chrome que NO lo anuncian pero SÍ lo
+//        aplican → ahora el botón está habilitado en cámara real y la
+//        verdad se descubre APLICANDO y leyendo getSettings().torch.
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L116-L117
+const BACK_CAMERA_RE = /back|rear|environment|trasera|posterior|arri[eè]re/i;
+const FRONT_CAMERA_RE = /front|delantera|anterior|face|facial|selfie/i;
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L129-L137
+/** Resultado de sondear UNA cámara (puerto de CameraProbe de codigo-test). */
+interface CameraProbeResult {
+  deviceId: string;
+  label: string;
+  focusModes: string[];
+  torch: boolean;
+  maxWidth: number;
+  maxHeight: number;
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L139-L144
+/** Modos de foco que cuentan como autofocus REAL (regla D3 de codigo-test). */
+const REAL_AF_MODES = new Set(["continuous", "single-shot"]);
+
+function hasRealAF(modes: string[]): boolean {
+  return modes.some((m) => REAL_AF_MODES.has(m.toLowerCase()));
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L146-L148
+function readCapsNum(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L150-L188
+/** Abre UNA cámara SOLO para leer sus capabilities y la CIERRA (puerto de
+ *  probeDevice de codigo-test). SIN constraints de resolución en la sonda:
+ *  medir el sensor real requiere abrir la cámara "pelada". Devuelve null
+ *  si la cámara no se pudo abrir (queda descartada). El `finally` CIERRA
+ *  el stream SIEMPRE — nunca hay dos cámaras abiertas a la vez (era la
+ *  causa del bug v3: sondas con el stream vivo → NotReadableError). */
+async function probeCamera(
+  media: MediaDevices,
+  deviceId: string,
+  label: string
+): Promise<CameraProbeResult | null> {
+  let stream: MediaStream | null = null;
+  try {
+    stream = await media.getUserMedia({
+      video: { deviceId: { exact: deviceId } },
+      audio: false,
+    });
+    const track = stream.getVideoTracks()[0];
+    if (!track) return null;
+    const caps = (track.getCapabilities?.() ?? {}) as {
+      focusMode?: string[];
+      torch?: boolean;
+      width?: { max?: number };
+      height?: { max?: number };
+    };
+    return {
+      deviceId,
+      label: label || track.label,
+      focusModes: Array.isArray(caps.focusMode) ? caps.focusMode : [],
+      torch: caps.torch === true,
+      maxWidth: readCapsNum(caps.width?.max),
+      maxHeight: readCapsNum(caps.height?.max),
+    };
+  } catch {
+    return null; // cámara ocupada/no accesible → descartada
+  } finally {
+    stream?.getTracks().forEach((t) => t.stop()); // CIERRA antes de la siguiente
+  }
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L190-L223
+/** Elige la cámara principal (puerto de chooseMainCamera de codigo-test):
+ *  · Entre traseras con AUTOFOCUS REAL gana la de MAYOR resolución de
+ *    sensor (maxWidth×maxHeight) — la principal es siempre el sensor
+ *    grande; el torch desempata resoluciones idénticas.
+ *  · Sin AF en ninguna (típico iOS, regla D6): grupo de label más SIMPLE
+ *    (sin palabras de lente), luego menos palabras, luego más resolución. */
+function chooseMainProbe(probes: CameraProbeResult[]): CameraProbeResult | null {
+  if (probes.length === 0) return null;
+  const backs = probes.filter(
+    (p) => BACK_CAMERA_RE.test(p.label) && !FRONT_CAMERA_RE.test(p.label)
+  );
+  const pool = backs.length > 0 ? backs : probes;
+  const byRes = (a: CameraProbeResult, b: CameraProbeResult): number =>
+    b.maxWidth * b.maxHeight - a.maxWidth * a.maxHeight;
+  const withAf = pool.filter((p) => hasRealAF(p.focusModes));
+  if (withAf.length > 0) {
+    return [...withAf].sort(
+      (a, b) => byRes(a, b) || (a.torch !== b.torch ? (a.torch ? -1 : 1) : 0)
+    )[0];
+  }
+  const lensWords = /ultra|gran angular|wide|angular|tele|teleobjetivo/i;
+  const wordCount = (label: string): number =>
+    label.split(/\s+/).filter((w) => w.length > 0).length;
+  const simples = pool.filter((p) => !lensWords.test(p.label));
+  const ranked =
+    simples.length > 0
+      ? [...simples].sort(
+          (a, b) => wordCount(a.label) - wordCount(b.label) || byRes(a, b)
+        )
+      : [...pool].sort(
+          (a, b) => a.label.length - b.label.length || byRes(a, b)
+        );
+  return ranked[0];
+}
+
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L245-L290
+// (downscaleImage — función de módulo del lab, canvas puro. NO existe en el
+// core → se COPIA, regla de oro 6 del SPEC-auditoria-copias.md; remediación H2.)
+/** Reduce imágenes enormes de galería para no reventar la memoria del store.
+ *  4032 (bug v3 de CALIDAD: estaba en 3400 y re-escalaba la foto nativa del
+ *  iPhone de 4032px, añadiendo un re-encode JPEG extra — codigo-test guarda
+ *  la foto full-res con una sola compresión). Con el Dual Pipeline ya no hay
+ *  downscale en capturas de GAMAS ALTAS (4032×3024 ≈ 12.2 MP, lejos del
+ *  límite de canvas de iOS); en media/baja el F-SENSOR-PROFILER pide 3200 px
+ *  al sensor y ESTE tope es la segunda red de seguridad (imports incluidos).
+ *  Recibe el elemento YA decodificado (decode único de la captura) y devuelve
+ *  null si no hace falta re-escalar. */
+/** C13: ahora ASÍNCRONA con toBlob (no bloquea el hilo ~1 s con imports de
+ *  48 MP — mismo patrón canvasToDataUrl de más abajo). */
+async function downscaleImage(
+  img: HTMLImageElement,
+  max = 4032
+): Promise<string | null> {
+  const big = Math.max(img.naturalWidth || 0, img.naturalHeight || 0);
+  if (big <= max || !big) return null;
+  const scale = max / big;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  try {
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((b) => resolve(b), "image/jpeg", 0.95)
+    );
+    if (blob && blob.size > 0) {
+      return await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(blob);
+      });
+    }
+  } catch {
+    /* respaldo abajo */
+  }
+  try {
+    return canvas.toDataURL("image/jpeg", 0.95);
+  } catch {
+    return null;
   }
 }
 
@@ -148,6 +365,26 @@ function medirPixeles(src: CanvasImageSource, sw: number, sh: number): Medidas |
     gray[j] = 0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!;
   }
   return medirGris(gray, w, h);
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L927-L948
+// (F-IMPORT robusto + F-HEIC — el MISMO onFilePicked del lab sirve a sus dos
+//  inputs, galería y cámara nativa iOS; aquí igual, remediación H5).
+/** ¿El archivo es una imagen visible en el picker? (el picker filtra por
+ *  accept, pero en desktop se puede elegir «todos los archivos»). */
+function pareceImagen(archivo: File): boolean {
+  return (
+    archivo.type.startsWith("image/") ||
+    /\.(heic|heif|jpe?g|png|webp|bmp|gif|avif)$/i.test(archivo.name)
+  );
+}
+
+/** ¿Parece HEIC? Heurística del lab: los «.jpg» de iPhone transportados por
+ *  apps pueden traer contenido HEIC; si la decodificación nativa falla
+ *  también irán al rescate (F-HEIC del core), pero no se puede saber de
+ *  antemano → aviso solo si es HEIC explícito. */
+function esHeic(archivo: File): boolean {
+  return /heic|heif/i.test(archivo.type) || /\.hei[cf]$/i.test(archivo.name);
 }
 
 /** iOS/Safari NO implementa ImageCapture en ninguna versión (lab §5.2). */
@@ -222,6 +459,11 @@ export function ScanView() {
   const puedeTomarFotoRef = useRef(false);
   const toastIOSYaRef = useRef(false);
   const telemetriaAtRef = useRef(0);
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L433-L440
+  /** F-SENSOR-PROFILER (PASO 2): perfil del sensor de FOTO del track vivo
+   *  (resolución nativa vía getPhotoCapabilities + tope seguro 4032/3200 px
+   *  según la gama medida). null = aún sin sondear. */
+  const sensorProfileRef = useRef<SensorProfile | null>(null);
   // F-ZSL — buffer circular Best-Shot (lab L407-411).
   const anilloRef = useRef<FrameAnillo[]>([]);
   const anilloFeedAtRef = useRef(0);
@@ -292,6 +534,19 @@ export function ScanView() {
   }, [ponerLinterna]);
 
   /* ── Captura ZSL (lab L710-770) ───────────────────────────────────── */
+
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L444-L454
+  /** F-SENSOR-PROFILER: sondea el sensor del stream REAL una vez por
+   *  apertura (getPhotoCapabilities → nativa + tope por gama). Falla en
+   *  silencio (Safari) → takePhoto dispara a secas y el clamp post-decode
+   *  protege la RAM. */
+  const profileActiveSensor = useCallback((stream: MediaStream): void => {
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    void profileSensor(track).then((p) => {
+      sensorProfileRef.current = p;
+    });
+  }, []);
 
   /** Copia el fotograma al ring (máx 8) y suelta YA el backing store del
    *  expulsado (disciplina de memoria iOS, error #22). */
@@ -376,24 +631,63 @@ export function ScanView() {
     return { canvas: ganador.canvas, lapVar: ganador.lapVar };
   }, []);
 
-  /** DUAL PIPELINE (lab L645-681, simplificado sin sensor-profiler): foto a
-   *  RESOLUCIÓN DEL SENSOR vía takePhoto() — ignora la resolución del
-   *  preview. Carrera de 8 s; null → el llamador cae al ZSL pre-tap. */
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L625-L635
+  /** Blob → data URL (para el takePhoto hi-res). */
+  const blobToDataUrl = useCallback(
+    (blob: Blob) =>
+      new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result ?? ""));
+        fr.onerror = () => reject(new Error("FileReader falló"));
+        fr.readAsDataURL(blob);
+      }),
+    []
+  );
+
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L637-L681
+  // (takePhotoBlob COMPLETO — remediación H2: capas 1 y 2 del F-SENSOR-PROFILER).
+  /** DUAL PIPELINE (pilar 2) — Captura a RESOLUCIÓN DEL SENSOR como Blob
+   *  (aún SIN convertir a data URL): takePhoto() IGNORA la resolución del
+   *  <video> del preview y dispara directo al sensor físico (12–48 MP, p.ej.
+   *  4000×3000). Carrera de 8 s (takePhoto puede colgarse — error #29); null
+   *  → el llamador cae al ZSL pre-tap y a los frames del video. La
+   *  orientación EXIF la aplica el pipeline al decodificar (loadImage). */
   const tomarFoto = useCallback(async (): Promise<Blob | null> => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track || typeof ImageCapture === "undefined") return null;
     try {
       const capture = new ImageCapture(track);
-      const blob = await Promise.race([
-        capture.takePhoto(),
-        new Promise<never>((_, reject) =>
-          window.setTimeout(
-            () => reject(new Error("takePhoto timeout")),
-            TAKEPHOTO_TIMEOUT_MS,
-          ),
-        ),
-      ]);
-      return blob && blob.size > 0 ? blob : null;
+      // Dispara a resolución completa del hardware (4000×3000 / 3840×2160):
+      // sin photoConstraints — el sensor manda, el preview no limita...
+      // EXCEPTO cuando el sensor excede el tope seguro (48/108 MP): el
+      // F-SENSOR-PROFILER pide al ISP una foto dentro del tope EN la captura
+      // (capa 1) y el blob del gigante jamás llega a decodificarse.
+      const profile = sensorProfileRef.current;
+      const settings = profile ? buildCappedPhotoSettings(profile) : undefined;
+      const attempt = async (ps?: PhotoSettings): Promise<Blob | null> => {
+        try {
+          const blob = await Promise.race([
+            capture.takePhoto(ps),
+            new Promise<never>((_, reject) =>
+              window.setTimeout(
+                () => reject(new Error("takePhoto timeout 8s")),
+                TAKEPHOTO_TIMEOUT_MS,
+              ),
+            ),
+          ]);
+          return blob && blob.size > 0 ? blob : null;
+        } catch {
+          return null;
+        }
+      };
+      let blob = await attempt(settings);
+      // Reintento sin photoSettings si el ajuste del profiler fue rechazado
+      // (hardware exótico): mejor foto sin tope que perder la captura.
+      if (!blob && settings) blob = await attempt(undefined);
+      if (!blob) return null;
+      // Capa 2 — red de seguridad post-decode (solo recorta si el blob
+      // excede el tope; si no, el blob original pasa intacto).
+      return await clampBlobToSafeCap(blob, profile?.safeCapPx ?? getSensorSafeCap());
     } catch {
       return null;
     }
@@ -426,6 +720,66 @@ export function ScanView() {
     [dispararEscaneo, setArchivoPendiente],
   );
 
+  // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L574-L589
+  // (dispatch de handleCaptureDataUrl — decode ÚNICO + capa 3 del
+  //  F-SENSOR-PROFILER, remediación H2). Adaptación e14 (fila 4 de la
+  //  auditoría): el lab entrega dataUrl a su pipeline; el bridge de e14
+  //  recibe File → esta función decodifica UNA vez, aplica el tope por GAMA
+  //  y devuelve el File YA dentro del tope — el pipeline de e14 recibe la
+  //  foto ya dentro del tope, SIN IMPORTAR LA FUENTE (CÁMARA takePhoto/ZSL +
+  //  IMPORTAR 12–48 MP + foto nativa iOS). `robusto` = Files del picker
+  //  (F-IMPORT del core: HEIC/EXIF/12-48MP seguros — el lab hace exactamente
+  //  esto en onFilePicked); false = File nacido del blob del sensor (base64
+  //  barato, sin re-decode). Devuelve null SOLO si la ruta robusta falló.
+  const archivoDentroDeTope = useCallback(
+    async (archivo: File, robusto: boolean): Promise<File | null> => {
+      try {
+        const rawDataUrl = robusto
+          ? await fileToCaptureDataUrl(archivo)
+          : await blobToDataUrl(archivo);
+        if (!rawDataUrl) return null; // F-IMPORT falló → el llamador avisa (lab L954-961)
+        // Decode ÚNICO de la captura (antes: downscale + detect + quality
+        // decodificaban la misma foto de 12 MP tres veces). El elemento se
+        // reutiliza en las etapas; solo se re-decodifica si hubo que
+        // re-escalar una imagen de galería más grande que el sensor.
+        const decoded = await loadImage(rawDataUrl);
+        // F-SENSOR-PROFILER: el tope del downscale sigue la GAMA medida
+        // (4032 alta / 3200 media-baja) — segunda red de seguridad por si
+        // la foto llegó por encima del tope (photoSettings no aplicado).
+        const scaledUrl = await downscaleImage(
+          decoded,
+          sensorProfileRef.current?.safeCapPx ?? getSensorSafeCap()
+        );
+        // Dentro del tope → el archivo original pasa INTACTO (F-RES-PRIORITY:
+        // la resolución del sensor manda, cero re-encode extra).
+        if (!scaledUrl) return archivo;
+        const blob = await (await fetch(scaledUrl)).blob();
+        if (!blob.size) return archivo;
+        return new File([blob], archivo.name, { type: blob.type || "image/jpeg" });
+      } catch {
+        return archivo; // el bridge reintenta con su propio pipeline robusto
+      }
+    },
+    [blobToDataUrl],
+  );
+
+  /** Despacha la captura FINAL (ya dentro del tope H2): destello + vibrate +
+   *  File → store → ANALIZANDO. La navegación se demora ~260 ms para que el
+   *  destello (~120 ms) se vea ANTES de desmontar el visor. */
+  const despacharArchivo = useCallback(
+    async (blobOArchivo: Blob, robusto: boolean) => {
+      const base =
+        blobOArchivo instanceof File
+          ? blobOArchivo
+          : new File([blobOArchivo], `acta-camara-${Date.now()}.jpg`, {
+              type: blobOArchivo.type || "image/jpeg",
+            });
+      const final = (await archivoDentroDeTope(base, robusto)) ?? base;
+      despacharCaptura(final);
+    },
+    [archivoDentroDeTope, despacharCaptura],
+  );
+
   /** Captura inteligente (lab captureSmart L785-885, adaptada a e14: el
    *  resultado entra al pipeline del bridge como File):
    *  1. ZSL pre-tap (ganador del ring, anti tap-shock).
@@ -442,15 +796,21 @@ export function ScanView() {
     setProcesando(true);
 
     const zsl = tomarZsl();
+    // §5.4 — frame A ANTES de la foto: si takePhoto cuelga y cae (8 s),
+    // ya queda un candidato válido medido del momento real del tap.
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L843-L845
+    // (remediación H3 — snapA existe antes del disparo; el burst de respaldo
+    //  queda [zsl, snapA, snapB] con snapA del instante correcto).
+    const snapA = instantanea();
     const fotoBlob = puedeTomarFotoRef.current ? await tomarFoto() : null;
     if (fotoBlob) {
       // La foto full-sensor gana: suelta los frames de respaldo (R-14).
       if (zsl) liberarCanvas(zsl.canvas);
-      despacharCaptura(
-        new File([fotoBlob], `acta-camara-${Date.now()}.jpg`, {
-          type: fotoBlob.type || "image/jpeg",
-        }),
-      );
+      if (snapA) liberarCanvas(snapA.canvas);
+      // Capa 3 H2: decode único + tope por GAMA antes del bridge (el blob ya
+      // viene ≤tope de las capas 1-2 — aquí es verificación barata, como el
+      // dispatch L574-589 del lab).
+      void despacharArchivo(fotoBlob, false);
       return;
     }
     if (puedeTomarFotoRef.current && camEstado === "viva") {
@@ -461,7 +821,6 @@ export function ScanView() {
         "La foto del sensor no respondió; se analiza el mejor fotograma reciente.",
       );
     }
-    const snapA = instantanea();
     const snapB = instantanea();
     const candidatos = [zsl, snapA, snapB].filter(
       (f): f is { canvas: HTMLCanvasElement; lapVar: number } => f !== null,
@@ -490,9 +849,9 @@ export function ScanView() {
       if (c !== ganador) liberarCanvas(c.canvas);
     }
     if (blob) {
-      despacharCaptura(
-        new File([blob], `acta-camara-${Date.now()}.jpg`, { type: "image/jpeg" }),
-      );
+      // Capa 3 H2: el frame ganador también pasa por el tope (decode único,
+      // verificación barata — frames de preview, muy por debajo del tope).
+      void despacharArchivo(blob, false);
     } else {
       procesandoRef.current = false;
       setProcesando(false);
@@ -503,7 +862,7 @@ export function ScanView() {
     tomarFoto,
     instantanea,
     canvasABlob,
-    despacharCaptura,
+    despacharArchivo,
     dispararEscaneo,
     camEstado,
     notificar,
@@ -513,7 +872,8 @@ export function ScanView() {
   const capturarRef = useRef(capturarInteligente);
   capturarRef.current = capturarInteligente;
 
-  /* ── Arranque de cámara (lab L996-1252, simplificado: real o fallback SIM) ── */
+  /* ── Arranque de cámara (lab L996-1252: F-LENS v4 + cascada de respaldo,
+     fallback a SIMULACIÓN propio de e14 — remediado H1) ───────────────── */
 
   useEffect(() => {
     if (fuente !== "CAMARA") return;
@@ -531,43 +891,171 @@ export function ScanView() {
       return;
     }
 
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+    // L1049-1053 (isPermError) — equivalente exacto (§3 auditoría: reutilizar,
+    // no duplicar; aquí ya existía con este nombre desde L3).
     const esErrorPermiso = (e: unknown): boolean =>
       e instanceof DOMException && (e.name === "NotAllowedError" || e.name === "SecurityError");
 
-    // E3 (lab): SOLO anchos/altos IDEALES — sin exact/min (ideal nunca
-    // rechaza getUserMedia). Cascada: exact environment → environment → video.
-    const intentos: MediaStreamConstraints[] = [
-      {
-        video: {
-          facingMode: { exact: "environment" },
-          width: { ideal: IDEAL_PREVIEW_WIDTH },
-          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+    // L1055-1093 (openWithCascade) — E3 + DUAL PIPELINE: SOLO anchos/altos
+    // IDEALES (ideal nunca rechaza getUserMedia). F-LENS: el primer intento
+    // fuerza EXACT la trasera (en algunos móviles "environment" a secas
+    // negocia la gran angular); si el exact falla se relaja a ideal →
+    // {video:true}. Es la RED DE SEGURIDAD que corre SOLO si las sondas de
+    // F-LENS v4 no lograron abrir la principal.
+    const abrirConCascada = async (): Promise<MediaStream | null> => {
+      const intentos: MediaStreamConstraints[] = [
+        {
+          video: {
+            facingMode: { exact: "environment" },
+            width: { ideal: IDEAL_PREVIEW_WIDTH },
+            height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          },
+          audio: false,
         },
-        audio: false,
-      },
-      {
-        video: {
-          facingMode: "environment",
-          width: { ideal: IDEAL_PREVIEW_WIDTH },
-          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+        {
+          video: {
+            facingMode: "environment",
+            width: { ideal: IDEAL_PREVIEW_WIDTH },
+            height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          },
+          audio: false,
         },
-        audio: false,
-      },
-      { video: { facingMode: "environment" }, audio: false },
-      { video: true, audio: false },
-    ];
-
-    void (async () => {
-      let stream: MediaStream | null = null;
+        { video: { facingMode: "environment" }, audio: false },
+        { video: true, audio: false },
+      ];
       for (const c of intentos) {
         try {
-          stream = await media.getUserMedia(c);
-          break;
+          return await media.getUserMedia(c);
         } catch (e) {
-          if (esErrorPermiso(e)) break; // permiso: la cascada no ayuda
+          if (esErrorPermiso(e)) return null; // permiso: la cascada no ayuda
           /* siguiente nivel */
         }
       }
+      return null;
+    };
+
+    // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+    // L1095-1207 (openMainCamera) — F-LENS v4 arranque estilo codigo-test
+    // (donde el flash SÍ funciona):
+    // 1) desbloquea labels con un stream genérico que se cierra al instante;
+    // 2) sondea TODAS las cámaras UNA POR UNA cerrando cada una antes de
+    //    abrir la siguiente (v3 las sondeaba con el stream vivo → en muchos
+    //    Android la 2ª apertura lanza NotReadableError y NADA cambiaba);
+    // 3) elige la principal con la regla D3/D6 (autofocus real → mayor
+    //    resolución; torch desempata; sin AF → label más simple);
+    // 4) abre SOLO la ganadora con el preview ligero (aquí 1920×1080 ideal —
+    //    D27, decisión documentada de e14; la captura hi-res va por
+    //    takePhoto al sensor).
+    // Devuelve el stream de la principal o null (→ cascade/SIM).
+    // (Nota e14: el lab marca permisoDenegado aquí para su aviso B2 con CTA
+    //  «Activar cámara»; e14 no tiene ese overlay — el fallback unificado a
+    //  SIMULACIÓN con toast cubre el caso, ver fila 16 de la auditoría.)
+    const abrirCamaraPrincipal = async (): Promise<MediaStream | null> => {
+      // 1) Desbloqueo de etiquetas (F1-a de codigo-test): sin permiso previo
+      //    los labels/deviceIds llegan vacíos en enumerateDevices.
+      try {
+        const unlock = await media.getUserMedia({ video: true, audio: false });
+        unlock.getTracks().forEach((t) => t.stop());
+      } catch {
+        /* sin permiso: los probes fallarán y se cae al cascade */
+      }
+      // 2) Sondeo secuencial: cada cámara se ABRE, se MIDE y se CIERRA.
+      let devices: MediaDeviceInfo[] = [];
+      try {
+        devices = (await media.enumerateDevices()).filter(
+          (d) => d.kind === "videoinput" && d.deviceId
+        );
+      } catch {
+        devices = [];
+      }
+      const probes: CameraProbeResult[] = [];
+      for (const d of devices) {
+        const p = await probeCamera(media, d.deviceId, d.label);
+        if (p) probes.push(p);
+      }
+      // 3) Elección de la principal (D3: AF real → mayor resolución).
+      const main = chooseMainProbe(probes);
+      // 4) Apertura SOLO de la ganadora (con fallbacks en cascada).
+      const attempts: MediaStreamConstraints[] = main
+        ? [
+            {
+              video: {
+                deviceId: { exact: main.deviceId },
+                width: { ideal: IDEAL_PREVIEW_WIDTH },
+                height: { ideal: IDEAL_PREVIEW_HEIGHT },
+              },
+              audio: false,
+            },
+            { video: { deviceId: { exact: main.deviceId } }, audio: false },
+          ]
+        : [];
+      attempts.push({ video: true, audio: false }); // último recurso
+      for (const c of attempts) {
+        try {
+          const stream = await media.getUserMedia(c);
+          // Vía zoom: si el track abrió con zoom < 1 (equivalente 0.5× del
+          // MISMO track), súbelo a 1 para el FOV de la principal.
+          try {
+            const track = stream.getVideoTracks()[0];
+            const zcaps = track?.getCapabilities?.() as
+              | { zoom?: { min?: number; max?: number } }
+              | undefined;
+            const zst = track?.getSettings?.() as { zoom?: number } | undefined;
+            if (
+              zcaps?.zoom &&
+              typeof zcaps.zoom.min === "number" &&
+              zcaps.zoom.min < 1 &&
+              typeof zst?.zoom === "number" &&
+              zst.zoom < 1
+            ) {
+              await track
+                ?.applyConstraints({
+                  advanced: [{ zoom: 1 }],
+                } as MediaTrackConstraints & { advanced: unknown[] })
+                .catch(() => undefined);
+            }
+          } catch {
+            /* sin soporte de zoom */
+          }
+          // Telemetría de QA (window.__cameraChoice): qué lente quedó abierta
+          // y qué se midió en las sondas — útil para depurar remotamente.
+          try {
+            const track = stream.getVideoTracks()[0];
+            const st = track?.getSettings?.() as {
+              width?: number;
+              height?: number;
+            } | undefined;
+            (window as unknown as { __cameraChoice?: unknown }).__cameraChoice = {
+              elegida: main?.label ?? track?.label ?? "",
+              torch: main?.torch ?? false,
+              focusModes: main?.focusModes ?? [],
+              width: st?.width ?? 0,
+              height: st?.height ?? 0,
+              sondas: probes.map((p) => ({
+                label: p.label,
+                torch: p.torch,
+                af: p.focusModes,
+                max: `${p.maxWidth}x${p.maxHeight}`,
+              })),
+            };
+          } catch {
+            /* solo telemetría */
+          }
+          return stream;
+        } catch {
+          /* siguiente nivel */
+        }
+      }
+      return null;
+    };
+
+    void (async () => {
+      // F-LENS v4: primero el camino de codigo-test (sondas secuenciales +
+      // principal por resolución/AF); cascade facingMode como red de seguridad.
+      let stream = await abrirCamaraPrincipal();
+      if (!stream) stream = await abrirConCascada();
       if (!stream) {
         if (cancelado) return;
         // Permiso denegado / sin cámara / sin HTTPS (headless cae aquí):
@@ -587,6 +1075,10 @@ export function ScanView() {
 
       streamRef.current = stream;
       setCamEstado("viva");
+      // F-SENSOR-PROFILER (PASO 2) — Fuente: apps/scanner-lab/... L1032-1034:
+      // mide la nativa de FOTO del sensor y fija el tope seguro (4032/3200
+      // px) para tomarFoto, una vez por apertura (remediación H2).
+      profileActiveSensor(stream);
       // §5.2: Safari/iOS no implementa ImageCapture → el shutter manual abre
       // la cámara NATIVA; auto-captura usa frames del video.
       puedeTomarFotoRef.current = typeof ImageCapture !== "undefined";
@@ -707,10 +1199,11 @@ export function ScanView() {
   }, [camaraViva]);
 
   /** Linterna — botón SIEMPRE activo con cámara; la verdad al pulsar (lab
-   *  toggleTorch L1404-1422). Sin cámara viva → hint. */
+   *  toggleTorch L1404-1422). Sin cámara viva o sin verificación → hint
+   *  completo del lab (TORCH_HINT verbatim — remediación H4). */
   const alternarLinterna = useCallback(async () => {
     if (camEstado !== "viva") {
-      notificar("warn", HINT_LINTERNA, DESC_LINTERNA);
+      notificar("warn", "LINTERNA NO CONTROLADA", TORCH_HINT);
       return;
     }
     const siguiente = !torchOn;
@@ -721,7 +1214,7 @@ export function ScanView() {
         notificar("ok", "FLASH ENCENDIDO", "Linterna del dispositivo activa.");
       }
     } else {
-      notificar("warn", HINT_LINTERNA, DESC_LINTERNA);
+      notificar("warn", "LINTERNA NO CONTROLADA", TORCH_HINT);
     }
   }, [camEstado, torchOn, ponerLinterna, notificar]);
 
@@ -750,23 +1243,61 @@ export function ScanView() {
     inputCamaraRef.current?.click(); // cámara iniciando → picker
   }, [fuente, camEstado, dispararEscaneo, capturarInteligente]);
 
-  /** Elegir imagen = fuente ARCHIVO + análisis inmediato (L2, intacto). */
+  /** Elegir imagen = fuente ARCHIVO + análisis inmediato (L2) + capa 3 H2:
+   *  la foto de galería (12–48 MP) entra al pipeline YA dentro del tope
+   *  (decode único + downscaleImage por GAMA — dispatch L574-589 del lab).
+ *  Guard F-IMPORT/HEIC del lab L937-948 (remediación H5). */
   const alElegirArchivo = (e: ChangeEvent<HTMLInputElement>) => {
     const archivo = e.target.files?.[0];
     e.target.value = ""; // permite re-elegir el MISMO archivo (REPETIR FOTO)
     if (!archivo) return;
-    setArchivoPendiente(archivo);
-    setFuente("ARCHIVO");
-    void dispararEscaneo();
+    if (!pareceImagen(archivo)) {
+      notificar("crit", "ARCHIVO NO VÁLIDO", "El archivo seleccionado no es una imagen.");
+      return;
+    }
+    // HEIC explícito → aviso de conversión (puede tardar unos segundos; la
+    // conversión vive en el F-HEIC del core, dentro del pipeline).
+    if (esHeic(archivo)) {
+      notificar("warn", "CONVIRTIENDO HEIC…", "La conversión puede tardar unos segundos.");
+    }
+    void (async () => {
+      const final = await archivoDentroDeTope(archivo, true);
+      if (!final) {
+        // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx
+        // L954-L961 (error path de F-IMPORT) — re-vestido al toast de e14.
+        notificar(
+          "crit",
+          "NO SE PUDO PROCESAR LA IMAGEN",
+          esHeic(archivo)
+            ? "No se pudo convertir el HEIC. El archivo parece dañado o protegido. Prueba con otro."
+            : "El archivo puede estar corrupto o ser un formato no soportado. Prueba con otro.",
+        );
+        return;
+      }
+      setArchivoPendiente(final);
+      setFuente("ARCHIVO");
+      void dispararEscaneo();
+    })();
   };
 
   /** Ruta iOS (HQ-iOS §5.2): la foto de la cámara nativa entra como archivo
-   *  al MISMO pipeline (fuente ya es CÁMARA — spec §7 "como ARCHIVO, L2"). */
+   *  al MISMO pipeline (fuente ya es CÁMARA — spec §7 "como ARCHIVO, L2") +
+   *  capa 3 H2: la foto nativa (12–48 MP, puede ser HEIC) pasa por el tope
+   *  y la conversión robusta del core ANTES de tocar el bridge. Guard
+   *  F-IMPORT/HEIC del lab L937-948 (remediación H5 — el mismo handler del
+   *  lab sirve a sus dos inputs). */
   const alElegirFotoCamara = (e: ChangeEvent<HTMLInputElement>) => {
     const archivo = e.target.files?.[0];
     e.target.value = "";
     if (!archivo) return;
-    despacharCaptura(archivo);
+    if (!pareceImagen(archivo)) {
+      notificar("crit", "ARCHIVO NO VÁLIDO", "El archivo seleccionado no es una imagen.");
+      return;
+    }
+    if (esHeic(archivo)) {
+      notificar("warn", "CONVIRTIENDO HEIC…", "La conversión puede tardar unos segundos.");
+    }
+    void despacharArchivo(archivo, true);
   };
 
   /* ── Overlay: quad REAL con mapeo object-cover (lab L1493-1515) ────── */
@@ -804,11 +1335,15 @@ export function ScanView() {
 
   return (
     <div className="flex-1 flex flex-col bg-bg pt-safe">
-      {/* Inputs ocultos: IMPORTAR (galería) + cámara nativa iOS (capture) */}
+      {/* Inputs ocultos: IMPORTAR (galería) + cámara nativa iOS (capture).
+          accept con .heic/.heif (lab L1536, remediación H5): en Android/Chrome
+          los HEIC llegan con MIME vacío o raro y «image/*» a secas los deja
+          FUERA del picker — sin el accept, la conversión F-HEIC del core
+          jamás se ejercita. La cámara nativa iOS también entrega HEIC. */}
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.heic,.heif"
         className="hidden"
         aria-label="Importar imagen"
         onChange={alElegirArchivo}
@@ -816,7 +1351,7 @@ export function ScanView() {
       <input
         ref={inputCamaraRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.heic,.heif"
         capture="environment"
         className="hidden"
         aria-label="Tomar foto con la cámara del sistema"

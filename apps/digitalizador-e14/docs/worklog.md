@@ -562,3 +562,86 @@ Bitácora incremental (append-only). Formato en AGENTS.md.
   teléfono del dueño en Pages (headless sin cámara: fallback verificado).
 - **Pendiente/Bloqueado:** push + PR feat/e14-fase-logica → main + deploy Pages +
   smoke test producción (DoD 8). L6/L7 opcionales sin hacer (no bloquean).
+
+### [2026-10-10 09:10 (Bogotá)] — AUDITORÍA DE COPIAS vs lab (SPEC-auditoria-copias.md §1) — Z.ai Code (rama fix/e14-fidelidad-lab)
+
+**Metodología (§1):** censo de huellas auto-declaradas (`rg "simplific|abrevi|adaptad|resumid|omitid"`
+sobre src/) → diff bloque a bloque contra `apps/scanner-lab/src/components/scanner/CameraView.tsx`
+y `EditorView.tsx` → tabla con veredicto → remediación verbatim (Regla de oro 6). El spec fuente
+quedó en `docs/SPEC-auditoria-copias.md` (Rev. 2). La auditoría cubre el 100 % del checklist §4.
+
+**Censo de huellas (§1.1):** ScanView L64 («adaptadas al task §2»), L85 («TORCH_HINT del lab,
+abreviado»), L379 («simplificado sin sensor-profiler»), L429 («adaptada a e14»), L516
+(«simplificado: real o fallback SIM») + scanner-core-bridge L520 («adaptador Acta→ScanDocument»,
+§6 legit) + image-utils L9 (nota de mapeo, legit). Cada una entra a la tabla.
+
+**Tabla de hallazgos (veredicto por bloque del checklist §4):**
+
+| # | Bloque | e14 (archivo + líneas) | Lab (ref) | e14 hace | Lab hace | Veredicto | Sev. | Acción |
+|---|--------|------------------------|-----------|----------|----------|-----------|------|--------|
+| 1 | Arranque de cámara | ScanView L516–634 | CameraView L996–1252 + L1095–1207 | Solo cascada `facingMode` (red de seguridad del lab) | Sondas secuenciales cerrando cada cámara + `chooseMainProbe` (D3/D6) + fix zoom + telemetría `__cameraChoice` | **DESVIACIÓN** | P0 | H1 — copiar mapa §12 (L116–223 + L1095–1207) |
+| 2 | Perfilado del sensor | ScanView — AUSENTE | CameraView L440 + L448–454 + L245–290 | Nada (sin `profileSensor`, sin `downscaleImage`) | Perfila el track al abrir el stream; tope por GAMA 4032/3200 | **DESVIACIÓN** | P0 | H2 — copiar 5 bloques |
+| 3 | takePhoto (blob) | ScanView L382–400 | CameraView L645–681 | `takePhoto()` crudo, sin tope (blob gigante llega al decode) | 3 capas: photoSettings (ISP) + retry sin settings + `clampBlobToSafeCap` | **DESVIACIÓN** | P0 | H2 — reemplazo literal de takePhotoBlob |
+| 4 | Dispatch / decode único + tope | ScanView L413–427 (despacharCaptura) + L754–761 (IMPORTAR) | CameraView L574–589 | File directo al bridge (sin decode previo) | Decode ÚNICO + `downscaleImage(decoded, safeCapPx)` antes del pipeline | **DESVIACIÓN** | P0 | H2 capa 3 en el punto de entrada (cubre CÁMARA + IMPORTAR + iOS nativa) |
+| 5 | captureSmart | ScanView L436–510 | CameraView L785–885 | `tomarZsl()` → `await tomarFoto()` → recién ahí `snapA/snapB` | `snapA = snapshotVideo()` ANTES de `await takePhotoBlob()` (§5.4); snapB después (bracket) | **DESVIACIÓN** (orden snapA) | P1 | H3 — mover snapA antes del await + comentario §5.4. F-RES-PRIORITY ✓ FIEL (foto gana siempre, L446–455), aviso honesto de fallback ✓ |
+| 6 | Ring ZSL | ScanView L298–336 + L357–377 | CameraView L707–770 | Máx 8, copia dedicada, liberación del expulsado YA (R-14), ventana 80–450 ms | Igual | **FIEL** | — | Sin acción |
+| 7 | Flash F-FLASH v3 | ScanView L252–292 + L711–727 | CameraView L473–520 + L1404–1422 | `applyConstraints` + verificación `getSettings().torch` + reintentos 0/250/700/1500 + re-aplicación por «playing» | Igual | **FIEL** | — | Falta solo H4 (hint) |
+| 8 | TORCH_HINT | ScanView L85–88 | CameraView L119–127 | Versión abreviada (2 líneas) | Diagnóstico completo de campo (navegador, WebView in-app, lente sin LED, qué hacer) | **DESVIACIÓN** | P1 | H4 — copiar verbatim |
+| 9 | Ruta iOS del disparo | ScanView L730–751 + input L816–824 | CameraView L902–925 + L1521–1531 | `input capture="environment"` con el click del shutter como gesto de usuario | Igual | **FIEL** (transporte File→bridge = §3 legítima) | — | — |
+| 10 | Aviso no-detección | ScanView L697–699 | CameraView L1386–1390 | `onNoDetectTimeout` → toast «NO DETECTO EL ACTA» | `onNoDetectTimeout` → toast | **FIEL** | — | — |
+| 11 | Cooldown / notifyCaptured | ScanView L437–440 | CameraView L786–789 | 1500 ms + `notifyCaptured()` (re-arme del loop del core) | Igual | **FIEL** | — | — |
+| 12 | IMPORTAR: accept del picker | ScanView L811 + L819 | CameraView L1536 (galería) | `accept="image/*"` a secas (HEIC fuera del picker en Android/Chrome) | `accept="image/*,.heic,.heif"` | **DESVIACIÓN** | P2 | H5 — añadir `,.heic,.heif` a ambos inputs (spec Rev. 2; el lab solo en galería, pero la cámara nativa iOS también entrega HEIC) |
+| 13 | Guard looksImage/looksHeic | ScanView — AUSENTE | CameraView L937–961 | Sin guard: cualquier File entra al pipeline | Guard de imagen + toast de conversión HEIC + error verbatim | **DESVIACIÓN** | P2 | H5 — copiar guard + mensajes |
+| 14 | Preview ideal | ScanView L64–68 (1920×1080) | CameraView L107–111 (960×540) | 1920×1080 | 960×540 | **ADAPTACIÓN LEGÍTIMA** (§3, D27) | — | No tocar: frames del video alimentan el pipeline en iOS (e14 sin takePhoto ahí) |
+| 15 | `esErrorPermiso` | ScanView L534–535 | CameraView L1051–1052 | Equivalente exacto de `isPermError` | — | **FIEL** (§3: reutilizar, no duplicar) | — | — |
+| 16 | B3 track «ended» | ScanView L601–610 | CameraView L1013–1027 | Toast + vuelta a SIMULACIÓN | Re-arranque completo del flujo (nonce) | **ADAPTACIÓN LEGÍTIMA** | — | Documentada en L3: el objetivo de B3 (visor nunca congelado) se cumple vía fallback SIM; e14 no tiene sesión multi-página |
+| 17 | QuadEditor: clampN / loupeCenterAt / quadsClose | QuadEditor L51–70 | EditorView L127–149 | Copia LITERAL (diff verificado en esta auditoría) | — | **FIEL** | — | — |
+| 18 | QuadEditor: arrastre + 8 asas + lupa 3× | QuadEditor (subistema CROP) | EditorView L928–1049 + L2005–2040 + L2087–2130 | Puerto fiel (L5, verificado con QA de drag + VLM) | — | **FIEL** | — | — |
+| 19 | rotateProcessedDataUrl + encodePngDataUrl | image-utils L14 + L40–72 | EditorView L163–224 | Copia LITERAL (diff verificado en esta auditoría) | — | **FIEL** | — | — |
+| 20 | Bridge: decode del pipeline | scanner-core-bridge L204–263 | CameraView L574–578 | File→dataUrl 1× (fileToCaptureDataUrl, tope nativo 4032 del core) + warp decode en processImage | Decode único del dispatch | **ADAPTACIÓN LEGÍTIMA** + nota | — | Con H2 capa 3 el File llega YA ≤cap: el decode del bridge opera sobre imagen ≤tope (coste +1 decode vs lab, aceptado; el riesgo real —blob gigante decodificado— queda eliminado) |
+
+**Cobertura §5 (novedades.md v5.0.0→v6.3):** ver tabla por novedad en
+`docs/SPEC-auditoria-copias.md` §5 — conclusiones idénticas: HEREDADO todo lo del core/worker
+(cascada, HEIC, EXIF, F-STAB, F-PERF, OCR, warp) · COPIADO el glue del componente (ZSL, torch,
+rotación, F-RES-PRIORITY, viewport-fit) · FALTAN las 2 piezas críticas (H1 cámara, H2 tope de
+sensor) + 3 cosméticas (H3, H4, H5). H6 (PWA) queda como DECISIÓN de alcance del autor (fuera
+de este PR). §3 (adaptaciones legítimas: D27, File→bridge, re-vestimiento, esErrorPermiso) NO
+se toca — tocarlas sería regresión.
+
+**Remediación (orden §6.1):** H1 → H2 → H3 → H4 → H5, todo con copia verbatim + comentarios de
+origen (`// Fuente: apps/scanner-lab/... L…`). Commits separados: audit / F-LENS v4 / F-SENSOR-
+PROFILER / snapA+TORCH_HINT+accept.
+
+### [2026-10-10 10:30 (Bogotá)] — H1: F-LENS v4 completo (§12 fase lógica Rev. 4) — Z.ai Code (rama fix/e14-fidelidad-lab)
+- **Hecho:** Arranque de cámara de ScanView ahora abre la PRINCIPAL, no la lente por defecto de Chrome:
+  - Bloques de módulo copiados verbatim con comentarios de origen: `BACK_CAMERA_RE`/`FRONT_CAMERA_RE` (lab L116-117), `CameraProbeResult` (L129-137), `REAL_AF_MODES`+`hasRealAF` (L139-144), `readCapsNum` (L146-148), `probeCamera` (L150-188 — abre, mide, CIERRA; `finally` garantiza nunca dos cámaras abiertas), `chooseMainProbe` (L190-223 — D3/D6: AF real → mayor resolución, torch desempata, sin AF → label más simple) + comentario E4/F-LENS v4 A/B (L76-92).
+  - Efecto de arranque: `abrirCamaraPrincipal` (lab `openMainCamera` L1095-1207 verbatim: unlock de labels → sondas secuenciales → elección → apertura SOLO de la ganadora con fallbacks) + fix de zoom (<1 → 1, L1152-1175) + telemetría `window.__cameraChoice` (L1176-1199, misma forma que el lab para el QA del dueño). La cascada facingMode anterior quedó como `abrirConCascada` (red de seguridad, lab L1055-1093). Fallback e14 a SIMULACIÓN intacto.
+  - `window.__cameraChoice` declarado en `declare global`.
+- **Archivos:** src/components/e14/screens/ScanView.tsx
+- **Commits:** de056aa
+- **Cómo probar:** en el teléfono Android: abrir CÁMARA → `window.__cameraChoice.elegida` muestra la principal (label sin palabras de lente) y `sondas` con las resoluciones medidas.
+- **Pendiente/Bloqueado:** verificación en hardware real del dueño (headless sin cámara: probes fallan → cascade → SIM, verificado).
+
+### [2026-10-10 10:50 (Bogotá)] — H2: F-SENSOR-PROFILER (5 bloques del lab) — Z.ai Code (rama fix/e14-fidelidad-lab)
+- **Hecho:** El pipeline de e14 nunca toca una foto por encima del tope seguro de memoria:
+  - Imports del core (lab L61-67): `profileSensor`, `buildCappedPhotoSettings`, `clampBlobToSafeCap`, `getSensorSafeCap`, `SensorProfile` — cero cambios en el core.
+  - `downscaleImage` COPIADA del lab (L245-290, canvas puro, NO existe en el core — regla de oro 6) con sus comentarios (bug v3 de CALIDAD, C13 toBlob async).
+  - `sensorProfileRef` + `profileActiveSensor` (lab L433-454) invocado al abrir el stream ganador (L1032-1034 del lab).
+  - `tomarFoto` = takePhotoBlob COMPLETO (lab L637-681): capa 1 photoSettings al ISP + retry sin settings + carrera 8 s + capa 2 `clampBlobToSafeCap`.
+  - Capa 3 en el punto de entrada: `archivoDentroDeTope` (lab L574-589 decode único + tope por GAMA) + `blobToDataUrl` (L625-635) + `despacharArchivo` — cubre CÁMARA (takePhoto/ZSL), IMPORTAR (12-48 MP vía F-IMPORT robusto del core) y foto nativa iOS (HEIC); el File llega al bridge YA ≤tope. Error F-IMPORT → toast (lab L954-961 re-vestido).
+- **QA (agent-browser 390×844, dev :3001):** IMPORTAR 1553×1995 → 8.5 ÓPTIMA real (motor=worker) SIN re-encode (dentro del tope, fetch-probe vacío = original intacto, F-RES-PRIORITY). IMPORTAR 6000×4800 → análisis OK sin freeze (7.9). Con benchmark simulado gama media (3200): fetch-probe capturó el re-encode de la capa 3 + decode del bridge 523→98 ms (la foto llega ya ≤tope). 0 errores de página.
+- **Archivos:** src/components/e14/screens/ScanView.tsx
+- **Commits:** 103aa89
+- **Cómo probar:** importar una foto grande de galería — entra al análisis sin freeze; en gama media/baja el decode de ANALIZANDO es visiblemente más corto.
+- **Pendiente/Bloqueado:** verificación en el 50MP del dueño (capa 1+2 requieren ImageCapture real).
+
+### [2026-10-10 11:05 (Bogotá)] — H3+H4+H5: snapA + TORCH_HINT + accept HEIC — Z.ai Code (rama fix/e14-fidelidad-lab)
+- **Hecho:**
+  - H3: `snapA = instantanea()` ANTES de `await tomarFoto()` (lab §5.4 L843-845 + comentario verbatim) — si takePhoto cuelga 8 s ya queda un candidato medido del momento real del tap; snapB queda tras la foto (bracket); burst `[zsl, snapA, snapB]` como hoy con snapA del instante correcto; liberación R-14 de snapA cuando la foto gana. (Seguro: empujarAnillo hace copia dedicada — el canvas de snapA es independiente del ring, misma invariante del lab.)
+  - H4: TORCH_HINT verbatim (lab L119-127) reemplaza el hint abreviado — diagnóstico completo de campo (Safari 17.4+/iOS, Chrome/Firefox iOS, WebViews in-app, lente sin LED, qué hacer) vía toast "LINTERNA NO CONTROLADA".
+  - H5: `accept="image/*,.heic,.heif"` en AMBOS inputs (lab L1536; la cámara nativa iOS también entrega HEIC) + guard `pareceImagen`/`esHeic` del lab (L927-948) en ambos handlers + toast "CONVIRTIENDO HEIC…" y error de conversión (L954-961 re-vestido).
+- **QA:** SIM dorado completo (ÓPTIMA 8.6 auto-envío · RECHAZADA + INTENTO 1 DE 2 · REPETIR → 2º intento ÓPTIMA) · CÁMARA headless → probes fallan → cascade → toast + vuelta a SIM (chip activo) · `agent-browser errors` limpio · lint:e14 + e14:check 0 errores · build estático BUILD_STATIC=1 basePath /web-scanner (worker+opencv en out/, F-LENS presente en chunks).
+- **Archivos:** src/components/e14/screens/ScanView.tsx
+- **Commits:** baa4990
+- **Cómo probar:** lint+check limpios; flujo dorado SIM idéntico; IMPORTAR archivo no-imagen → toast "ARCHIVO NO VÁLIDO".
+- **Pendiente/Bloqueado:** QA en el teléfono del dueño (checklist §6.2 del spec de auditoría) + push/PR/merge/deploy.
