@@ -21,6 +21,7 @@ import { OCR_NO_TEXT } from "@jg-stevan/scanner-core/ocr";
 import { defaultQuad, FILTER_PRESETS } from "@jg-stevan/scanner-core/types";
 import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import { QuadEditor } from "../QuadEditor";
+import { PanelClasificacion } from "../PanelClasificacion";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
 import { CopyIcon, CropIcon, DownloadIcon, FullscreenIcon, LoaderIcon, RefreshIcon, RotateIcon, ScanTextIcon, SlidersIcon, WarnTriangleIcon } from "../icons";
 
@@ -84,11 +85,24 @@ function OcrHighlightedText({
 }
 
 /** Breadcrumb canónico (§7.4) bajo el header. */
-function Breadcrumb({ mesa, tipo, pagina, total }: { mesa: string; tipo: string; pagina: number; total: number }) {
+function Breadcrumb({
+  mesa,
+  tipo,
+  pagina,
+  total,
+  ruta,
+}: {
+  mesa: string;
+  tipo: string;
+  pagina: number;
+  total: number;
+  /** §6: ruta REAL de la clasificación (cuando existe) en vez del seed fijo. */
+  ruta?: string;
+}) {
   return (
     <div className="shrink-0 py-1.5 flex justify-center">
       <span className="font-data text-[9px] text-ink-dim tracking-wide uppercase text-center">
-        CONSULADOS &gt; ZONA 10 &gt; PUESTO 02 &gt; MESA {mesa} &gt; {tipo} &gt; PÁG {pagina} DE {total}
+        {ruta ?? `CONSULADOS > ZONA 10 > PUESTO 02 > MESA ${mesa} > ${tipo} > PÁG ${pagina} DE ${total}`}
       </span>
     </div>
   );
@@ -207,8 +221,24 @@ export function ReviewView() {
 
   if (!acta) return null;
 
-  const tipo = paginaObjetivo?.tipo ?? "TRANSMISIÓN";
-  const mesa = paginaObjetivo?.mesaId.replace(/\D/g, "").padStart(3, "0") ?? acta.ubicacion.mesa;
+  // Fase B (§6 — coherencia de display): clasificación AUTO resuelta → la
+  // REVISIÓN muestra la ubicación REAL (tipo/mesa/página del acta), no la del
+  // seed demo. Sin clasificación (flujo seed/C4) queda como estaba.
+  const clasifAuto = acta.clasificacion?.nivel === "AUTO" ? acta.clasificacion : null;
+  const tipo = clasifAuto?.tipo
+    ? (clasifAuto.tipo === "TRANSMISION" ? "TRANSMISIÓN" : "DELEGADOS")
+    : (paginaObjetivo?.tipo ?? "TRANSMISIÓN");
+  const mesa =
+    clasifAuto?.mesa !== null && clasifAuto?.mesa !== undefined
+      ? String(clasifAuto.mesa).padStart(3, "0")
+      : (paginaObjetivo?.mesaId.replace(/\D/g, "").padStart(3, "0") ?? acta.ubicacion.mesa);
+  const paginaIdx = clasifAuto ? (clasifAuto.pagina?.index ?? 1) : acta.pagina.index;
+  const paginaTotal = clasifAuto ? (clasifAuto.pagina?.total ?? 2) : acta.pagina.total;
+  const detalleUbicacion = clasifAuto
+    ? `${clasifAuto.departamento?.nombre ?? "—"} > ZONA ${clasifAuto.zona?.codigo ?? "—"} > ` +
+      `PUESTO ${clasifAuto.puesto?.codigo ?? "—"} > MESA ${clasifAuto.mesa ?? "—"} > ${tipo} > ` +
+      `PÁG ${paginaIdx} DE ${paginaTotal}`
+    : "ITALIA > ZONA 10 > PUESTO 02 > MESA 001 > TRANSMISIÓN > PÁG 1 DE 2";
   const status = acta.status;
   const hayFoto = Boolean(acta.fotoProcesada);
   // D35: SIMULACIÓN produce fotos reales (pipeline real) — el gate es la foto, no la fuente.
@@ -247,7 +277,13 @@ export function ReviewView() {
     <div className="flex-1 min-h-0 flex flex-col">
       {/* Breadcrumb bajo el header (solo cuando el banner NO lo incluye) */}
       {status === "ENVIADA" || status === "EN_REVISION_HUMANA" || acta.rechazo?.tipo === "GENERICO" ? (
-        <Breadcrumb mesa={mesa} tipo={tipo} pagina={acta.pagina.index} total={acta.pagina.total} />
+        <Breadcrumb
+          mesa={mesa}
+          tipo={tipo}
+          pagina={paginaIdx}
+          total={paginaTotal}
+          ruta={clasifAuto ? detalleUbicacion : undefined}
+        />
       ) : null}
 
       {/* Visor del documento — F5 (D38): la tarjeta es SOLO visual (sin
@@ -295,14 +331,14 @@ export function ReviewView() {
                   </span>
                 </ScoreBadge>
               }
-              detalle="ITALIA &gt; ZONA 10 &gt; PUESTO 02 &gt; MESA 001 &gt; TRANSMISIÓN &gt; PAG 1 DE 2"
+              detalle={detalleUbicacion}
               chips={
                 <>
                   <Chip tone="warn" solid>
                     {tipo}
                   </Chip>
                   <Chip tone="neutral">
-                    PÁG {acta.pagina.index} DE {acta.pagina.total}
+                    PÁG {paginaIdx} DE {paginaTotal}
                   </Chip>
                 </>
               }
@@ -408,7 +444,7 @@ export function ReviewView() {
               {tipo}
             </Chip>
             <Chip tone="neutral">
-              PÁG {acta.pagina.index} DE {acta.pagina.total}
+              PÁG {paginaIdx} DE {paginaTotal}
             </Chip>
             {acta.enviadoAutomaticamente && (
               <span className="flex items-center gap-1.5 font-data text-[9px]">
@@ -477,6 +513,15 @@ export function ReviewView() {
           </div>
         )}
       </main>
+
+      {/* ── PANEL DE CORRECCIÓN §5 (SPEC-cabecera-clasificacion): SOLO cuando
+          el acta está EN_REVISION_HUMANA con clasificación PENDIENTE (§4.2:
+          calidad OK pero cabecera SUGERIDA/MANUAL — la foto era buena). El
+          camino C4 (RECHAZADA → revisión humana) no lleva clasificación → el
+          panel no aparece. Encima de las acciones actuales, sin quitar nada. */}
+      {status === "EN_REVISION_HUMANA" &&
+        acta.clasificacion &&
+        acta.clasificacion.nivel !== "AUTO" && <PanelClasificacion />}
 
       {/* L5 §7.5 — EDITOR DE RECORTE (overlay a pantalla completa sobre la
           foto ORIGINAL; quad inicial = detección automática o defaultQuad).

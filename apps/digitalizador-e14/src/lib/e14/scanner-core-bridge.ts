@@ -56,6 +56,13 @@ import type {
 } from "@jg-stevan/scanner-core/types";
 import { ACTA_MOCK } from "./seed";
 import { statusDeScore } from "./types";
+import { cargarDivipol } from "./divipol";
+import {
+  clasificarCabecera,
+  nombreExportacion,
+  PATRON_CABECERA,
+  type ClasificacionE14,
+} from "./clasificador";
 // §1 (SPEC-ux-real-bn-editor): acta E-14 real del dueño (Galaxy A56 5G) —
 // import estático: Next resuelve el basePath /web-scanner del deploy estático.
 import actaSimUrl from "@/assets/acta-e14-real.jpg";
@@ -68,8 +75,8 @@ const TIMEOUT_MS = 15_000;
 const DETALLE_ILEGIBLE = "CÓDIGO DE BARRAS Y CABECERA NO DETECTADOS";
 const DETALLE_TIMEOUT = "TIEMPO DE PROCESADO EXCEDIDO";
 const DETALLE_GENERICO = "SCORE INSUFICIENTE PARA TRANSMISIÓN";
-/** Regla de dominio E-14: la cabecera debe decir E-14 / REGISTRADURÍA. */
-const PATRON_CABECERA = /E\s*-\s*14|REGISTRADURIA|REGISTRADURÍA/i;
+// PATRON_CABECERA vive ahora en ./clasificador (§4.5: se mantiene como
+// constante para traza/log — ya NO decide sola el estado del gate).
 
 /**
  * Grab del <video> a RESOLUCIÓN DEL STREAM (§5 CAMARA): canvas de
@@ -121,6 +128,25 @@ function scoreDeCalidad(q: PageQuality): number {
   if (q.level === "fair") score10 = Math.min(score10, 7.9); // techo ADVERTENCIA
   if (q.level === "poor") score10 = Math.min(score10, 6.4); // techo RECHAZADA
   return score10;
+}
+
+/** Resultado del gate §4 (evaluarGate) — status + rechazo + clasificación. */
+interface ResultadoGate {
+  status: ActaStatus;
+  rechazo: Acta["rechazo"];
+  clasificacion: ClasificacionE14 | null;
+}
+
+/** Traza §4.6: clasif={dep:88,mun:335,zon:05,std:02,mesa:001,tipo:T,nivel:AUTO}. */
+function fmtClasif(c: ClasificacionE14 | null): string {
+  if (!c) return "sin-clasificar";
+  const tipo = c.tipo === "TRANSMISION" ? "T" : c.tipo === "DELEGADOS" ? "D" : "-";
+  return (
+    `dep:${c.departamento?.codigo ?? "?"},mun:${c.municipio?.codigo ?? "?"},` +
+    `zon:${c.zona?.codigo ?? "?"},std:${c.puesto?.codigo ?? "?"},` +
+    `mesa:${c.mesa !== null ? String(c.mesa).padStart(3, "0") : "?"},` +
+    `tipo:${tipo},nivel:${c.nivel}`
+  );
 }
 
 /**
@@ -305,18 +331,20 @@ export class RealCoreBridge implements E14Bridge {
 
     const motor = resultado.precision?.engine ?? "canvas";
 
-    // 6) Mapeo §4 → status/score/rechazo.
+    // 6) Mapeo §4 → status/score/rechazo + clasificación de cabecera
+    //    (SPEC-cabecera-clasificacion §4: RECHAZADA solo por CALIDAD;
+    //    cabecera sin clasificar → EN_REVISION_HUMANA con panel, NUNCA rechazo).
     const score = scoreDeCalidad(calidad);
-    const legible = ocrTextIsValid(texto) && PATRON_CABECERA.test(texto);
-    const status: ActaStatus = legible ? statusDeScore(score) : "RECHAZADA";
+    const gate = await this.evaluarGate(score, texto);
 
     console.info(
       `[e14] pipeline ${opciones.fuente}/${"archivo" in entrada ? "file" : "video-grab"} ` +
         `total=${Math.round(ms.total)}ms ` +
         `(decode=${Math.round(ms.decode)} detect=${Math.round(ms.detect)} ` +
         `proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
-        `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +
-        `filtro=${"bw"} ` +
+        `ocr=${Math.round(ms.ocr)} motor=${motor} ocrValido=${ocrTextIsValid(texto)} ` +
+        `cabeceraE14=${PATRON_CABECERA.test(texto)} score=${score} ` +
+        `filtro=${"bw"} clasif={${fmtClasif(gate.clasificacion)}} ` +
         `metricas={sharpness:${calidad.sharpness} brightness:${calidad.brightness} ` +
         `contrast:${calidad.contrast} level:${calidad.level}})`,
     );
@@ -328,13 +356,9 @@ export class RealCoreBridge implements E14Bridge {
       ocrTexto: texto,
       motor,
       score,
-      status,
-      rechazo:
-        !legible
-          ? { tipo: "ILEGIBLE", detalle: DETALLE_ILEGIBLE }
-          : status === "RECHAZADA"
-            ? { tipo: "GENERICO", detalle: DETALLE_GENERICO }
-            : null,
+      status: gate.status,
+      rechazo: gate.rechazo,
+      clasificacion: gate.clasificacion,
     });
   }
 
@@ -443,16 +467,18 @@ export class RealCoreBridge implements E14Bridge {
 
     const motor = resultado.precision?.engine ?? "canvas";
 
-    // 4) Mapeo §4 → status/score/rechazo (idéntico al escaneo).
+    // 4) Mapeo §4 → status/score/rechazo + clasificación (idéntico al
+    //    escaneo — helper ÚNICO evaluarGate, §4.4: AMBOS pipelines con el
+    //    MISMO criterio).
     const score = scoreDeCalidad(calidad);
-    const legible = ocrTextIsValid(texto) && PATRON_CABECERA.test(texto);
-    const status: ActaStatus = legible ? statusDeScore(score) : "RECHAZADA";
+    const gate = await this.evaluarGate(score, texto);
 
     console.info(
       `[e14] recorte ${acta.fuente} total=${Math.round(ms.total)}ms ` +
         `(proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
-        `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +
-        `filtro=${filtro} ` +
+        `ocr=${Math.round(ms.ocr)} motor=${motor} ocrValido=${ocrTextIsValid(texto)} ` +
+        `cabeceraE14=${PATRON_CABECERA.test(texto)} score=${score} ` +
+        `filtro=${filtro} clasif={${fmtClasif(gate.clasificacion)}} ` +
         `metricas={sharpness:${calidad.sharpness} brightness:${calidad.brightness} ` +
         `contrast:${calidad.contrast} level:${calidad.level}})`,
     );
@@ -474,13 +500,43 @@ export class RealCoreBridge implements E14Bridge {
       },
       motor,
       score,
-      status,
-      rechazo: !legible
-        ? { tipo: "ILEGIBLE", detalle: DETALLE_ILEGIBLE }
-        : status === "RECHAZADA"
-          ? { tipo: "GENERICO", detalle: DETALLE_GENERICO }
-          : null,
-      firmas: this.firmasPorStatus(acta.firmas, status),
+      status: gate.status,
+      rechazo: gate.rechazo,
+      clasificacion: gate.clasificacion ?? undefined,
+      firmas: this.firmasPorStatus(acta.firmas, gate.status),
+    };
+  }
+
+  /**
+   * Gate §4.2 REVISADO (SPEC-cabecera-clasificacion §4) — helper ÚNICO para
+   * AMBOS pipelines (escaneo y recorte, §4.4):
+   *  1. RECHAZADA SOLO por CALIDAD (score < 6.5 vía statusDeScore, §4.1) —
+   *     la tarjeta «ACTA NO RECONOCIDA» queda reservada a este caso.
+   *  2. Calidad suficiente + clasificación AUTO → status por score (OPTIMA/
+   *     ADVERTENCIA) como hoy + clasificación persistida (Fase B al envío).
+   *  3. Calidad suficiente + SUGERIDA/MANUAL (incluye OCR sin texto, §4.3) →
+   *     EN_REVISION_HUMANA con el panel de corrección (§5) precargado con
+   *     la sugerencia. PROHIBIDO RECHAZADA por cabecera (§4.2).
+   * PATRON_CABECERA ya NO decide el estado (§4.5) — solo traza en el log.
+   */
+  private async evaluarGate(score: number, ocrTexto: string): Promise<ResultadoGate> {
+    if (score >= 6.5) {
+      const base = await cargarDivipol(); // idempotente; nunca falla (base vacía → MANUAL)
+      const clasificacion = clasificarCabecera(ocrTexto, base);
+      if (clasificacion.nivel === "AUTO") {
+        return { status: statusDeScore(score), rechazo: null, clasificacion };
+      }
+      return { status: "EN_REVISION_HUMANA", rechazo: null, clasificacion };
+    }
+    // RECHAZADA por CALIDAD — la única (§4.1). Tipo como hoy (AC4 «igual que
+    // hoy»): sin texto válido → ILEGIBLE (tarjeta ACTA NO RECONOCIDA);
+    // con texto → GENERICO (pill de score insuficiente).
+    return {
+      status: "RECHAZADA",
+      rechazo: ocrTextIsValid(ocrTexto)
+        ? { tipo: "GENERICO", detalle: DETALLE_GENERICO }
+        : { tipo: "ILEGIBLE", detalle: DETALLE_ILEGIBLE },
+      clasificacion: null,
     };
   }
 
@@ -550,6 +606,8 @@ export class RealCoreBridge implements E14Bridge {
       score: number;
       status: ActaStatus;
       rechazo: Acta["rechazo"];
+      /** Clasificación de cabecera (SPEC-cabecera-clasificacion §4/§6). */
+      clasificacion?: ClasificacionE14 | null;
     },
   ): Acta {
     const numeroMesa = opciones.objetivo
@@ -573,7 +631,15 @@ export class RealCoreBridge implements E14Bridge {
         mesa: numeroMesa,
       },
       tipo: ACTA_MOCK.tipo,
-      pagina: { index: opciones.objetivo?.pagina ?? 1, total: 2 },
+      // §6: página REAL del «Ver/Pag/de» cuando la clasificación la leyó;
+      // clasificación sin «Ver/Pag» → default P1/2 (mismo default del hueco
+      // Fase B — coherencia display/archivo); sin clasificación → objetivo seed.
+      pagina: campos.clasificacion
+        ? (campos.clasificacion.pagina ?? { index: 1, total: 2 })
+        : {
+            index: opciones.objetivo?.pagina ?? 1,
+            total: 2,
+          },
       candidatos: ACTA_MOCK.candidatos.map((c) => ({ ...c })),
       firmas: [
         { nombre: ACTA_MOCK.firmas[0].nombre, jurado: ACTA_MOCK.firmas[0].jurado, estado: "OK" },
@@ -605,6 +671,9 @@ export class RealCoreBridge implements E14Bridge {
       // F2/D36: default del producto (types.ts L50 del core) — toda captura
       // nace en B/N adaptativo (Fuente: CameraView.tsx L602-604 del lab).
       filtro: "bw" as PageFilter,
+      // SPEC-cabecera-clasificacion §6: clasificación de cabecera (AUTO →
+      // archivada al envío; SUGERIDA/MANUAL → panel de corrección §5).
+      clasificacion: campos.clasificacion ?? undefined,
     };
   }
 
@@ -649,7 +718,12 @@ export class RealCoreBridge implements E14Bridge {
     };
     const { pdf } = await buildDocPdf(doc, "standard");
     const blob = pdf.output("blob");
-    downloadBlob(blob, `${sanitizeFileName(doc.title)}.pdf`);
+    // Nombre de salida §6/§G.4.5: E14_{KIT}_{dep}_{mun}_{zon}_{puesto}_{mesa}_{TIPO}-{pag}
+    // cuando hay clasificación guardada (extensión .pdf — el export real es
+    // PDF; el análisis definió la plantilla para el archivo de salida).
+    const nombreBase = acta.clasificacion ? nombreExportacion(acta.clasificacion) : null;
+    const nombreSalida = nombreBase ?? `${acta.titulo} — MESA ${acta.ubicacion.mesa}`;
+    downloadBlob(blob, `${sanitizeFileName(nombreSalida)}.pdf`);
   }
 
   horaEnvio(): string {

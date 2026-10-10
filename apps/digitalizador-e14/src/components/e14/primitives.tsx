@@ -168,12 +168,15 @@ export function PrimaryBtn({
   icon,
   children,
   ariaLabel,
+  disabled = false,
 }: {
   variant?: "ok" | "warn" | "crit" | "outline" | "outline-crit";
   onClick?: () => void;
   icon?: ReactNode;
   children: ReactNode;
   ariaLabel?: string;
+  /** Panel §5: GUARDAR UBICACIÓN hasta completar la cascada. */
+  disabled?: boolean;
 }) {
   const base =
     "flex-1 h-12 px-2.5 rounded-xl flex items-center justify-center gap-1.5 font-extrabold text-[10px] md:text-[11px] uppercase tracking-wide transition-all transform active:scale-[0.98] leading-tight text-center";
@@ -185,7 +188,14 @@ export function PrimaryBtn({
     "outline-crit": "bg-white/5 hover:bg-white/10 text-ink-dim border border-crit/30",
   };
   return (
-    <button type="button" onClick={onClick} aria-label={ariaLabel} className={`${base} ${styles[variant]}`}>
+    <button
+      type="button"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      aria-disabled={disabled}
+      className={`${base} ${styles[variant]} ${disabled ? "opacity-40 cursor-not-allowed shadow-none" : ""}`}
+    >
       {icon && <span className="shrink-0 flex items-center justify-center">{icon}</span>}
       <span>{children}</span>
     </button>
