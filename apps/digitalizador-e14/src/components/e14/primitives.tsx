@@ -122,23 +122,35 @@ export function SegmentedBar({
   );
 }
 
-/** Botón de la barra fija de revisión (Recortar / Rotar / Filtros / Pantalla
- *  completa). F5/D38: alto táctil 44px GARANTIZADO y label `truncate` — la
- *  barra nunca cambia de tamaño al girar el documento o cambiar de estado. */
+/** Botón de la barra fija de revisión (Recortar / Rotar / Filtros / Texto /
+ *  Pantalla completa). F5/D38: alto táctil 44px GARANTIZADO y label
+ *  `truncate` — la barra nunca cambia de tamaño al girar el documento o
+ *  cambiar de estado. F-OCR/D39: prop opcional `active` — re-vestido del
+ *  ToolItem del lab (Fuente: apps/scanner-lab/src/components/scanner/
+ *  EditorView.tsx L2205-2210 — `active={page?.ocrDone === true}`, L2208):
+ *  cuando active, solo cambia el TINTE (borde + texto + fondo 10%) —
+ *  alto/tamaño IDÉNTICOS (criterio D38 sigue vigente). */
 export function ToolbarBtn({
   icon,
   label,
   onClick,
+  active = false,
 }: {
   icon: ReactNode;
   label: string;
   onClick?: () => void;
+  /** D39/F-OCR: distingue el botón cuando ya hay texto reconocido. */
+  active?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex-1 min-w-0 min-h-11 h-11 px-2.5 py-1.5 rounded-xl bg-surface-4/90 hover:bg-surface-5 border border-outline-dim/40 active:scale-95 transition-all text-ink flex items-center justify-center gap-1.5 text-xs font-semibold tracking-wide"
+      className={`flex-1 min-w-0 min-h-11 h-11 px-2.5 py-1.5 rounded-xl active:scale-95 transition-all flex items-center justify-center gap-1.5 text-xs font-semibold tracking-wide border ${
+        active
+          ? "border-ok-tint/40 bg-ok-tint/10 text-ok-tint"
+          : "bg-surface-4/90 hover:bg-surface-5 border-outline-dim/40 text-ink"
+      }`}
     >
       <span className="text-ok-tint shrink-0 flex items-center justify-center">{icon}</span>
       <span className="truncate">{label}</span>

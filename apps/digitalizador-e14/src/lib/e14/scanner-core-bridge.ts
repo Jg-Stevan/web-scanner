@@ -510,6 +510,24 @@ export class RealCoreBridge implements E14Bridge {
     return { ...acta, fotoProcesada: resultado.processed, filtro };
   }
 
+  /**
+   * F-OCR del lab (EditorView.tsx L1360-1395): corre requestOcr sobre la
+   * imagen PROCESADA del acta y devuelve el texto crudo.
+   * ADAPTACIÓN documentada: el lab elige imagen con prioridad
+   * `preview ?? procesada-fresca ?? original` (L1373-1376) porque tiene
+   * previewCache; en e14 la procesada SIEMPRE está fresca (todo cambio pasa
+   * por el pipeline) → se usa fotoProcesada directa. El guard `previewLoading`
+   * (L1364-1370) NO aplica (no hay preview en e14) → omitido. Sin timeout
+   * extra (igual que el lab L1379 — requestOcr se gobierna solo).
+   */
+  async reconocerTexto(acta: Acta): Promise<string> {
+    const fotoProcesada = acta.fotoProcesada;
+    if (!fotoProcesada) {
+      throw new Error("SIN FOTO PROCESADA PARA RECONOCER TEXTO");
+    }
+    return requestOcr(fotoProcesada);
+  }
+
   /** Firmas coherentes con el estado (misma regla del mock/§7.5):
    *  ADVERTENCIA → firma 2 TENUE · RECHAZADA → NO_DETECTADO · resto OK. */
   private firmasPorStatus(firmas: ActaFirma[], status: ActaStatus): ActaFirma[] {

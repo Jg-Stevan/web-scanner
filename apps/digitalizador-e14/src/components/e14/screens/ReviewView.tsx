@@ -11,14 +11,18 @@
  * RECORTAR abre el QuadEditor (§7.5) · ROTAR 90° gira la foto (horneada para
  * el PDF) · PANTALLA COMPLETA abre el visor modal. F5: barra de controles
  * FIJA en la parte inferior del editor (fuera de la tarjeta — D38).
+ * F-OCR (SPEC-e14-texto-ocr-editor §F1-§F3, D39): 5º botón TEXTO (abre el
+ * sheet «Texto reconocido» — el OCR corre dentro, igual que el lab) con
+ * contadores, copiar al portapapeles y re-reconocer (B1-B6 del lab).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
+import { OCR_NO_TEXT } from "@jg-stevan/scanner-core/ocr";
 import { defaultQuad, FILTER_PRESETS } from "@jg-stevan/scanner-core/types";
 import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import { QuadEditor } from "../QuadEditor";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
-import { CropIcon, DownloadIcon, FullscreenIcon, RefreshIcon, RotateIcon, SlidersIcon, WarnTriangleIcon } from "../icons";
+import { CopyIcon, CropIcon, DownloadIcon, FullscreenIcon, LoaderIcon, RefreshIcon, RotateIcon, ScanTextIcon, SlidersIcon, WarnTriangleIcon } from "../icons";
 
 // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L89-L93
 // (CSS_FILTERS — aproximación CSS de cada filtro para las previews en vivo:
@@ -34,6 +38,49 @@ function tonoBrackets(status: string) {
   if (status === "ADVERTENCIA" || status === "EN_REVISION_HUMANA") return "border-warn";
   if (status === "RECHAZADA") return "border-crit";
   return "border-ok-tint";
+}
+
+// Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L237-271
+// (OcrHighlightedText — F-FIND: texto OCR con las coincidencias de la
+// búsqueda resaltadas, marca amarilla #ffd60a estilo iOS, case-insensitive.
+// Sin consulta activa se renderiza el texto plano). Copia COMPLETA aunque e14
+// hoy siempre pasa query={null} (degrada a texto plano) — queda lista para
+// F-FIND futuro. El <mark> amarillo se conserva literal (no hay token
+// equivalente en e14 — re-vestido no aplica).
+function OcrHighlightedText({
+  text,
+  query,
+}: {
+  text: string;
+  query: string | null;
+}) {
+  const q = query?.trim();
+  if (!q) {
+    return (
+      <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/90">
+        {text}
+      </p>
+    );
+  }
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
+  const needle = q.toLowerCase();
+  return (
+    <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/90">
+      {parts.map((part, i) =>
+        part.toLowerCase() === needle ? (
+          <mark
+            key={i}
+            className="rounded-[3px] bg-[#ffd60a] px-0.5 font-semibold text-black"
+          >
+            {part}
+          </mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </p>
+  );
 }
 
 /** Breadcrumb canónico (§7.4) bajo el header. */
@@ -126,12 +173,27 @@ export function ReviewView() {
   const aplicarRecorte = useE14Store((s) => s.aplicarRecorte);
   const rotarFoto = useE14Store((s) => s.rotarFoto);
   const cambiarFiltro = useE14Store((s) => s.cambiarFiltro);
+  const reconocerTextoActa = useE14Store((s) => s.reconocerTextoActa);
+  const notificar = useE14Store((s) => s.notificar);
   // L5 §7.5: editor de recorte y visor a pantalla completa (estado local —
   // el acta solo cambia por store.aplicarRecorte al APLICAR).
   const [editando, setEditando] = useState(false);
   const [visorAbierto, setVisorAbierto] = useState(false);
   // F2 (§F2.2): sheet de filtros (copia del lab EditorView L2253-2309).
   const [filtrosAbierto, setFiltrosAbierto] = useState(false);
+  // F-OCR (§F3.3, D39): sheet «Texto reconocido» (copia del lab EditorView
+  // L2311-2416) + estado "corriendo" LOCAL (igual que el lab: ocrRunning es
+  // del componente, L347 — el store no re-entra mientras esto esté true).
+  const [textoAbierto, setTextoAbierto] = useState(false);
+  const [ocrEjecutando, setOcrEjecutando] = useState(false);
+  // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L1563-1578
+  // (ocrStats — contadores del sheet de texto). ADAPTACIÓN: sin `matches`
+  // (F-FIND excluido — e14 no tiene biblioteca buscable, §1 del spec).
+  const ocrStats = useMemo(() => {
+    const text = acta?.ocrTexto ?? "";
+    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+    return { words, chars: text.length };
+  }, [acta?.ocrTexto]);
 
   // L5: Esc cierra el visor (tap en cualquier lado también).
   useEffect(() => {
@@ -151,6 +213,35 @@ export function ReviewView() {
   const hayFoto = Boolean(acta.fotoProcesada);
   // D35: SIMULACIÓN produce fotos reales (pipeline real) — el gate es la foto, no la fuente.
   const esReal = Boolean(acta.fotoProcesada);
+  // F-OCR (§F1.2, D39): TEXTO activo cuando ya hay texto válido (el pipeline
+  // corre el OCR SIEMPRE — §1 del spec; OCR_NO_TEXT distingue el vacío que
+  // pudo dejar el pipeline: ocr.ts L12 del core, PROHIBIDO re-declararlo).
+  const hayTexto = Boolean(acta.ocrTexto) && acta.ocrTexto !== OCR_NO_TEXT;
+
+  // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L1446-1455
+  // (copyOcrText). Re-vestido: toasts e14 con títulos en mayúsculas
+  // (descripciones verbatim del lab).
+  const copiarTexto = async () => {
+    const text = acta.ocrTexto ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      notificar("ok", "TEXTO COPIADO", "Texto copiado al portapapeles");
+    } catch {
+      notificar("crit", "NO SE PUDO COPIAR", "No se pudo copiar el texto");
+    }
+  };
+
+  // F-OCR (§F2, D39): el estado "corriendo" es LOCAL (ocrRunning del lab
+  // L347) — envuelve el store action y lo apaga SIEMPRE (finally).
+  const ejecutarOcr = async () => {
+    setOcrEjecutando(true);
+    try {
+      await reconocerTextoActa();
+    } finally {
+      setOcrEjecutando(false);
+    }
+  };
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -337,11 +428,13 @@ export function ReviewView() {
             alto CONSTANTE, anclada al borde inferior (justo encima de los
             CTAs/BottomNav que renderiza page.tsx). Al girar el documento
             RETRATO↔APAISADO la tarjeta absorbe el cambio (flex-1) — la barra
-            NO se mueve ni un píxel. F2 (§F2.2): FILTROS → grid-cols-4. */}
+            NO se mueve ni un píxel. F2 (§F2.2): FILTROS → grid-cols-4.
+            F-OCR (§F1, D39): TEXTO en 4ª posición (orden del lab L2200-2216:
+            … Filtros · Texto · …) → grid-cols-5. */}
         {(status === "ADVERTENCIA" ||
           status === "RECHAZADA" ||
           (status === "OPTIMA" && esReal)) && (
-          <div className="w-full grid grid-cols-4 gap-2 pt-2 shrink-0 z-20">
+          <div className="w-full grid grid-cols-5 gap-2 pt-2 shrink-0 z-20">
             <ToolbarBtn
               icon={<CropIcon />}
               label="Recortar"
@@ -360,6 +453,19 @@ export function ReviewView() {
               onClick={
                 esReal && acta.fotoOriginal && !revelando
                   ? () => setFiltrosAbierto(true)
+                  : undefined
+              }
+            />
+            {/* Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx
+                L2205-2210 (ToolItem «Texto» del toolbar — active con OCR hecho;
+                NO ejecuta el OCR: abre el sheet, el OCR corre dentro). */}
+            <ToolbarBtn
+              icon={<ScanTextIcon />}
+              label="Texto"
+              active={hayTexto}
+              onClick={
+                acta.fotoProcesada && !ocrEjecutando
+                  ? () => setTextoAbierto(true)
                   : undefined
               }
             />
@@ -454,6 +560,103 @@ export function ReviewView() {
                   </button>
                 );
               })}
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {/* ── F-OCR (§F3, D39) — SHEET «TEXTO RECONOCIDO»: copia del sheet de
+          OCR del lab (Fuente: apps/scanner-lab/src/components/scanner/
+          EditorView.tsx L2311-2416 — vaul → patrón del sheet de filtros e14),
+          re-vestido: #007AFF → ok-tint; #8e8e93 → ink-faint; ring-white/10 →
+          ring-line; motion.button → button con active:scale. F-FIND excluido
+          (barra de coincidencias L2347-2366 — e14 no tiene biblioteca
+          buscable); multi-página excluido (e14 = UN acta de UNA página). */}
+      {textoAbierto && acta ? (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setTextoAbierto(false)}
+            aria-hidden
+          />
+          <div
+            role="dialog"
+            aria-label="Texto reconocido del acta"
+            className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[22px] bg-surface-1 pb-safe outline-none animate-editor-enter"
+          >
+            <div className="mx-auto mt-2.5 h-1.5 w-9 rounded-full bg-white/25" />
+            {/* Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx
+                L2327-2333 (título del sheet con ScanText en el acento). */}
+            <h3 className="flex items-center justify-center gap-2 px-5 pb-1 pt-3 text-center text-[17px] font-semibold text-white">
+              <ScanTextIcon className="size-[18px] text-ok-tint" />
+              Texto reconocido
+            </h3>
+            <p className="sr-only">Texto extraído por OCR del acta</p>
+
+            <div className="px-5 pb-4 pt-1">
+              {/* Tres estados (lab L2336-2416 — idénticos). */}
+              {ocrEjecutando ? (
+                /* Ejecutando (lab L2336-2344 — sin la variante multi-página). */
+                <div className="flex min-h-[140px] flex-col items-center justify-center gap-3">
+                  <LoaderIcon className="h-6 w-6 animate-spin text-ok-tint" />
+                  <span className="text-[13px] font-medium text-white/70">
+                    Reconociendo texto…
+                  </span>
+                </div>
+              ) : hayTexto ? (
+                <>
+                  {/* Caja de texto (lab L2367-2369). (?? "" solo satisface a
+                      TS — hayTexto ya garantizó texto no vacío.) */}
+                  <div className="max-h-[38vh] overflow-y-auto rounded-xl bg-black/40 p-3.5 ring-1 ring-inset ring-line">
+                    <OcrHighlightedText text={acta.ocrTexto ?? ""} query={null} />
+                  </div>
+                  {/* Contadores informativos (lab L2370-2378, estilo chips iOS). */}
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 px-0.5">
+                    <span className="rounded-full bg-white/8 px-2.5 py-1 text-[11.5px] font-medium tabular-nums text-white/60">
+                      {ocrStats.words} {ocrStats.words === 1 ? "palabra" : "palabras"}
+                    </span>
+                    <span className="rounded-full bg-white/8 px-2.5 py-1 text-[11.5px] font-medium tabular-nums text-white/60">
+                      {ocrStats.chars} {ocrStats.chars === 1 ? "carácter" : "caracteres"}
+                    </span>
+                  </div>
+                  {/* Fila de botones (lab L2379-2396). */}
+                  <div className="mt-3 flex gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => void ejecutarOcr()}
+                      className="flex-1 rounded-full bg-white/10 py-2.5 text-[14px] font-semibold text-white/90 ring-1 ring-inset ring-white/15 transition-all active:scale-[0.97]"
+                    >
+                      Reconocer de nuevo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void copiarTexto()}
+                      className="flex flex-[1.3] items-center justify-center gap-1.5 rounded-full bg-ok-tint py-2.5 text-[14px] font-semibold text-ok-ink shadow-[0_4px_16px_rgba(63,229,108,0.4)] transition-all active:scale-[0.97]"
+                    >
+                      <CopyIcon className="size-4" />
+                      Copiar texto
+                    </button>
+                  </div>
+                </>
+              ) : (
+                /* Vacío (lab L2398-2415 — hint adaptado §F3.2.3: e14 no tiene
+                   biblioteca). */
+                <div className="flex min-h-[140px] flex-col items-center justify-center gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/8">
+                    <ScanTextIcon className="h-6 w-6 text-ink-faint" />
+                  </div>
+                  <span className="max-w-[260px] text-center text-[13px] leading-snug text-ink-faint">
+                    Extrae el texto del acta para copiarlo.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void ejecutarOcr()}
+                    className="rounded-full bg-ok-tint px-6 py-2.5 text-[14px] font-semibold text-ok-ink shadow-[0_4px_16px_rgba(63,229,108,0.4)] transition-all active:scale-[0.97]"
+                  >
+                    Reconocer texto
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </>
