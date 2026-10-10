@@ -73,6 +73,11 @@ export interface FrameLoopCallbacks {
 /** Historial acotado (evita crecimiento ilimitado en sesiones largas). */
 const MAX_HISTORY = 24;
 
+/** FIX v5 (5.4) — intervalo de análisis en MODO ESPERA (ms): 2 fps.
+ *  El documento no está a la vista; el análisis sigue (reacciona en <1 s
+ *  cuando el papel aparece) pero deja de quemar CPU/GPU a 5–15 fps. */
+const STANDBY_ANALYSIS_INTERVAL_MS = 500;
+
 export class CameraFrameLoop {
   private video: HTMLVideoElement | null = null;
   private cb: FrameLoopCallbacks | null = null;
@@ -89,6 +94,12 @@ export class CameraFrameLoop {
   // empieza en ~15 FPS y se relaja hasta ~5 FPS (200 ms) bajo presión.
   private lastTickMs = 0;
   private dynamicThrottleMs = 65; // ~15 FPS en gama alta, hasta 200ms (~5 FPS) en gama baja
+  // FIX v5 (5.4) — modo espera: sin documento a la vista durante un rato
+  // largo, el análisis baja a 2 fps (STANDBY_ANALYSIS_INTERVAL_MS). El
+  // STREAM NO SE TOCA (el video sigue vivo → el watchdog de salud del fix
+  // v4 4.3, que vigila readyState/muted del TRACK, no debe confundirse:
+  // solo el análisis baja de régimen, el sensor sigue entregando frames).
+  private idleMode = false;
 
   private quadHistory: QuadSample[] = [];
   private scoreHistory: ScoreSample[] = [];
@@ -138,6 +149,8 @@ export class CameraFrameLoop {
     // F-PERF: estado del throttle adaptativo limpio en cada sesión de cámara.
     this.lastTickMs = 0;
     this.dynamicThrottleMs = 65;
+    // FIX v5 (5.4): cada sesión de loop arranca ACTIVA (sin espera heredada).
+    this.idleMode = false;
     this.running = true;
     // Precalienta OpenCV si aún no está (la primera detección tarda más).
     void this.client?.waitReady().then((ok) => {
@@ -175,6 +188,16 @@ export class CameraFrameLoop {
     this.lastTriggerMs = performance.now();
     this.scoreHistory = [];
     this.rearmNeeded = true;
+  }
+
+  /** FIX v5 (5.4) — modo espera: true = análisis a 2 fps (throttle mínimo
+   *  forzado, sin adaptación); false = régimen normal (65 ms base + F-PERF).
+   *  NO toca el stream ni el scheduling (el próximo tick ya respeta el
+   *  nuevo throttle). El video sigue corriendo — solo baja el análisis. */
+  setIdle(idle: boolean): void {
+    if (this.idleMode === idle) return;
+    this.idleMode = idle;
+    this.dynamicThrottleMs = idle ? STANDBY_ANALYSIS_INTERVAL_MS : 65;
   }
 
   private scheduleNext(): void {
@@ -215,14 +238,20 @@ export class CameraFrameLoop {
       this.dropped += 1;
       // F-PERF: en gama baja con saturación, aumenta el tiempo de descanso
       // dinámico (hasta 200 ms ≈ 5 FPS) para devolver aire al hilo principal.
-      this.dynamicThrottleMs = Math.min(200, this.dynamicThrottleMs + 15);
+      // FIX v5 (5.4): en espera no se adapta — el régimen lo fija setIdle.
+      if (!this.idleMode) {
+        this.dynamicThrottleMs = Math.min(200, this.dynamicThrottleMs + 15);
+      }
       this.scheduleNext();
       return;
     }
 
     // F-PERF: si el cliente procesa rápido, reduce suavemente el throttle
     // (mínimo 65 ms ≈ 15 FPS — suficiente para el disparo k-de-n).
-    this.dynamicThrottleMs = Math.max(65, this.dynamicThrottleMs - 3);
+    // FIX v5 (5.4): en espera el mínimo es el intervalo de espera (2 fps).
+    this.dynamicThrottleMs = this.idleMode
+      ? STANDBY_ANALYSIS_INTERVAL_MS
+      : Math.max(65, this.dynamicThrottleMs - 3);
 
     const w = video.videoWidth;
     const h = video.videoHeight;

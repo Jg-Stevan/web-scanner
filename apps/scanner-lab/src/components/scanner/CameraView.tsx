@@ -31,6 +31,7 @@ import {
   Layers,
   LayoutGrid,
   Loader2,
+  Moon,
   MoreVertical,
   Scan,
   X,
@@ -74,6 +75,13 @@ type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
  *  expuestos) por debajo del cual el modo Auto enciende el torch para el
  *  disparo. Constante local ajustable (empezar en 0.30). */
 const AUTO_FLASH_EXPOSURE = 0.3;
+
+/** FIX v5 (5.4) — modo espera: milisegundos SIN documento (corners null)
+ *  Y sin interacción del usuario tras los que el análisis baja a 2 fps.
+ *  El gasto real es el análisis, no el preview (el stream sigue vivo — el
+ *  watchdog de salud del fix v4 4.3 vigila readyState/muted del TRACK y
+ *  NO se ve afectado: solo cambia la cadencia de processFrame). */
+const STANDBY_AFTER_MS = 30_000;
 
 /* ── Lecciones de compatibilidad del producto (ARQUITECTURA §4) ──────────
  *  E3: presupuesto de píxeles — SOLO anchos/altos IDEAL, sin exact/min ni
@@ -596,6 +604,33 @@ export default function CameraView() {
    * tarde al closure; el ref siempre está fresco). */
   const liveRef = useRef<LiveUi>({ corners: null, score: null, fps: 0, searching: true });
   const [videoDims, setVideoDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  /** FIX v5 (5.4) — modo espera (nivel 1): visor abierto SIN documento
+   *  durante 30 s y sin interacción → análisis a 2 fps (loop.setIdle) +
+   *  pill «Modo espera — toca para reactivar». Sale con: toque en el
+   *  visor, corners detectados de nuevo (el análisis a 2 fps sigue
+   *  evaluando → reacciona en <1 s) o captura. Nivel 2 (parar el stream a
+   *  los 3 min) deliberadamente NO implementado: el ahorro real ya lo da
+   *  el nivel 1 y un track parado es indistinguible de un stream MUERTO
+   *  para el watchdog del v4 (complejidad de recuperación > beneficio). */
+  const [standby, setStandby] = useState(false);
+  const standbyRef = useRef(false);
+  /** Cuándo empezó la racha actual de «sin corners» (null = hay documento). */
+  const searchingSinceRef = useRef<number | null>(null);
+  /** Última interacción del usuario con la cámara (toque en CUALQUIER parte). */
+  const lastInteractionRef = useRef(Date.now());
+
+  /** FIX v5 (5.4) — sale del modo espera: loop a régimen normal + pill
+   *  fuera. Si sigue sin documento, la ventana de 30 s se REINICIA (el
+   *  usuario acaba de interactuar — no volver a dormir de inmediato).
+   *  Vive AQUÍ (antes de runCaptureFlow y de los efectos) para ser
+   *  referenciale en sus deps sin TDZ. */
+  const exitStandby = useCallback(() => {
+    if (!standbyRef.current) return;
+    standbyRef.current = false;
+    setStandby(false);
+    loopRef.current?.setIdle(false);
+    if (liveRef.current.searching) searchingSinceRef.current = Date.now();
+  }, []);
   const [boxSize, setBoxSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
@@ -1092,6 +1127,9 @@ export default function CameraView() {
     if (cooldownRef.current > Date.now()) return;
     loopRef.current?.notifyCaptured();
     cooldownRef.current = Date.now() + 1500;
+    // FIX v5 (5.4): la captura despierta el análisis (salir del modo espera
+    // si estaba dormido — el disparo es interacción explícita).
+    exitStandby();
 
     /** F-ZSL — recupera el ganador pre-tap del buffer Best-Shot (mayor
      *  lapVar entre 80 y 450 ms antes del disparo: el impacto del dedo
@@ -1250,7 +1288,7 @@ export default function CameraView() {
       // de OFF y el modo lo pidió).
       if (flashAppliedByUs) void setTorchState(false);
     }
-  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status, isStreamDead, recoverStream, setTorchState]);
+  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status, isStreamDead, recoverStream, setTorchState, exitStandby]);
 
   /** Captura inteligente con el obturador BLOQUEADO durante TODO el
    *  disparo (FIX v4 4.2). Antes solo processingRef protegía — y se activa
@@ -1832,6 +1870,11 @@ export default function CameraView() {
     if (!video) return;
     const loop = new CameraFrameLoop();
     loopRef.current = loop;
+    // FIX v5 (5.4): cada sesión de loop arranca ACTIVA (sin espera heredada
+    // de un stream anterior).
+    standbyRef.current = false;
+    setStandby(false);
+    searchingSinceRef.current = null;
     loop.start(video, {
       onFrame: (t) => {
         window.__cameraTelemetry = t;
@@ -1873,6 +1916,48 @@ export default function CameraView() {
       bestShotRingRef.current = [];
     };
   }, [precisionLive, feedRingFromVideo]);
+
+  /* ── FIX v5 (5.4) — MODO ESPERA (nivel 1) ────────────────────────────
+   *  Entrada: sin corners (live.searching) de forma continua durante 30 s
+   *  Y sin interacción del usuario → loop.setIdle(true) (análisis a 2 fps,
+   *  stream intacto) + pill persistente.
+   *  Salida: corners detectados de nuevo (efecto de abajo — el análisis a
+   *  2 fps sigue evaluando y reacciona en <1 s), toque en el visor
+   *  (onPointerDownCapture de la raíz) o captura (runCaptureFlow).
+   *  ⛔ Convivencia con el watchdog v4 4.3: la espera NO toca el video —
+   *  isStreamDead vigila readyState/muted del TRACK y el track sigue
+   *  "live" con frames → el watchdog nunca confunde espera con muerte. */
+  useEffect(() => {
+    if (!precisionLive) return;
+    if (live.searching) {
+      if (searchingSinceRef.current === null) {
+        searchingSinceRef.current = Date.now();
+      }
+    } else {
+      // Documento a la vista: corta la racha y reactiva si estaba dormido.
+      searchingSinceRef.current = null;
+      exitStandby();
+    }
+  }, [live.searching, precisionLive, exitStandby]);
+
+  useEffect(() => {
+    if (!precisionLive) return;
+    const iv = window.setInterval(() => {
+      if (standbyRef.current) return;
+      const since = searchingSinceRef.current;
+      const now = Date.now();
+      if (
+        since !== null &&
+        now - since >= STANDBY_AFTER_MS &&
+        now - lastInteractionRef.current >= STANDBY_AFTER_MS
+      ) {
+        standbyRef.current = true;
+        setStandby(true);
+        loopRef.current?.setIdle(true);
+      }
+    }, 1000);
+    return () => window.clearInterval(iv);
+  }, [precisionLive]);
 
   // Linterna — F-FLASH v3: botón SIEMPRE activo con cámara real; la verdad
   // se descubre al pulsar (aplicar + verificar getSettings.torch). El deseo
@@ -1992,7 +2077,17 @@ export default function CameraView() {
   const scorePct = live.score !== null ? Math.round(live.score * 100) : null;
 
   return (
-    <div className="relative flex h-full w-full flex-col bg-black">
+    <div
+      className="relative flex h-full w-full flex-col bg-black"
+      /* FIX v5 (5.4): cualquier toque en la cámara cuenta como interacción
+       *  (reset de la ventana de espera) Y despierta el análisis si estaba
+       *  en modo espera — captura de fase: llega desde botones, visor y
+       *  overlays por igual. */
+      onPointerDownCapture={() => {
+        lastInteractionRef.current = Date.now();
+        exitStandby();
+      }}
+    >
       {/* Inputs de captura ocultos (método PRIMARIO: cámara nativa en móvil) */}
       <input
         ref={captureInputRef}
@@ -2260,9 +2355,10 @@ export default function CameraView() {
           </div>
         )}
 
-        {/* IA calentando / buscando documento */}
+        {/* IA calentando / buscando documento — FIX v5 (5.4): oculta durante
+            el modo espera (la pill de espera ocupa su sitio) */}
         <AnimatePresence>
-          {precisionLive && live.searching && !processing && (
+          {precisionLive && live.searching && !processing && !standby && (
             <motion.div
               key="searching-pill"
               initial={{ opacity: 0, y: 8 }}
@@ -2276,6 +2372,31 @@ export default function CameraView() {
                 <p className="text-[12px] font-medium text-white/85">Buscando documento…</p>
               </div>
             </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* FIX v5 (5.4) — pill del MODO ESPERA: análisis a 2 fps (ahorro de
+            batería/CPU con el visor abierto sin documento). Tocarla (o
+            cualquier parte de la cámara) reactiva; acercar un documento
+            también (el análisis a 2 fps lo ve en <1 s). */}
+        <AnimatePresence>
+          {standby && (
+            <motion.button
+              key="standby-pill"
+              type="button"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.2 }}
+              onClick={exitStandby}
+              aria-label="Salir del modo espera y reactivar la detección"
+              className="absolute inset-x-0 top-5 z-30 mx-auto flex w-fit items-center gap-2 rounded-full bg-black/60 px-3.5 py-1.5 backdrop-blur-sm transition-transform active:scale-95"
+            >
+              <Moon className="h-3.5 w-3.5 text-[#ffd60a]" aria-hidden="true" />
+              <span className="text-[12px] font-medium text-white/85">
+                Modo espera — toca para reactivar
+              </span>
+            </motion.button>
           )}
         </AnimatePresence>
 
