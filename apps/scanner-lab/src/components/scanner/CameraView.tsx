@@ -244,6 +244,37 @@ interface LiveUi {
   searching: boolean;
 }
 
+/** FIX v5 (5.2) — suelo de confianza para crear la página con el quad
+ *  VIVO en vez del marco completo + re-detección. SHUTTER_SCORE (0,8) es
+ *  el umbral del DISPARO automático; para el nacimiento manual basta un
+ *  quad estable y visible: el usuario lo vio en el overlay y ese es el
+ *  recorte que espera (WYSIWYG). Debajo de 0,6 la detección viva puede
+ *  ser basura (mala luz) → más seguro re-detectar en background. */
+const LIVE_QUAD_MIN_SCORE = 0.6;
+
+/** FIX v5 (5.2) — deriva media entre dos quads normalizados (0-1), en
+ *  fracción de la diagonal de la imagen (√2 normalizada). <2 % = mismo
+ *  recorte dentro del ruido de detección → no reemplazar (micro-saltos). */
+function quadDrift(a: Quad, b: Quad): number {
+  let sum = 0;
+  for (let i = 0; i < 4; i += 1) {
+    sum += Math.hypot(a[i]!.x - b[i]!.x, a[i]!.y - b[i]!.y);
+  }
+  return sum / 4 / Math.SQRT2;
+}
+
+/** FIX v5 (5.2) — dimensiones NATURALES de una fuente de captura (imagen
+ *  o canvas). Helpers separados: el narrowing de instanceof solo es fiable
+ *  sobre un parámetro fresco tipado como la unión (en el scope de captura,
+ *  el CFA ya estrecha `source` a HTMLImageElement). */
+function sourceNaturalWidth(src: HTMLImageElement | HTMLCanvasElement): number {
+  return src instanceof HTMLImageElement ? src.naturalWidth : src.width;
+}
+
+function sourceNaturalHeight(src: HTMLImageElement | HTMLCanvasElement): number {
+  return src instanceof HTMLImageElement ? src.naturalHeight : src.height;
+}
+
 /** Trapecio con jitter leve — fallback simulado mientras no hay worker. */
 function jitteredQuad(): Quad {
   const j = (v: number) => Math.min(0.97, Math.max(0.03, v + (Math.random() - 0.5) * 0.02));
@@ -460,6 +491,10 @@ export default function CameraView() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [precisionReady, setPrecisionReady] = useState(false);
   const [live, setLive] = useState<LiveUi>({ corners: null, score: null, fps: 0, searching: true });
+  /** FIX v5 (5.2): espejo por ref del último frame vivo — handleCaptureDataUrl
+   *  necesita la detección EN EL INSTANTE del disparo (el estado React llega
+   * tarde al closure; el ref siempre está fresco). */
+  const liveRef = useRef<LiveUi>({ corners: null, score: null, fps: 0, searching: true });
   const [videoDims, setVideoDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [boxSize, setBoxSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [torchAvailable, setTorchAvailable] = useState(false);
@@ -621,6 +656,14 @@ export default function CameraView() {
           apply({ autoQuadPending: false });
           return;
         }
+        // FIX v5 (5.2): micro-salto — si lo detectado full-res es
+        // prácticamente el quad actual de la página (<2 % de la diagonal),
+        // NO se reemplaza: el reproceso de preview cambiaría la cache por
+        // un recorte visualmente idéntico (salto/parpadeo injustificado).
+        if (quadDrift(page.quad, detected) < 0.02) {
+          apply({ autoQuadPending: false });
+          return;
+        }
         apply({ quad: detected, autoQuadPending: false });
       } catch {
         apply({ autoQuadPending: false });
@@ -669,13 +712,51 @@ export default function CameraView() {
         // (corre en background tras abrir el editor). La calidad sí se mide
         // aquí: es barata (canvas de ≤400 px) y alimenta el badge de calidad.
         const quality = await evaluateQuality(source);
+        // FIX v5 (5.2) — FIN DEL «DOBLE RECORTE»: lo que se vio EN VIVO es lo
+        // que llega al editor. Si al disparar había detección confiable, su
+        // quad (normalizado al frame del video) se usa DIRECTAMENTE para
+        // nacer la página — la re-detección full-res de applyAutoQuad podía
+        // entregar OTRO recorte distinto al del overlay (distinta resolución
+        // de análisis → distinto ajuste fino) y el usuario veía como si se
+        // recortara dos veces. Requisito de mapeo: los corners viven en el
+        // espacio del frame de ANÁLISIS del video (normalizados 0-1); la
+        // captura (foto full-sensor o snapshot) debe tener el MISMO aspect
+        // (±2 %) para que el mapeo directo sea fiel — si difiere (p. ej.
+        // foto 16:9 de un preview 4:3), el mapeo mentiría → background.
+        const t = liveRef.current;
+        let bornQuad: Quad | null = null;
+        if (
+          t.corners &&
+          t.score !== null &&
+          t.score >= LIVE_QUAD_MIN_SCORE
+        ) {
+          const vw = videoRef.current?.videoWidth ?? 0;
+          const vh = videoRef.current?.videoHeight ?? 0;
+          const iw = sourceNaturalWidth(source);
+          const ih = sourceNaturalHeight(source);
+          if (
+            vw > 0 &&
+            vh > 0 &&
+            iw > 0 &&
+            ih > 0 &&
+            Math.abs(vw / vh - iw / ih) <= 0.02
+          ) {
+            const c = t.corners;
+            bornQuad = [
+              { x: c[0]!.x, y: c[0]!.y },
+              { x: c[1]!.x, y: c[1]!.y },
+              { x: c[2]!.x, y: c[2]!.y },
+              { x: c[3]!.x, y: c[3]!.y },
+            ];
+          }
+        }
         const page: CapturePage = {
           id: nextId("page"),
           original: dataUrl,
           // Marco provisional (vista completa): el quad real llega en
           // background vía applyAutoQuad, sin bloquear la revisión.
-          quad: defaultQuad(),
-          autoQuadPending: true,
+          quad: bornQuad ?? defaultQuad(),
+          autoQuadPending: bornQuad === null,
           // F-DEFAULT-BW: «Mejora automática» (Ajustes › Procesamiento) decide
           // el filtro por defecto de cada captura — ON = B/N adaptativo (lo que
           // pidió el usuario), OFF = Original puro. Cambiable en el editor.
@@ -686,9 +767,15 @@ export default function CameraView() {
         addCapturePage(page);
         // F-FLOW: directo al editor (modo revisión) — igual que Adobe Scan.
         setView("editor");
-        // La detección vuela en background; cuando aterrice, el preview se
-        // re-procesa solo (cambia el quad → capturePageKey → cache miss).
-        void applyAutoQuad(page.id, source);
+        // FIX v5 (5.2): con quad nato del overlay NO se re-detecta (era la
+        // 2ª detección que cambiaba el recorte). Sin detección viva confiable
+        // (o aspect distinto): la detección vuela en background como antes;
+        // cuando aterrice, el preview se re-procesa solo (cambia el quad →
+        // capturePageKey → cache miss) y la pill «Ajustando recorte…» cubre
+        // la espera.
+        if (bornQuad === null) {
+          void applyAutoQuad(page.id, source);
+        }
       } catch (err) {
         console.error("handleCaptureDataUrl falló:", err);
         toast.error("No se pudo procesar la imagen");
@@ -1575,12 +1662,14 @@ export default function CameraView() {
         const now = performance.now();
         if (now - lastTelemetryAt.current < 100) return; // throttle UI ~10 Hz
         lastTelemetryAt.current = now;
-        setLive({
+        const next: LiveUi = {
           corners: t.corners,
           score: t.score ? t.score.total : null,
           fps: t.fps,
           searching: t.corners === null,
-        });
+        };
+        liveRef.current = next; // FIX v5 (5.2): fresco para el instante del disparo
+        setLive(next);
       },
       onTrigger: () => {
         if (!autoRef.current) return;
