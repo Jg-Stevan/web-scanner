@@ -42,3 +42,5 @@ Leyenda: [ ] pendiente · [~] en progreso · [x] hecho
 - [x] F5 — barra de controles FIJA en la parte inferior del editor de revisión (D38)
 - [x] F2 — filtro «B/N adaptativo» por defecto + selector de filtros (copia del lab, D36)
 - [x] F4 — QuadEditor con ROTAR 90° y DETECCIÓN AUTOMÁTICA (copia del lab, D37)
+
+**Estado:** PR #8 MERGEADO a `main` (merge commit `eda6714`, 2026-10-10) · CI Pages verde · smoke test de producción OK (golden path + editor + filtros + barra fija al píxel + h-dvh móvil + lab sin regresión — ver worklog 14:40). **En producción:** https://jg-stevan.github.io/web-scanner/

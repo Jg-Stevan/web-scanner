@@ -715,3 +715,18 @@ PROFILER / snapA+TORCH_HINT+accept.
 - **Commits:** 0ea4a20
 - **Cómo probar (dueño):** Preview → SIMULACIÓN → ESCANEAR → ANALIZANDO real (~8 s) → REVISIÓN con la foto real en B/N; probar FILTROS (sheet), RECORTAR (ROTAR 90° + DETECCIÓN AUTOMÁTICA + APLICAR/CANCELAR), ROTAR 90° de la barra (la barra no se mueve) y EXPORTAR PDF en una acta ENVIADA real (CÁMARA/IMPORTAR).
 - **Pendiente/Bloqueado:** verificación de CÁMARA real y del flujo ENVIADA→EXPORTAR PDF en el teléfono del dueño (headless no tiene cámara); merge del PR por el dueño.
+
+### [2026-10-10 14:40 (Bogotá)] — MERGE PR #8 + smoke test de PRODUCCIÓN — Z.ai Code (main)
+- **Hecho:** merge del PR #8 (`fix/e14-ux-real` → `main`, merge commit `eda6714`, método **merge** — narrativa de 9 commits preservada, sin squash) por orden del dueño. CI `Deploy to GitHub Pages` (run `38008050760`) → **success** en ~1 min. Deploy a producción verificado con agent-browser (desktop + móvil 390×844):
+  1. **Rutas:** e14 `/web-scanner/` 200 (13,4 KB HTML) · lab `/web-scanner/lab/` 200 (onboarding + «Mis documentos» sin errores — SIN regresión) · asset real `acta-e14-real.0w8iv2-_so1fz.jpg` 200 con 1.417.292 bytes (mismo tamaño del original — sha256 `c3f0bd7c…`).
+  2. **Golden path SIMULACIÓN:** ESCANEAR → pipeline real (~12 s en prod) → REVISIÓN «ACTA NO RECONOCIDA · 8.1/10 RECHAZADA · CÓDIGO DE BARRAS Y CABECERA NO DETECTADOS · INTENTO 1 DE 2» — MISMO resultado que el QA dev (esperado: el gate OCR no resuelve la foto real, mesa oscura brightness 36; ver A/B en la entrada 13:55 — NO es regresión del filtro `bw`).
+  3. **F4 editor (prod):** RECORTAR → AJUSTAR BORDES (8 asas) → ROTAR 90° ×2 (180°) + DETECCIÓN AUTOMÁTICA sin errores → APLICAR → recorte con rotación horneada, vuelta a REVISIÓN.
+  4. **F2 filtros (prod):** FILTROS → sheet con las 3 opciones (Original · Texto claro · B/N adaptativo) → aplicar «Original» → sheet cierra + re-proceso (toast verificado en QA dev).
+  5. **F5 barra fija al píxel (prod):** DESKTOP x=538 y=368 (98×44) y MÓVIL x=107.5 y=635 (83.5×44) — **IDÉNTICAS antes/después de ROTAR 90°** (mismos números que el QA dev: barY=635/barH=44).
+  6. **h-dvh (prod):** `scrollHeight=844` exacto en 390×844 para ESCANEAR/ACTAS/RESUMEN/REVISIÓN — sin overflow.
+  7. **ACTAS/RESUMEN** renderizan (mesas desplegables, historial, 75%).
+  8. **Consola:** cero errores de página y cero warnings en AMBAS apps durante toda la sesión de smoke.
+- **Archivos:** (sin cambios de código — solo este registro)
+- **Commits:** `eda6714` (merge en GitHub; este docs-commit va directo a main siguiendo la convención `c225fbe`)
+- **Cómo probar:** abrir `https://jg-stevan.github.io/web-scanner/` → SIMULACIÓN → ESCANEAR → ANALIZANDO real (~12 s) → REVISIÓN; probar RECORTAR (ROTAR 90°/DETECCIÓN/APLICAR), FILTROS y que la barra no se mueva al rotar.
+- **Pendiente/Bloqueado:** verificación en el TELÉFONO del dueño de: CÁMARA real, IMPORTAR (incl. HEIC), flujo ENVIADA→EXPORTAR PDF con foto real, y el chequeo §6.2 del spec de auditoría. H6 (PWA) sigue siendo decisión del autor.
