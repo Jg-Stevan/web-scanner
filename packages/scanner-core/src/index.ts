@@ -10,7 +10,6 @@
 export * from "./store";
 export * from "./types";
 export * from "./image-processor";
-export * from "./device-capability";
 export * from "./quality";
 export * from "./ocr";
 export * from "./pdf-export";

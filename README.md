@@ -163,7 +163,6 @@ Abre <http://localhost:3000> en el navegador.
 │       ├── page-store.ts             # Persistencia IndexedDB
 │       ├── image-processor.ts        # Filtros, recorte, rotación, calidad (hasta 4032 px) + importación robusta (HEIC incluido)
 │       ├── detector-client.ts        # Cliente del Web Worker de detección
-│       ├── device-capability.ts      # Benchmark del dispositivo (F-DEVBENCH)
 │       ├── pwa.ts                    # Registro del Service Worker + prompt de instalación
 │       ├── image-modes.ts            # Filtros por píxel (Texto claro: pipeline F-TEXT-CLEAN)
 │       ├── ocr.ts                    # OCR local (Tesseract) con salvavidas de servidor

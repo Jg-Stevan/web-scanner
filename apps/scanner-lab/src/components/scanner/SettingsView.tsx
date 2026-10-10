@@ -6,9 +6,9 @@
  * calidad PDF y borrado de todos los documentos con confirmación.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, Copy, Download, FileText, Gauge, Layers, Loader2, Monitor, Moon, PlusSquare, ScanText, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
+import { Check, Copy, Download, FileText, Layers, Loader2, Monitor, Moon, PlusSquare, ScanText, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 
@@ -20,12 +20,8 @@ import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
 import { countTagUsage } from "@jg-stevan/scanner-core/tags";
 import { countWords } from "@jg-stevan/scanner-core/text-export";
 import { getScannerWorker } from "@jg-stevan/scanner-core/image-processor";
+import { PROCESSED_MAX_LONG_SIDE } from "@jg-stevan/scanner-core/image-processor";
 import { storageAvailable } from "@jg-stevan/scanner-core/page-store";
-import {
-  getCachedDeviceCapability,
-  measureDeviceCapability,
-  type DeviceCapability,
-} from "@jg-stevan/scanner-core/device-capability";
 import {
   getPwaInstallState,
   promptInstall,
@@ -270,10 +266,18 @@ export default function SettingsView() {
         {/* F-PWA: instalación en el móvil (Android: prompt nativo · iOS: guía) */}
         <InstallSection />
 
-        {/* F-DEVBENCH: capacidad del dispositivo (¿aguanta el procedimiento?) */}
-        <DeviceSection />
-
         <SettingsGroup label="Procesamiento" delay={0.1}>
+          {/* FIX v3: fila informativa estática (sin medición) — el benchmark
+              F-DEVBENCH se eliminó: la app procesa SIEMPRE al máximo del
+              lente con tope técnico único. */}
+          <SettingsRow
+            title="Resolución de procesado"
+            subtitle="Máxima calidad · tope técnico del canvas en iOS"
+          >
+            <span className="shrink-0 text-[15px] font-medium tabular-nums text-[#3c3c43] dark:text-white/85">
+              {PROCESSED_MAX_LONG_SIDE} px
+            </span>
+          </SettingsRow>
           <SettingsRow
             title="Mejora automática"
             subtitle="Empieza cada captura con el filtro «B/N adaptativo» (apagado: Original puro)"
@@ -915,79 +919,7 @@ function InstallSection() {
   );
 }
 
-/** F-DEVBENCH — Rendimiento del dispositivo: mide CPU+canvas en idle, muestra
- *  el tier y el tope de resolución que la app usará, con re-medición manual. */
-function DeviceSection() {
-  const [cap, setCap] = useState<DeviceCapability | null>(() => getCachedDeviceCapability());
-  const [measuring, setMeasuring] = useState(false);
-
-  const measure = useCallback(() => {
-    void measureDeviceCapability()
-      .then(setCap)
-      .catch(() => toast.error("No se pudo medir el dispositivo"))
-      .finally(() => setMeasuring(false));
-  }, []);
-
-  // Mide al entrar si aún no hay dato (cacheada 7 días). La llamada va en un
-  // timeout para no hacer setState síncrono dentro del body del effect.
-  useEffect(() => {
-    if (getCachedDeviceCapability()) return;
-    const t = window.setTimeout(measure, 0);
-    return () => window.clearTimeout(t);
-  }, [measure]);
-
-  const tierColor =
-    cap?.tier === "high"
-      ? "bg-[#34c759]/12 text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
-      : cap?.tier === "medium"
-        ? "bg-[#ff9f0a]/14 text-[#a36b00] dark:text-[#ff9f0a]"
-        : "bg-[#ff3b30]/12 text-[#c0392b] dark:text-[#ff453a]";
-
-  return (
-    <SettingsGroup label="Rendimiento del dispositivo" delay={0.14}>
-      <SettingsRow title="Capacidad medida" subtitle={cap ? cap.hint : "Midiendo…"}>
-        <span
-          className={cn(
-            "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold",
-            cap ? tierColor : "bg-[#8e8e93]/15 text-[#8e8e93]"
-          )}
-          role="status"
-        >
-          <Gauge className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-          {cap
-            ? `${cap.tier === "high" ? "Alta" : cap.tier === "medium" ? "Media" : "Baja"} · ${cap.score}`
-            : measuring
-              ? "Midiendo"
-              : "—"}
-        </span>
-      </SettingsRow>
-      {cap && (
-        <SettingsRow title="Resolución de procesado" subtitle="Tope del lado mayor que tu dispositivo aguanta">
-          <span className="shrink-0 text-[15px] font-medium tabular-nums text-[#3c3c43] dark:text-white/85">
-            {cap.maxProcessedLongSide} px
-          </span>
-        </SettingsRow>
-      )}
-      {cap && (
-        <SettingsRow
-          title="Detalles del test"
-          subtitle={`CPU ${cap.cpuMs} ms · canvas ${cap.canvasMs} ms · ${cap.cores || "?"} núcleos${cap.deviceMemoryGB ? ` · ~${cap.deviceMemoryGB} GB RAM` : ""}`}
-        >
-          <button
-            type="button"
-            aria-label="Volver a medir la capacidad del dispositivo"
-            onClick={measure}
-            className="flex shrink-0 items-center gap-1.5 rounded-full bg-white/90 px-3.5 py-1.5 text-[13px] font-semibold text-[#007aff] ring-1 ring-inset ring-[#007aff]/25 transition-transform active:scale-95 dark:bg-[#2c2c2e]"
-          >
-            {measuring ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-            ) : (
-              <Gauge className="h-3.5 w-3.5" strokeWidth={2.2} aria-hidden="true" />
-            )}
-            Medir de nuevo
-          </button>
-        </SettingsRow>
-      )}
-    </SettingsGroup>
-  );
-}
+/* F-DEVBENCH (DeviceSection) — ELIMINADO en el fix v3 (fix-editor-quality):
+ * la app procesa y guarda SIEMPRE al máximo del lente (tope técnico único
+ * 4032 px). Su hueco lo cubre la fila informativa estática
+ * "Resolución de procesado" del grupo Procesamiento. */

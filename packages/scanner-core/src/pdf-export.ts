@@ -39,7 +39,13 @@ const ATTEMPTS_ALTA: readonly ExportAttempt[] = [
   { longSide: 2600, quality: 0.82 },
   { longSide: 2200, quality: 0.78 },
 ];
+// FIX v3 (fix-editor-quality): el primer intento de "standard" parte de
+// tamaño COMPLETO (antes {2600, 0.82} recortaba de serie aunque la página
+// fuera de 4032 — contradecía la regla "máximo del lente"). Las tres
+// calidades ahora solo degradan si el PRESUPUESTO de bytes lo exige; la
+// escalera de respaldo se mantiene intacta.
 const ATTEMPTS_STANDARD: readonly ExportAttempt[] = [
+  { longSide: 0, quality: 0.9 },
   { longSide: 2600, quality: 0.82 },
   { longSide: 2200, quality: 0.78 },
 ];

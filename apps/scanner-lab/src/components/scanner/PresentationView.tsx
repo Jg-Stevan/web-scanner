@@ -64,6 +64,10 @@ export function PresentationView({
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imgWrapRef = useRef<HTMLDivElement | null>(null);
+  // FIX v3 (1.1/1.2): la imagen MISMA — el wrapper pasa a medir el stage
+  // completo (h-full w-full), así que el paneo se acota con el tamaño
+  // MAQUETADO del <img> (object-contain), no con el del wrapper.
+  const imgRef = useRef<HTMLImageElement | null>(null);
 
   // Zoom/pan como motion values (transform del wrapper de la página).
   const scale = useMotionValue(1);
@@ -105,14 +109,22 @@ export function PresentationView({
     return { x: cx - (rect.left + rect.width / 2), y: cy - (rect.top + rect.height / 2) };
   }, []);
 
+  // FIX v3 (1.2): fórmula correcta de límites de paneo — se mide la IMAGEN
+  // (tamaño maquetado, sin transform) contra el STAGE. La fórmula vieja
+  // ((elW × (s−1))/2 sobre el wrapper) permitía SOBRE-paneo: una imagen más
+  // pequeña que el stage en algún eje (p. ej. retrato en pantalla
+  // horizontal) se podía desplazar más allá de su borde → huecos negros y
+  // la imagen «cortada» flotando. (imgW × s − stageW)/2 clava el borde de
+  // la imagen al del stage cuando se tocan.
   const clampPan = useCallback(() => {
-    const el = imgWrapRef.current;
+    const img = imgRef.current;
+    const stage = stageRef.current;
     const s = scale.get();
     let bx = 0;
     let by = 0;
-    if (el && s > 1) {
-      bx = Math.max(0, (el.offsetWidth * (s - 1)) / 2);
-      by = Math.max(0, (el.offsetHeight * (s - 1)) / 2);
+    if (img && stage && s > 1) {
+      bx = Math.max(0, (img.offsetWidth * s - stage.clientWidth) / 2);
+      by = Math.max(0, (img.offsetHeight * s - stage.clientHeight) / 2);
     }
     if (x.get() > bx) x.set(bx);
     if (x.get() < -bx) x.set(-bx);
@@ -439,12 +451,25 @@ export function PresentationView({
             transition={{ duration: 0.24, ease: IOS_EASE }}
             className="absolute inset-0 flex items-center justify-center p-4"
           >
+            {/* FIX v3 (1.1): wrapper de tamaño DEFINITIVO (h-full w-full).
+                ANTES era max-h-full/max-w-full (altura AUTO): el
+                max-height:100% del <img> se resuelve contra un padre de
+                altura auto → según spec NO se resuelve; Chrome lo arregla
+                para flex items pero iOS Safari NO → la foto (3000+ px) se
+                maquetaba a tamaño natural, desbordaba y el overflow-hidden
+                del stage la RECORTABA. Con tamaño definitivo el porcentaje
+                siempre se resuelve y object-contain ajusta. (Mismo patrón
+                que ya funciona en iOS en el stage de review del editor.)
+                FIX v3 (1.5): will-change SOLO durante el gesto — una capa
+                GPU con will-change permanente puede rasterizarse a baja
+                resolución en iOS Safari (borroso al ampliar). */}
             <motion.div
               ref={imgWrapRef}
-              style={{ scale, x, y, willChange: "transform" }}
-              className="relative flex max-h-full max-w-full items-center justify-center"
+              style={{ scale, x, y, willChange: zoomPct > 100 ? "transform" : "auto" }}
+              className="relative flex h-full w-full items-center justify-center"
             >
               <img
+                ref={imgRef}
                 src={page.processed}
                 alt={`Página ${index + 1} de ${totalPages} de ${title}`}
                 draggable={false}

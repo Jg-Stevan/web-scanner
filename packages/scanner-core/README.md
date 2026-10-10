@@ -30,8 +30,7 @@ consumido por apps (hoy `apps/scanner-lab`, mañana `apps/digitalizador-e14` y o
 | `format` | Formateo (bytes, tiempo relativo, …) |
 | `tags` | Etiquetas de documentos |
 | `page-store` | Persistencia IndexedDB de páginas |
-| `device-capability` | Benchmark del dispositivo (F-DEVBENCH) |
-| `sensor-profiler` | Tope de resolución del sensor (F-SENSOR) |
+| `sensor-profiler` | Tope de resolución del sensor (F-SENSOR · 4032 px fijo) |
 | `motion-stabilizer` | Compuerta de quietud (F-STAB) |
 | `pwa` | Registro de Service Worker |
 | `mock-data` | Datos de hidratación inicial (interno) |

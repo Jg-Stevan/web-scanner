@@ -266,8 +266,8 @@
   // src/scanner/core/warp.ts
   // F-PERSP: 3500 → 4032 (foto completa del sensor; el enhance del cliente
   // ya capa a 4032, así que 3500 tiraba resolución real). Ajustable EN
-  // CALIENTE por config {maxWarpLongSide} según el benchmark del dispositivo
-  // (F-DEVBENCH: 4032/3200/2560).
+  // CALIENTE por config {maxWarpLongSide}. FIX v3: el benchmark F-DEVBENCH
+  // se eliminó — la app fija SIEMPRE 4032 (tope técnico único, canvas iOS).
   var warpMaxLongSide = 4032;
   var UNSHARP_AMOUNT = 0.5;
   var UNSHARP_RADIUS = 1.5;

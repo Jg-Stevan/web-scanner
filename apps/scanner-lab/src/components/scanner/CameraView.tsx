@@ -51,6 +51,7 @@ import {
   generateDemoPage,
   getScannerWorker,
   loadImage,
+  PROCESSED_MAX_LONG_SIDE,
 } from "@jg-stevan/scanner-core/image-processor";
 import {
   CameraFrameLoop,
@@ -93,19 +94,24 @@ type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
 // ❌ ANTES: const IDEAL_CAPTURE_WIDTH = 3840 — forzaba el stream de la
 //    vista en vivo a 4K y congelaba gama baja (el <video> continuo a 4K
 //    derrocha GPU: el loop de detección solo procesa a 400 px).
-// ✅ AHORA — ARQUITECTURA DUAL PIPELINE (v2: preview qHD 960×540 + 30 FPS):
-// 1. PREVIEW aún más ligero. Bajar de 720p a 540p NO toca ni el análisis
-//    ni la foto:
-//    · El loop de detección remuestrea SIEMPRE a 400 px
-//      (createImageBitmap resize) → el análisis ve lo mismo desde 540p.
-//    · Los frames del video (ring ZSL / snapshot) son SOLO fallback
-//      cuando no existe ImageCapture → 960 px sigue siendo sobrado.
-//    · La foto real sale del sensor vía takePhoto() (pilar 2, abajo).
-//    Neto: ~44% menos píxeles por frame de decodificado/composición y
-//    tope suave de 30 FPS (el visor no aprovecha 60) → menos calor y
-//    más fluido en gama baja.
-const IDEAL_PREVIEW_WIDTH = 960;
-const IDEAL_PREVIEW_HEIGHT = 540;
+// ✅ AHORA — ARQUITECTURA DUAL PIPELINE (fix v3: resolución consciente de
+//    plataforma):
+// 1. PREVIEW ligero SOLO donde existe ImageCapture (Chrome/Android):
+//    960×540 + 30 FPS. El loop de detección remuestrea SIEMPRE a 400 px
+//    (createImageBitmap resize) → el análisis ve lo mismo desde 540p, y la
+//    foto real sale del sensor vía takePhoto() (pilar 2, abajo) → ~44%
+//    menos píxeles por frame, menos calor, más fluido en gama baja.
+// 2. iOS/Safari (SIN ImageCapture): el ORIGINAL de la AUTO-CAPTURA sale
+//    del <video> (ring ZSL / snapshot) — con 540p nacían originales de
+//    0.5 MP (foto «de muy baja calidad» en iPhone). El hardware de iPhone
+//    aguanta 1920×1440 sin coste de fluidez apreciable → se pide ALTO.
+//    El disparo MANUAL sigue por cámara nativa (input capture, 12 MP).
+//    Regla E3 intacta: SOLO `ideal`, nunca `exact/min` (no rechaza).
+//    La exclusión es automática: Android gama baja SÍ tiene ImageCapture
+//    → nunca entra en el régimen alto.
+const HAS_IMAGE_CAPTURE = typeof ImageCapture !== "undefined";
+const IDEAL_PREVIEW_WIDTH = HAS_IMAGE_CAPTURE ? 960 : 1920;
+const IDEAL_PREVIEW_HEIGHT = HAS_IMAGE_CAPTURE ? 540 : 1440;
 /** Tope suave de FPS del preview: «ideal» NO rechaza cámaras que solo
  *  ofrecen 60, solo evita negociar 60 cuando el hardware lo permite. */
 const IDEAL_PREVIEW_FPS = 30;
@@ -243,12 +249,11 @@ function jitteredQuad(): Quad {
 }
 
 /** Reduce imágenes enormes de galería para no reventar la memoria del store.
- *  4032 (bug v3 de CALIDAD: estaba en 3400 y re-escalaba la foto nativa del
- *  iPhone de 4032px, añadiendo un re-encode JPEG extra — codigo-test guarda
- *  la foto full-res con una sola compresión). Con el Dual Pipeline ya no hay
- *  downscale en capturas de GAMAS ALTAS (4032×3024 ≈ 12.2 MP, lejos del
- *  límite de canvas de iOS); en media/baja el F-SENSOR-PROFILER pide 3200 px
- *  al sensor y ESTE tope es la segunda red de seguridad (imports incluidos).
+ *  Tope técnico único 4032 px (fix v3 — antes el tope por gama del benchmark
+ *  re-escalaba la foto nativa de gamas media/baja a 3200 y degradaba la
+ *  FUENTE para siempre). 4032×3024 ≈ 12.2 MP decodifica y dibuja bien
+ *  incluso en iOS (límite de canvas ~16.7 MP); los sensores gigantes
+ *  (48/108 MP) siguen protegidos por el sensor-profiler + este downscale.
  *  Recibe el elemento YA decodificado (decode único de la captura) y devuelve
  *  null si no hace falta re-escalar. */
 /** C13: ahora ASÍNCRONA con toBlob (no bloquea el hilo ~1 s con imports de
@@ -435,8 +440,8 @@ export default function CameraView() {
    *  cámara NATIVA (input capture=environment) — HQ-iOS, error #5. */
   const canTakePhotoRef = useRef(false);
   /** F-SENSOR-PROFILER (PASO 2): perfil del sensor de FOTO del track vivo
-   *  (resolución nativa vía getPhotoCapabilities + tope seguro 4032/3200 px
-   *  según la gama medida). null = aún sin sondear. */
+   *  (resolución nativa vía getPhotoCapabilities + tope técnico único
+   *  4032 px — fix v3: sin tope por gama). null = aún sin sondear. */
   const sensorProfileRef = useRef<SensorProfile | null>(null);
   /** Toast único por sesión de aviso calidad en iPhone (auto-captura = frames). */
   const iosQualityToastShownRef = useRef(false);
@@ -576,13 +581,13 @@ export default function CameraView() {
         // reutiliza en las etapas; solo se re-decodifica si hubo que
         // re-escalar una imagen de galería más grande que el sensor.
         const decoded = await loadImage(rawDataUrl);
-        // F-SENSOR-PROFILER: el tope del downscale sigue la GAMA medida
-        // (4032 alta / 3200 media-baja) — segunda red de seguridad por si
-        // la foto llegó por encima del tope (photoSettings no aplicado).
-        const scaledUrl = await downscaleImage(
-          decoded,
-          sensorProfileRef.current?.safeCapPx ?? getSensorSafeCap()
-        );
+        // FIX v3 (fix-editor-quality): el ORIGINAL se capa al tope técnico
+        // ÚNICO (4032 px) — NUNCA al de una gama (antes: safeCapPx del
+        // benchmark → 3200 en medium/low degradaba la FUENTE para siempre).
+        // Los sensores ≤12 MP pasan intactos (4032×3024 ≈ 12.2 MP decodifica
+        // bien en iOS); los gigantes siguen protegidos por las 2 capas del
+        // sensor-profiler + este downscale como tercera red.
+        const scaledUrl = await downscaleImage(decoded, PROCESSED_MAX_LONG_SIDE);
         const dataUrl = scaledUrl ?? rawDataUrl;
         const source: HTMLImageElement | HTMLCanvasElement = scaledUrl
           ? await loadImage(scaledUrl)
@@ -845,9 +850,12 @@ export default function CameraView() {
     const snapA = snapshotVideo();
     const photoBlob = canTakePhotoRef.current ? await takePhotoBlob() : null;
     if (!photoBlob) {
-      // takePhoto colgó (> 8 s) o no existe: avisamos solo con stream real —
-      // el fotograma de preview (540p/720p) es un recurso, no el estándar.
-      if (status === "live") {
+      // takePhoto colgó (> 8 s) o no existe (iOS). FIX v3: con el stream
+      // alto de iOS (1920×1440) el frame YA es un original decente — el
+      // aviso de baja resolución solo tiene sentido cuando el frame es
+      // REALMENTE bajo (<1280 px, p.ej. gama baja Android sin ImageCapture).
+      const frameW = videoRef.current?.videoWidth ?? 0;
+      if (status === "live" && frameW > 0 && frameW < 1280) {
         toast.warning("Cámara lenta: baja resolución esta vez", {
           description:
             "La foto de alta resolución no respondió; se guardó el fotograma de vista previa.",
@@ -1030,7 +1038,7 @@ export default function CameraView() {
       // frames de video (≤ 1080p). Toast único por sesión (§5.2).
       canTakePhotoRef.current = typeof ImageCapture !== "undefined";
       // F-SENSOR-PROFILER (PASO 2): mide la nativa de FOTO del sensor y
-      // fija el tope seguro (4032/3200 px) para takePhotoBlob.
+      // fija el tope técnico único (4032 px) para takePhotoBlob.
       profileActiveSensor(stream);
       if (!canTakePhotoRef.current && autoRef.current && !iosQualityToastShownRef.current) {
         iosQualityToastShownRef.current = true;

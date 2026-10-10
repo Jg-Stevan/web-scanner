@@ -17,7 +17,14 @@ import type {
 } from "./types";
 import { DEFAULT_SETTINGS, TRASH_RETENTION_DAYS, capturePageKey, isTrashed } from "./types";
 import { initialDocuments } from "./mock-data";
-import { processImage } from "./image-processor";
+// FIX v3 (fix-editor-quality): tope ÚNICO para preview y guardado — regla del
+// producto: guardar siempre a la resolución máxima (tope técnico 4032 px,
+// canvas iOS). Sin ajustes por dispositivo/benchmark.
+import {
+  loadImage,
+  processImage,
+  PROCESSED_MAX_LONG_SIDE,
+} from "./image-processor";
 import {
   clearAllDocuments as idbClearAll,
   loadAllDocuments,
@@ -33,6 +40,44 @@ let uid = 0;
 export function nextId(prefix: string): string {
   uid += 1;
   return `${prefix}-${Date.now().toString(36)}-${uid}`;
+}
+
+/** FIX v3 (calidad) — defensa al fusionar (rama processedValid): ¿la
+ *  procesada "válida" conserva la resolución objetivo?
+ *
+ *  El objetivo NO es siempre 4032: es lo que el ORIGINAL + quad pueden
+ *  producir — `min(4032, max(aristas del quad en px del original))`, la
+ *  MISMA geometría con la que `warpQuadToCanvas` dimensiona la salida
+ *  (w0 = máx(|TL→TR|, |BL→BR|), h0 = máx(|TR→BR|, |TL→BL|), sin upscalar).
+ *  Así un recorte ajustado (procesada < 4032 por GEOMETRÍA, a máxima
+ *  calidad) no se confunde con una degradación real (3200/2600 heredados
+ *  del benchmark o de rotaciones de versiones anteriores). Tolerancia 0.9:
+ *  el shrink de 3.5px/lado del worker + redondeos.
+ *
+ *  Devuelve null si no se puede medir → el llamador conserva el
+ *  comportamiento original (un fallo de medición no penaliza el merge). */
+async function processedMeetsTarget(
+  processed: string,
+  original: string,
+  quad: Quad
+): Promise<boolean | null> {
+  try {
+    const [proc, orig] = await Promise.all([loadImage(processed), loadImage(original)]);
+    const pl = Math.max(proc.naturalWidth || 0, proc.naturalHeight || 0);
+    const ow = orig.naturalWidth || 0;
+    const oh = orig.naturalHeight || 0;
+    if (!pl || !ow || !oh) return null;
+    let maxEdge = 0;
+    for (let i = 0; i < 4; i += 1) {
+      const a = quad[i]!;
+      const b = quad[(i + 1) % 4]!;
+      maxEdge = Math.max(maxEdge, Math.hypot((b.x - a.x) * ow, (b.y - a.y) * oh));
+    }
+    const target = Math.min(PROCESSED_MAX_LONG_SIDE, maxEdge);
+    return pl >= target * 0.9;
+  } catch {
+    return null;
+  }
 }
 
 /** localStorage: marca «onboarding completado» (primera ejecución). */
@@ -255,6 +300,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
+          maxLongSide: PROCESSED_MAX_LONG_SIDE,
         });
         processed = res.processed;
         thumbnail = res.thumbnail;
@@ -368,8 +414,19 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       // editor) → NO re-procesar: se fusiona tal cual (la rotación de una
       // procesada es píxel-idéntica al reproceso completo). Solo se corrige la
       // precisión informativa si la rotación intercambió los ejes.
+      //
+      // FIX v3 (calidad) — defensa al fusionar: una procesada "válida"
+      // materialmente por DEBAJO del objetivo (3200/2600 heredados del
+      // benchmark o de rotaciones de versiones anteriores) se IGNORA y se
+      // reprocesa a tope: una imagen de calidad inferior al objetivo NUNCA
+      // llega al documento como "final".
       const processedValid = !!p.processed && p.processedKey === capturePageKey(p);
-      if (processedValid) {
+      let mergeProcessed = processedValid;
+      if (processedValid && p.processed) {
+        const atTarget = await processedMeetsTarget(p.processed, p.original, p.quad);
+        if (atTarget === false) mergeProcessed = false;
+      }
+      if (mergeProcessed) {
         let precision = prev?.precision;
         if (precision && prev) {
           const d = (((p.rotation - prev.rotation) % 360) + 360) % 360;
@@ -402,6 +459,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       try {
         const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
           manual: p.quadManual === true,
+          maxLongSide: PROCESSED_MAX_LONG_SIDE,
         });
         processed = res.processed;
         thumbnail = res.thumbnail;
@@ -526,6 +584,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       const res = await processImage(page.original, page.quad, page.filter, page.rotation, {
         manual: page.quadManual === true,
+        maxLongSide: PROCESSED_MAX_LONG_SIDE,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;
@@ -651,6 +710,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     try {
       const res = await processImage(page.original, page.quad, filter, page.rotation, {
         manual: page.quadManual === true,
+        maxLongSide: PROCESSED_MAX_LONG_SIDE,
       });
       processed = res.processed;
       thumbnail = res.thumbnail;
