@@ -54,3 +54,19 @@ Leyenda: [ ] pendiente · [~] en progreso · [x] hecho
 - [ ] F-FIND — barra de coincidencias del lab (L2347-2366 + pendingFindQuery): EXCLUIDA de esta copia — su único punto de entrada es la búsqueda de la biblioteca del lab; e14 no tiene biblioteca. `OcrHighlightedText` YA queda listo (solo faltará pasarle la query cuando exista un buscador).
 
 **Estado:** PR #9 MERGEADO a `main` (merge commit `83e5838`, 2026-10-10) · CI Pages verde (run `38012198805`) · smoke test de producción OK (TEXTO con el OCR real del pipeline: 170 palabras | 745 caracteres idénticos al QA dev · Reconocer de nuevo · Copiar texto + toast · botón active · barra fija al píxel con 5 columnas · h-dvh · lab sin regresión — ver worklog 16:15). **En producción:** https://jg-stevan.github.io/web-scanner/
+
+## F-CLASIF — CLASIFICACIÓN DE CABECERA contra DIVIPOL oficial (SPEC-e14-cabecera-clasificacion.md — feat/e14-clasificacion-cabecera)
+
+- [x] §1 — base DIVIPOL del visor oficial (34 deps · 1.189 mun · 3.013 zonas · 14.438 puestos — validada 1:1 con Cairo/Frankfurt/Bremen) + bundle compacto `public/e14/divipol.json` (620 KB) + `scripts/gen-divipol.mjs` con guard de conteos
+- [x] §2 — `divipol.ts`: carga fetch local (basePath, caché, estado, NUNCA falla) + índices + trigramas/Dice sin deps
+- [x] §3 — `clasificador.ts`: anclas VERBATIM §3.2 + normalización NFKD + fuzzy Dice + estrategia §3.3 + veredicto AUTO/SUGERIDA/MANUAL (PATRON_CABECERA nunca es pase libre)
+- [x] §4 — gate REVISADO (evaluarGate único para escaneo y recorte): RECHAZADA solo por CALIDAD · AUTO → status por score · SUGERIDA/MANUAL → EN_REVISION_HUMANA (PROHIBIDO rechazar por cabecera) · log `clasif={...}` (§4.6)
+- [x] §5 — PanelClasificacion: cascada Dep→Mun→Zona→Puesto→Mesa + tipo + páginas, precarga de la sugerencia, GUARDAR UBICACIÓN + REPETIR FOTO, texto libre sin base, max-h-96, touch 44 px
+- [x] §6 — Fase B: archivadas por clave de mesa (ceros) + huecos DELEGADOS|TRANSMISIÓN × 1/2, duplicado → reemplaza y avisa (§G.4.1), ACTAS «MESAS CLASIFICADAS» antes del seed, export `E14_{KIT}_{...}_{TIPO}-{pag}.pdf` (§G.4.5)
+
+**Estado:** rama `feat/e14-clasificacion-cabecera` (fbec763 + da7033b + docs) lista para PR — QA AC1-AC7 completo en dev (ver worklog 17:30): la acta Frankfurt real pasa de «ACTA NO RECONOCIDA» a **AUTO 88·120·15·02·012·TRANSMISION → OPTIMA → envío automático**; build estático verde con basePath inlineado. **Nota:** dominio E-14 nuevo — cero código del lab (§8).
+
+### Fuera de alcance (decisión del dueño, §0/§8)
+- [ ] Manuscritos G.2/G.3 (votos/firmas/cédulas) — cubiertos por la revisión humana existente
+- [ ] Consulta viva AppSync (§G.4.6, fase futura)
+- [ ] H6 PWA — decisión del autor
