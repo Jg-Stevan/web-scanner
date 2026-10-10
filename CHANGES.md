@@ -25,6 +25,23 @@
 
 ---
 
+## 0-bis. FIX v4 — Recuperación de cámara negra tras «Cámara lenta» (rama `fix/camera-black-recovery-v4`)
+
+**Síntoma del propietario:** al capturar aparece el toast «Cámara lenta: baja resolución esta vez» y después la captura nunca se muestra y la cámara queda **negra para siempre**. Causa raíz: 5 defectos encadenados. Documentación completa (plan, decisiones, evidencia): `apps/scanner-lab/docs/fix-camera-black-v4.md`.
+
+**Cambios (todos en `CameraView.tsx`):**
+
+- **4.1 Un solo `takePhoto` de 5 s** (antes 8 s + reintento = 16 s congelado). Reintento solo si el primer intento falló rápido; un timeout = sensor colgado → **lista negra temporal** (`takePhotoBrokenRef`): mientras esté marcada, los disparos van directos al fallback de frames (2º disparo medido: 21 ms vs ~5300).
+- **4.2 Obturador bloqueado durante TODO el disparo** (`capturingRef` + `isCapturing` + `try/finally` simétrico): fin de los N `takePhoto()` simultáneos por toques repetidos (cascada de `InvalidStateError` → sensor roto).
+- **4.3 ⚠️ Watchdog de salud del stream (la causa del negro permanente):** un track puede morir EN SILENCIO (`muted`/sin frames con `readyState "live"`) sin disparar jamás `ended`. Cada 2 s (2 strikes, gracia de 8 s, sin contar durante disparos) → `recoverStream()`: para el stream y re-dispara el efecto de apertura. Verificado: kill silencioso → toast «Reiniciando cámara…» a **3636 ms** y video revivido.
+- **4.4 Burst 100 % nulo con cámara muerta → recuperar** en vez de solo tostear (el editor jamás abría — el final exacto del síntoma).
+- **4.5 Ring ZSL capado a 1280 px** (constante `RING_MAX_LONG_SIDE`): con el stream alto de iOS, 8 slots a 1920×1440 ≈ 88 MB mataban la capa de video en WebKit; ahora ≈ 37 MB. `snapshotVideo` intacto (la captura conserva la resolución del track).
+- **4.6 Toast honesto:** «La foto de alta resolución no respondió — Se usó el fotograma de vista previa. Las próximas capturas irán directas.» cuando ImageCapture existe pero la foto cayó.
+
+**Verificado:** `tsc` core + app, `eslint`, y E2E headless con cámara falsa y mediciones page-precise: hang de takePhoto → fallback en 5014-5197 ms (≤5500, antes ~16000), 5 toques → 1 solo flujo, watchdog sin falsos positivos en 12 s, recuperación ≤6 s. **Hallazgo adversativo documentado:** un hang flaky del editor en el sandbox PRE-EXISTE en `main` (test A/B 3/6 vs 3/6 — no es regresión del fix). Pendiente: QA iPhone físico (memoria del ring, jetsam).
+
+---
+
 ## Resumen de commits
 
 | # | Commit | Título |
