@@ -14,10 +14,11 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useScannerStore, ONBOARDING_STORAGE_KEY } from "@jg-stevan/scanner-core/store";
 import type { ScannerView } from "@jg-stevan/scanner-core/types";
-import { warmUpScannerWorker, getScannerWorker } from "@jg-stevan/scanner-core/image-processor";
 import {
-  ensureDeviceCapability,
-} from "@jg-stevan/scanner-core/device-capability";
+  PROCESSED_MAX_LONG_SIDE,
+  warmUpScannerWorker,
+  getScannerWorker,
+} from "@jg-stevan/scanner-core/image-processor";
 import LibraryView from "@/components/scanner/LibraryView";
 import CameraView from "@/components/scanner/CameraView";
 import EditorView from "@/components/scanner/EditorView";
@@ -72,14 +73,20 @@ export default function Home() {
     warmUpScannerWorker();
     void useScannerStore.getState().hydrateFromStorage();
 
-    // F-DEVBENCH — capacidad del dispositivo: mide (o lee la medición de los
-    // últimos 7 días) en idle y ajusta el TOPE del warp del worker según el
-    // tier (4032/3200/2560). Así los teléfonos modestos no se cuelgan y los
-    // potentes conservan la resolución completa del sensor.
-    void ensureDeviceCapability().then((cap) => {
-      if (!cap) return;
-      getScannerWorker()?.setWarpCap(cap.maxProcessedLongSide);
-    });
+    // FIX v3 (fix-editor-quality): F-DEVBENCH ELIMINADO — la app procesa y
+    // guarda SIEMPRE al máximo del lente con un único tope técnico fijo
+    // (4032 px, canvas iOS). El tope del warp del worker se fija aquí; su
+    // default ya ES 4032, así que esta llamada solo lo hace explícito.
+    // Cero tests de CPU/canvas en idle: la app arranca sin picos de carga.
+    getScannerWorker()?.setWarpCap(PROCESSED_MAX_LONG_SIDE);
+
+    // Limpieza one-liner de la key huérfana del benchmark viejo (inofensiva
+    // si se deja, pero mejor no acumular basura en localStorage).
+    try {
+      localStorage.removeItem("escaner-device-cap-v1");
+    } catch {
+      /* privada/SSR: no pasa nada */
+    }
   }, []);
 
   // Previene el scroll del body en vistas de cámara (negro) para simular app nativa

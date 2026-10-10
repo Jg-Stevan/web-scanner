@@ -1,14 +1,20 @@
 /**
  * F-SENSOR-PROFILER (PASO 2 del plan «Para analizar.md») — Detecta la
  * resolución NATIVA del sensor de FOTO (ImageCapture.getPhotoCapabilities)
- * y deriva un TOPE SEGURO de memoria según la gama del dispositivo:
+ * y protege la memoria cuando el sensor es GIGANTE (48/108/200 MP):
  *
- *   · Sensor ≤ tope  → resolución nativa DIRECTA, sin re-escalar (la foto
+ *   · Sensor ≤ 4032 px → resolución nativa DIRECTA, sin re-escalar (la foto
  *     del sensor manda, F-RES-PRIORITY intacto).
- *   · Sensor 48/108 MP (> tope) → se limita al tope seguro para evitar que
- *     el canvas consuma cientos de MB y crashee la pestaña:
- *       - gama alta  → 4032 px (4032×3024 ≈ 12.2 MP, igual que el pipeline)
- *       - media/baja → 3200 px
+ *   · Sensor > 4032 px → se limita al tope técnico ÚNICO (4032 px ≈ 12.2 MP,
+ *     canvas iOS ~16.7 MP) para evitar que el canvas consuma cientos de MB
+ *     y crashee la pestaña.
+ *
+ * FIX v3 (fix-editor-quality): el tope de gama (4032 alta / 3200 media-baja
+ * del benchmark F-DEVBENCH) DESAPARECE — decisión del propietario: la app
+ * procesa y guarda SIEMPRE al máximo del lente. "Máximo del lente" =
+ * resolución nativa HASTA 4032 px — por encima es físicamente imposible en
+ * navegador (canvas iOS + heap del WASM). La protección de sensores
+ * gigantes (las 2 capas de abajo) se CONSERVA íntegra.
  *
  * DOS CAPAS DE DEFENSA en la captura:
  *  1. photoSettings (imageWidth/imageHeight) en takePhoto() → el ISP del
@@ -18,16 +24,11 @@
  *     en que la capa 1 no aplica (Safari sin getPhotoCapabilities) o el
  *     hardware devolvió el modo soportado más cercano por ENCIMA del tope.
  *
- * El tope se toma del benchmark REAL de device-capability (cacheado 7 días
- * en localStorage; default 4032 si aún no hay medición). Los frames del
- * preview (960×540) y del ring ZSL siempre quedan MUY por debajo del tope:
- * este módulo solo protege la foto full-sensor del Dual Pipeline.
+ * Los frames del preview y del ring ZSL siempre quedan por debajo del
+ * tope: este módulo solo protege la foto full-sensor del Dual Pipeline.
  */
 
-import {
-  getCachedDeviceCapability,
-  type DeviceTier,
-} from "./device-capability";
+import { PROCESSED_MAX_LONG_SIDE } from "./image-processor";
 
 /** Rango de un ajuste de foto según la spec ImageCapture (MediaSettingsRange). */
 export interface SensorSettingRange {
@@ -51,18 +52,17 @@ export interface SensorProfile {
   photoSettingsAdjustable: boolean;
   /** true = el sensor excede el tope → la captura debe recortarse. */
   overCap: boolean;
-  /** Gama del dispositivo según el benchmark cacheado (null = sin medir). */
-  tier: DeviceTier | null;
   profiledAt: number;
 }
 
 /** Último perfil sondeado (para la Sonda de QA del final del módulo). */
 let lastProfile: SensorProfile | null = null;
 
-/** Tope seguro actual según el benchmark cacheado — 4032 si aún no hay
- *  medición (espejo de TIER_META en device-capability.ts). */
+/** Tope técnico ÚNICO (fix v3): 4032 px — máximo seguro del canvas de iOS
+ *  (~16.7 MP). Sin benchmark: la protección de sensores GIGANTES sigue en
+ *  profileSensor/overCap; solo desaparece el downgrade por gama. */
 export function getSensorSafeCap(): number {
-  return getCachedDeviceCapability()?.maxProcessedLongSide ?? 4032;
+  return PROCESSED_MAX_LONG_SIDE;
 }
 
 /** Lee y valida un MediaSettingsRange que llega «suelto» del DOM. */
@@ -80,12 +80,12 @@ function readRange(range: unknown): SensorSettingRange | null {
 
 /**
  * Sondea el sensor del track ACTIVO (cámara real). NUNCA rechaza: ante
- * cualquier fallo devuelve el perfil base (tope por gama, nativo
+ * cualquier fallo devuelve el perfil base (tope técnico fijo, nativo
  * desconocido) — la app no se rompe.
  */
 export async function profileSensor(track: MediaStreamTrack): Promise<SensorProfile> {
-  const cached = getCachedDeviceCapability();
-  const safeCapPx = cached?.maxProcessedLongSide ?? 4032;
+  // FIX v3: tope FIJO (4032) — sin benchmark de dispositivo.
+  const safeCapPx = getSensorSafeCap();
   const profile: SensorProfile = {
     safeCapPx,
     nativeW: null,
@@ -95,7 +95,6 @@ export async function profileSensor(track: MediaStreamTrack): Promise<SensorProf
     hRange: null,
     photoSettingsAdjustable: false,
     overCap: false,
-    tier: cached?.tier ?? null,
     profiledAt: Date.now(),
   };
   lastProfile = profile;

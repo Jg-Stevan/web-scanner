@@ -4,6 +4,25 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## 0. FIX v3 — Calidad del editor WYSIWYG + presentación iOS + benchmark fuera (rama `fix/scanner-lab-editor-quality`)
+
+**Regla del propietario:** "guardar la captura en lo máximo del lente, sin ajustes por benchmark". Documentación completa del fix (plan, decisiones, evidencia de verificación): `apps/scanner-lab/docs/fix-editor-quality-v3.md`.
+
+**Cambios:**
+
+- **Tope técnico ÚNICO exportado** — `PROCESSED_MAX_LONG_SIDE = 4032` px (`image-processor.ts`, antes module-private). Preview del editor (2 usos) y guardado (4 llamadas de `processImage` en `store.ts`) usan LA MISMA constante → **WYSIWYG estricto por construcción** (verificado: chip == `naturalWidth/Height` del preview).
+- **Benchmark F-DEVBENCH ELIMINADO** — `device-capability.ts` borrado, su UI ("Rendimiento del dispositivo") fuera de Ajustes (queda fila estática "Resolución de procesado — 4032 px"), `setWarpCap(4032)` fijo, key `escaner-device-cap-v1` limpiada al arrancar, `rg` de todos los identificadores → 0 resultados. La protección de sensores gigantes (48/108 MP) del `sensor-profiler` se CONSERVA (`overCap`, `buildCappedPhotoSettings`, `clampBlobToSafeCap`); `getSensorSafeCap()` ahora devuelve 4032 fijo y el campo `tier` desaparece de `SensorProfile`.
+- **Rotar sin degradar (F-ROT-RAPID + calidad)** — la rotación rápida solo marca `processed/processedKey` si la imagen conserva la resolución objetivo (`min(4032, máx(aristas del quad en px del original))`, tolerancia 0.9 — misma geometría que `warpQuadToCanvas`); si no, el store **reprocesa a tope al guardar**. Defensa extra en la rama `processedValid` del merge (`processedMeetsTarget`): una procesada materialmente inferior al objetivo jamás llega al documento como "final" (red de seguridad contra 3200/2600 heredados).
+- **iPhone: stream de auto-captura 1920×1440** — `IDEAL_PREVIEW_*` condicionado a la ausencia de `ImageCapture` (proxy iOS): los originales de la auto-captura pasan de 960 px (0.5 MP) a ≥1920 px. El disparo manual sigue por cámara nativa (12 MP). El ORIGINAL ya no se re-escala a tope de gama (downscale a 4032 fijo). Toast "Cámara lenta" solo si el frame es realmente bajo (<1280 px).
+- **Presentación fullscreen (bug iOS)** — wrapper de tamaño DEFINITIVO (`h-full w-full`, antes altura auto: iOS Safari no resolvía el `max-height:100%` y la foto desbordaba recortada), `clampPan`/`clampZoomPan` con la fórmula correcta `(imgW×s − stageW)/2` (fin del sobre-paneo con huecos negros — verificado pixel-perfect: 75.61 px medidos vs 75.6 teóricos), `presentationPages` se construye AL ABRIR con lectura fresca de la caché (antes un `useMemo` que leía un ref mostraba la foto ORIGINAL sin recortar en páginas no visitadas) y `will-change` solo durante el gesto (rasterizado iOS).
+- **PDF "standard" a tamaño completo de serie** — `ATTEMPTS_STANDARD[0] = { longSide: 0, quality: 0.9 }` (antes recortaba a 2600 px aunque la página fuera de 4032); la escalera por presupuesto de bytes se mantiene como respaldo.
+- **Chip "Se guardará: {calidad} · {WxH} px"** en el editor (transparencia WYSIWYG) con drawer Estándar/Alta/Máxima (mismo patrón que el sheet de Filtros, cambia `settings.exportQuality` sin salir del editor).
+- **LRU de previews 12 → 6 entradas** — mitigación de memoria obligatoria al procesar todo a 4032 (entradas de ~el doble; mismo presupuesto total, sin riesgo de jetsam en sesiones largas).
+
+**Verificado:** `tsc` core + app, `eslint`, y E2E en navegador (Ajustes sin benchmark, chip WYSIWYG con dimensiones exactas, rotación que conserva resolución, clamp de paneo pixel-perfect, merge al salir, captura → guardar). Pendiente: QA en iPhone Safari físico (bug 1.1 solo visible ahí).
+
+---
+
 ## Resumen de commits
 
 | # | Commit | Título |

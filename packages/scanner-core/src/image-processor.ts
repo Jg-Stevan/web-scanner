@@ -49,8 +49,13 @@ export interface ProcessOptions {
  *  que el pipeline tiraba ~21% de resolución que codigo-test sí conservaba
  *  al usar maxLongSide 0 = resolución completa). 4032×3024 ≈ 12.2 MP, aún
  *  por debajo del límite de canvas de iOS (~16.7 MP); IndexedDB guarda
- *  Blobs → sin problema de cuota. */
-const PROCESSED_MAX_LONG_SIDE = 4032;
+ *  Blobs → sin problema de cuota.
+ *
+ *  FIX v3 (fix-editor-quality): ahora se EXPORTA — preview del editor y
+ *  guardado usan ESTA MISMA constante → WYSIWYG estricto por construcción
+ *  (lo que ves ES la imagen guardada). Regla del producto: guardar siempre
+ *  a la resolución máxima del lente, sin ajustes por dispositivo. */
+export const PROCESSED_MAX_LONG_SIDE = 4032;
 
 /** Mapea los 3 filtros del producto (§8) a los modos reales del worker. */
 export function filterToEnhanceMode(filter: PageFilter): EnhanceMode {

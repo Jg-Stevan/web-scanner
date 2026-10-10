@@ -67,8 +67,8 @@ import {
   detectDocumentEdges,
   loadImage,
   processImage,
+  PROCESSED_MAX_LONG_SIDE,
 } from "@jg-stevan/scanner-core/image-processor";
-import { getMaxProcessedLongSide } from "@jg-stevan/scanner-core/device-capability";
 import {
   FILTER_PRESETS,
   TRASH_RETENTION_DAYS,
@@ -287,6 +287,9 @@ export default function EditorView() {
   /** F-NOVIEW — modo revisión de documento: el editor trabaja sobre las
    *  páginas de un documento guardado (cargadas como sesión con sus ids). */
   const reviewDocId = useScannerStore((s) => s.reviewDocId);
+  /** FIX v3 (2.4): el chip «Se guardará…» cambia la calidad de exportación
+   *  sin salir del editor (mismo ajuste que Ajustes › Exportación). */
+  const updateSettings = useScannerStore((s) => s.updateSettings);
   const reviewDoc = useScannerStore((s) =>
     s.reviewDocId ? (s.documents.find((d) => d.id === s.reviewDocId) ?? null) : null
   );
@@ -360,6 +363,9 @@ export default function EditorView() {
   // ── Presentación a pantalla completa (desde el header) ───────────────────
   const [presentationOpen, setPresentationOpen] = useState(false);
 
+  // ── FIX v3 (2.4): drawer de calidad de guardado (chip «Se guardará…») ────
+  const [qualitySheetOpen, setQualitySheetOpen] = useState(false);
+
   // ── Estado local ─────────────────────────────────────────────────────────
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -416,6 +422,10 @@ export default function EditorView() {
   const headerTitle = reviewDoc ? reviewDoc.title : `Digitalización ${documentsCount + 1}`;
   const headerDate = prettyDate(reviewDoc ? reviewDoc.updatedAt : Date.now());
 
+  // FIX v3 (2.4): etiqueta amable de la calidad de exportación (chip).
+  const exportQualityLabel =
+    exportQuality === "standard" ? "Estándar" : exportQuality === "alta" ? "Alta" : "Máxima";
+
   // ── Badge "Bordes detectados" (persistente 4s y se desvanece) ────────────
   const showBadge = useCallback(() => {
     setBadgeVisible(true);
@@ -439,12 +449,14 @@ export default function EditorView() {
   // documento final, no el original con marco (eso queda para "Recortar").
   const cacheKey = page ? capturePageKey(page) : "";
 
-  /** Inserta en la cache de previews con recorte LRU unificado (12 entradas,
-   *  data URLs PNG grandes: sin tope, sesiones largas con runOcrAll podían
-   *  acumular decenas de entradas → riesgo de jetsam en iOS). */
+  /** Inserta en la cache de previews con recorte LRU unificado. FIX v3
+   *  (4.5): tope 12 → 6 entradas — al procesar TODO a 4032 px, cada entrada
+   *  (data URL PNG) pesa ~el doble (10-25 MB como cadena JS, ×2 en heap):
+   *  mismo presupuesto TOTAL de memoria que antes, mitades entradas → sin
+   *  riesgo de jetsam en iOS con sesiones largas (runOcrAll incluido). */
   const cachePreviewEntry = useCallback((key: string, entry: PreviewEntry) => {
     previewCache.current.set(key, entry);
-    if (previewCache.current.size > 12) {
+    if (previewCache.current.size > 6) {
       const oldest = previewCache.current.keys().next().value;
       if (oldest) previewCache.current.delete(oldest);
     }
@@ -483,9 +495,11 @@ export default function EditorView() {
     setPreviewLoading(true);
     void (async () => {
       try {
+        // FIX v3 (2.1): MISMA constante que el guardado (store) → WYSIWYG
+        // estricto por construcción: lo que ves ES la imagen guardada.
         const res = await processImage(page.original, page.quad, page.filter, page.rotation, {
           manual: page.quadManual === true,
-          maxLongSide: getMaxProcessedLongSide(),
+          maxLongSide: PROCESSED_MAX_LONG_SIDE,
         });
         if (cancelled) return;
         const entry: PreviewEntry = {
@@ -534,12 +548,18 @@ export default function EditorView() {
   const clampZoomPan = useCallback(() => {
     const s = zoomScale.get();
     const img = zoomImgRef.current;
+    // FIX v3 (1.3): límites contra el STAGE, no solo contra la imagen — la
+    // fórmula vieja ((imgW × (s−1))/2) permitía sobre-paneo cuando la
+    // imagen era más pequeña que el stage en algún eje (huecos negros,
+    // imagen «cortada» flotando). (imgW × s − stageW)/2 clava el borde de
+    // la imagen al del stage cuando se tocan (mismo fix que clampPan de la
+    // presentación).
+    const stage = zoomStageRef.current;
     let bx = 0;
     let by = 0;
-    // Límites con el tamaño REAL mostrado de la imagen (no del contenedor).
-    if (img && s > 1) {
-      bx = Math.max(0, (img.offsetWidth * (s - 1)) / 2);
-      by = Math.max(0, (img.offsetHeight * (s - 1)) / 2);
+    if (img && stage && s > 1) {
+      bx = Math.max(0, (img.offsetWidth * s - stage.clientWidth) / 2);
+      by = Math.max(0, (img.offsetHeight * s - stage.clientHeight) / 2);
     }
     if (zoomX.get() > bx) zoomX.set(bx);
     if (zoomX.get() < -bx) zoomX.set(-bx);
@@ -1076,6 +1096,16 @@ export default function EditorView() {
    * como `processed`+`processedKey` con la nueva rotación → el preview y el
    * guardado NO vuelven a llamar al worker. De 2-6 s a ~0,2 s.
    * En crop el preview rota en vivo (CSS) como antes.
+   *
+   * FIX v3 (2.2 — calidad): la rotada solo viaja al documento como "final"
+   * si conserva la RESOLUCIÓN OBJETIVO: min(4032, máx(aristas del quad en px
+   * del original)) — la misma geometría con la que el warp dimensiona su
+   * salida. Una fuente menor (auto-captura iOS 1920 px) no puede dar 4032 y
+   * NO está degradada; una base degradada heredada (3200/2600 de versiones
+   * con benchmark o cachés viejas) sí → se queda SIN processed/processedKey
+   * y el store la REPROCESA a tope al guardar. La rotación rápida sigue
+   * siendo válida para el PREVIEW (matemáticamente equivalente); solo se
+   * prohíbe que una imagen inferior al objetivo llegue al documento.
    */
   const handleRotate = () => {
     const p = page;
@@ -1100,15 +1130,35 @@ export default function EditorView() {
           h: base.w || rot.h,
           engine: base.engine,
         });
-        // Una sola actualización: el efecto de preview siembra la cache y
-        // pinta al instante (processedKey coincide); el merge al guardar no
-        // reprocesa (F-ROT-RAPID en saveSessionToDocument).
-        updateCapturePage(p.id, {
-          rotation: newRotation,
-          processed: rot.url,
-          processedKey: newKey,
-          thumbnail: rot.thumb,
-        });
+        // Una sola actualización: con calidad completa, el efecto de preview
+        // siembra la cache y pinta al instante (processedKey coincide) y el
+        // merge al guardar NO reprocesa (F-ROT-RAPID en saveSessionToDocument).
+        // Sin ella: solo rotation → al guardar el store reprocesa a 4032.
+        // Resolución objetivo de ESTA página (geometría quad + original):
+        // min(4032, máx aristas del quad en px) — tolerancia 0.9 (shrink
+        // 3.5px/lado del worker + redondeos).
+        const natW = natural?.w ?? 0;
+        const natH = natural?.h ?? 0;
+        let targetLong = PROCESSED_MAX_LONG_SIDE;
+        if (natW > 0 && natH > 0) {
+          let maxEdge = 0;
+          for (let i = 0; i < 4; i += 1) {
+            const a = p.quad[i]!;
+            const b = p.quad[(i + 1) % 4]!;
+            maxEdge = Math.max(maxEdge, Math.hypot((b.x - a.x) * natW, (b.y - a.y) * natH));
+          }
+          targetLong = Math.min(PROCESSED_MAX_LONG_SIDE, maxEdge);
+        }
+        const rotatedLong = Math.max(rot.w, rot.h);
+        const atFullQuality = rotatedLong >= targetLong * 0.9;
+        updateCapturePage(p.id, atFullQuality
+          ? {
+              rotation: newRotation,
+              processed: rot.url,
+              processedKey: newKey,
+              thumbnail: rot.thumb,
+            }
+          : { rotation: newRotation });
       } catch {
         // Rotación rápida fallida (memoria, decode…): camino histórico.
         updateCapturePage(p.id, { rotation: newRotation });
@@ -1415,9 +1465,10 @@ export default function EditorView() {
         }
         if (!image) {
           // Procesa al vuelo (sesión de captura: aún no hay procesada).
+          // FIX v3 (2.1): misma constante que preview y guardado (WYSIWYG).
           const res = await processImage(p.original, p.quad, p.filter, p.rotation, {
             manual: p.quadManual === true,
-            maxLongSide: getMaxProcessedLongSide(),
+            maxLongSide: PROCESSED_MAX_LONG_SIDE,
           });
           image = res.processed;
           cachePreviewEntry(capturePageKey(p), {
@@ -1577,15 +1628,22 @@ export default function EditorView() {
   }, [page?.ocrText, findQuery]);
 
 
-  /** Páginas de la sesión proyectadas a ScanPage para la presentación
-   *  (usa la procesada de la cache — la misma que se ve en el preview). */
-  const presentationPages = useMemo<ScanPage[]>(() => {
-    return capturePages.map((p) => {
+  /** FIX v3 (1.4): páginas de la sesión proyectadas a ScanPage para la
+   *  presentación, construidas AL ABRIR (lectura FRESCA de la caché de
+   *  previews). ANTES era un useMemo con deps [capturePages, preview?.url]
+   * que LEÍA previewCache.current (un ref): la caché se llena a medida que
+   * cada página se previsualiza, pero el memo NO se recalculaba por eso →
+   * para páginas nunca visitadas caía a p.processed ?? p.original → la
+   *  presentación mostraba la foto ORIGINAL SIN RECORTAR (parecía otra
+   *  imagen / "mal recortada"). */
+  const [presentationPages, setPresentationPages] = useState<ScanPage[]>([]);
+  const openPresentation = useCallback(() => {
+    const pages = useScannerStore.getState().capturePages.map((p) => {
       const url = previewCache.current.get(capturePageKey(p))?.url;
       return {
         id: p.id,
         original: p.original,
-        processed: url ?? p.processed ?? p.original,
+        processed: url ?? p.processed ?? p.original, // lectura FRESCA de la caché
         // C3: miniatura REAL (~160 px, coherente con la procesada) — pasar el
         // original hacía decodificar N fotos completas para pintar pies de 40×52.
         thumbnail: p.thumbnail ?? p.original,
@@ -1597,9 +1655,12 @@ export default function EditorView() {
         ocrText: p.ocrText,
         ocrDone: p.ocrDone === true,
         createdAt: 0,
-      };
+      } as ScanPage;
     });
-  }, [capturePages, preview?.url]);
+    if (pages.length === 0) return;
+    setPresentationPages(pages);
+    setPresentationOpen(true);
+  }, []);
 
   const poorQuality = page?.quality?.level === "poor" || page?.quality?.level === "fair";
 
@@ -1656,7 +1717,7 @@ export default function EditorView() {
           <button
             type="button"
             aria-label="Ver presentación a pantalla completa"
-            onClick={() => setPresentationOpen(true)}
+            onClick={openPresentation}
             disabled={totalPages === 0}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/85 transition-all active:scale-90 active:bg-white/10 disabled:opacity-30"
           >
@@ -1735,11 +1796,15 @@ export default function EditorView() {
                 transition={{ duration: 0.3, ease: [0.65, 0, 0.35, 1] }}
                 className="relative z-10 flex h-full w-full items-center justify-center overflow-hidden"
               >
-                {/* Capa de zoom: scale/x/y por motion values (will-change GPU) */}
+                {/* Capa de zoom: scale/x/y por motion values. FIX v3 (1.5):
+                    will-change SOLO durante el gesto — una capa GPU con
+                    will-change permanente puede quedar rasterizada a baja
+                    resolución en iOS Safari (imagen suave/borrosa al
+                    ampliar). A 1× la capa se des-promociona. */}
                 <motion.div
                   ref={zoomWrapRef}
-                  style={{ scale: zoomScale, x: zoomX, y: zoomY }}
-                  className="flex h-full w-full items-center justify-center will-change-transform"
+                  style={{ scale: zoomScale, x: zoomX, y: zoomY, willChange: zoomed ? "transform" : "auto" }}
+                  className="flex h-full w-full items-center justify-center"
                 >
                   <img
                     ref={zoomImgRef}
@@ -2217,6 +2282,27 @@ export default function EditorView() {
             <ToolItem icon={Trash2} label="Eliminar" danger onClick={handleDeletePage} />
           </nav>
 
+          {/* FIX v3 (2.4): chip WYSIWYG — calidad y resolución con las que se
+              guardará el PDF (transparencia: lo que ves ES lo que se guarda).
+              Botón que abre el drawer de calidad (mismo patrón que Filtros). */}
+          <div className="flex justify-center px-5 pt-1.5">
+            <button
+              type="button"
+              aria-label="Calidad de guardado del PDF"
+              aria-haspopup="dialog"
+              onClick={() => setQualitySheetOpen(true)}
+              className="flex max-w-full items-center gap-1.5 truncate rounded-full bg-[#1c1c1e]/95 px-3 py-1 text-[12px] font-medium text-white/80 shadow-[0_2px_10px_rgba(0,0,0,0.4)] ring-1 ring-inset ring-white/10 backdrop-blur-md transition-transform active:scale-95"
+            >
+              <span className="truncate">
+                Se guardará: {exportQualityLabel} ·{" "}
+                {preview && preview.w > 0 && preview.h > 0
+                  ? `${preview.w}×${preview.h} px`
+                  : `hasta ${PROCESSED_MAX_LONG_SIDE} px`}
+              </span>
+              <ChevronDown className="size-3 shrink-0 text-white/50" strokeWidth={2.6} aria-hidden="true" />
+            </button>
+          </div>
+
           {/* Botones principales: seguir escaneando/añadir página + Guardar PDF */}
           <div className="flex gap-3 px-5 pb-2 pt-2.5">
             <button
@@ -2248,6 +2334,71 @@ export default function EditorView() {
 
       {mode === "crop" && (
         <div className="home-indicator mb-2 mt-0 shrink-0" aria-hidden="true" />
+      )}
+
+      {/* ── FIX v3 (2.4): Sheet de calidad de guardado (chip «Se guardará…») ── */}
+      {portalEl && (
+        <DrawerPrimitive.Root open={qualitySheetOpen} onOpenChange={setQualitySheetOpen}>
+          <DrawerPrimitive.Portal container={portalEl}>
+            <DrawerPrimitive.Overlay className="absolute inset-0 z-40 bg-black/50" />
+            <DrawerPrimitive.Content
+              className="absolute inset-x-0 bottom-0 z-50 mx-auto rounded-t-[22px] bg-[#1c1c1e] pb-safe outline-none"
+            >
+              <div className="mx-auto mt-2.5 h-1.5 w-9 rounded-full bg-white/25" />
+              <DrawerPrimitive.Title className="px-5 pb-1 pt-3 text-center text-[17px] font-semibold text-white">
+                Calidad de guardado
+              </DrawerPrimitive.Title>
+              <DrawerPrimitive.Description className="sr-only">
+                Elige la calidad con la que se exportará el PDF. Las páginas se
+                guardan siempre a resolución máxima; esta preferencia solo
+                afecta al re-encode JPEG del archivo PDF final.
+              </DrawerPrimitive.Description>
+              <div className="flex flex-col gap-1 px-4 pb-5 pt-2">
+                {([
+                  { id: "standard", label: "Estándar", hint: "Archivo más ligero" },
+                  { id: "alta", label: "Alta", hint: "Equilibrio calidad/peso" },
+                  { id: "máxima", label: "Máxima", hint: "Sin pérdidas añadidas" },
+                ] as const).map((q) => {
+                  const active = exportQuality === q.id;
+                  return (
+                    <button
+                      key={q.id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => {
+                        if (!active) {
+                          updateSettings({ exportQuality: q.id });
+                          toast.success(`Calidad de guardado: ${q.label}`, { duration: 1500 });
+                        }
+                        setQualitySheetOpen(false);
+                      }}
+                      className="flex min-h-[52px] w-full items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-left transition-colors active:bg-white/8"
+                    >
+                      <span className="min-w-0">
+                        <span className={cn("block text-[15px] leading-snug", active ? "font-semibold text-white" : "text-white/85")}>
+                          {q.label}
+                        </span>
+                        <span className="block text-[12px] leading-snug text-[#8e8e93]">
+                          {q.hint}
+                        </span>
+                      </span>
+                      {active ? (
+                        <Check className="size-5 shrink-0 text-[#007aff]" strokeWidth={2.6} aria-hidden="true" />
+                      ) : (
+                        <span className="size-5 shrink-0" aria-hidden="true" />
+                      )}
+                    </button>
+                  );
+                })}
+                <p className="px-1 pt-1 text-center text-[11.5px] leading-snug text-[#8e8e93]">
+                  Las páginas se guardan a resolución máxima ({PROCESSED_MAX_LONG_SIDE} px); si el PDF
+                  supera el presupuesto de bytes, la calidad baja automáticamente para que el archivo
+                  quepa.
+                </p>
+              </div>
+            </DrawerPrimitive.Content>
+          </DrawerPrimitive.Portal>
+        </DrawerPrimitive.Root>
       )}
 
       {/* ── Sheet de filtros (vaul, confinado al marco del teléfono) ────── */}
