@@ -10,7 +10,10 @@
 > COMPLETAMENTE intocado** (v3.1 — corrección de alcance por orden expresa del
 > propietario tras el push inicial).
 >
-> **ESTADO: ✅ COMPLETADO Y VERIFICADO** (tsc core/app/lint/browser smoke test).
+> **ESTADO: ✅ COMPLETADO, VERIFICADO Y 🔀 MERGEADO a `main`** — PR #10,
+> merge commit `6aa7c14`, CI verde (Deploy to GitHub Pages success,
+> `/lab/` y raíz respondiendo 200 con el build nuevo). QA iPhone físico
+> sigue pendiente (bug 1.1 solo visible en WebKit real).
 
 ## Regla del propietario (innegociable)
 
@@ -170,8 +173,13 @@ packages/scanner-core/src/
 
 ## Cómo continuar si la sesión se corta
 
-1. `cd /home/z/web-scanner && git status` — la rama `fix/scanner-lab-editor-quality`
-   contiene TODOS los cambios (ver `git log`/`git diff main`).
-2. Este documento es la fuente de verdad del estado. Lo único pendiente es el
-   QA en dispositivo físico (iPhone real, ver §Verificación punto 7).
-3. Para revisar el diff completo: `git diff main...fix/scanner-lab-editor-quality`.
+1. ~~`cd /home/z/web-scanner && git status`~~ **YA MERGEADO** — el fix está en
+   `main` (PR #10 → merge `6aa7c14`, rama `fix/scanner-lab-editor-quality`
+   preservada en remoto). Este documento queda como registro histórico de la
+   ejecución.
+2. Lo único pendiente es el QA en dispositivo físico (iPhone real, ver
+   §Verificación punto 7): presentación fullscreen (bug 1.1 WebKit),
+   auto-captura ≥1920 px (3.A), 5 capturas sin jetsam (LRU 6) y la sonda
+   `__sensorProfile().safeCapPx === 4032`.
+3. Para revisar el diff final: `git show 85a64e2` (commit del fix) o
+   `git show 6aa7c14` (merge).

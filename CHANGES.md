@@ -21,6 +21,8 @@
 
 **Verificado:** `tsc` core + app, `eslint`, y E2E en navegador (Ajustes sin benchmark, chip WYSIWYG con dimensiones exactas, rotación que conserva resolución, clamp de paneo pixel-perfect, merge al salir, captura → guardar). Pendiente: QA en iPhone Safari físico (bug 1.1 solo visible ahí).
 
+> **🔀 Mergeado:** PR #10 → `main` en `6aa7c14` (solo scanner-lab + scanner-core; e14 completamente intocado — corrección de alcance v3.1). CI verde: Deploy to GitHub Pages `success` — `/lab/` y raíz respondiendo 200 con el build nuevo. Registro completo de la ejecución: `apps/scanner-lab/docs/fix-editor-quality-v3.md`.
+
 ---
 
 ## Resumen de commits
