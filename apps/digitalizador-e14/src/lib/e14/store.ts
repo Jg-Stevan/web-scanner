@@ -6,7 +6,9 @@
 import { create } from "zustand";
 import { getBridge } from "./get-bridge";
 import { rotateProcessedDataUrl } from "./image-utils";
-import type { PaginaObjetivo, Forzado } from "./bridge";
+import { FILTER_PRESETS } from "@jg-stevan/scanner-core/types";
+import type { PageFilter } from "@jg-stevan/scanner-core/types";
+import type { PaginaObjetivo } from "./bridge";
 import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
 import type { Quad } from "@jg-stevan/scanner-core/types";
 import {
@@ -32,9 +34,7 @@ interface E14Store {
   actaActual: Acta | null;
   /** Página de mesa apuntada por el escaneo en curso (D7). */
   paginaObjetivo: PaginaObjetivo | null;
-  /** Resultado que forzará el próximo escaneo (panel de simulación §7.1). */
-  forzado: Forzado;
-  /** Fuente de captura del próximo escaneo (L1: solo SIMULACIÓN operativa). */
+  /** Fuente de captura del próximo escaneo (D35: SIMULACIÓN = pipeline real). */
   fuente: FuenteCaptura;
   /** Archivo elegido para la fuente ARCHIVO (L2 lo consume). */
   archivoPendiente: File | null;
@@ -46,6 +46,8 @@ interface E14Store {
   analisisResuelto: boolean;
   /** L5 §7.5: true mientras el bridge re-corre el pipeline del RECORTE. */
   recortando: boolean;
+  /** F2 §F2.2: true mientras el bridge re-procesa la foto con un filtro. */
+  revelando: boolean;
   actasSesion: number;
   mesas: Mesa[];
   completadas: number;
@@ -56,7 +58,6 @@ interface E14Store {
   notificaciones: Notificacion[];
 
   navegar: (vista: Vista) => void;
-  setForzado: (forzado: Forzado) => void;
   setFuente: (fuente: FuenteCaptura) => void;
   setArchivoPendiente: (archivo: File | null) => void;
   /** Registra el <video> vivo de la cámara (null al detener el stream). */
@@ -74,13 +75,20 @@ interface E14Store {
   /**
    * L5 §7.5 (rescate D20): aplica el recorte manual del QuadEditor —
    * bridge.recortar re-ejecuta el pipeline con el quad manual (F5-MANUAL) y
-   * NO consume intento. Toast según el resultado del rescate.
+   * NO consume intento. F4/D37: `rotacionNueva` hornea la rotación LOCAL
+   * del editor (undefined = conserva acta.rotation). Toast según resultado.
    */
-  aplicarRecorte: (quad: Quad) => Promise<void>;
+  aplicarRecorte: (quad: Quad, rotacionNueva?: number) => Promise<void>;
+  /**
+   * F2 (§F2.2, D36): cambia el filtro del acta — bridge.revelar re-procesa
+   * la foto (SOLO processImage, sin re-OCR/re-calidad — igual que
+   * setFilterOnPage del core) y el toast copia el texto del lab (L1214-1218).
+   */
+  cambiarFiltro: (filtro: PageFilter) => Promise<void>;
   /**
    * L5 §7 ReviewView: gira fotoProcesada 90° (rotateProcessedDataUrl del lab,
-   * canvas puro) y hornea rotation para el PDF §6. SOLO actas reales — en
-   * SIMULACIÓN ReviewView conserva su rotación local del papel.
+   * canvas puro) y hornea rotation para el PDF §6. Gate: foto (D35 — la
+   * SIMULACIÓN también rota real).
    */
   rotarFoto: () => Promise<void>;
   descartarNotificacion: (id: number) => void;
@@ -186,13 +194,13 @@ export const useE14Store = create<E14Store>((set, get) => {
     online: true,
     actaActual: null,
     paginaObjetivo: null,
-    forzado: "ALEATORIO",
     fuente: "SIMULACION",
     archivoPendiente: null,
     framePendiente: null,
     progresoAnalisis: null,
     analisisResuelto: false,
     recortando: false,
+    revelando: false,
     actasSesion: 0,
     mesas: mesasIniciales(),
     completadas: progresoInicial().completadas,
@@ -203,8 +211,6 @@ export const useE14Store = create<E14Store>((set, get) => {
     notificaciones: [],
 
     navegar: (vista) => set({ vista }),
-
-    setForzado: (forzado) => set({ forzado }),
 
     setFuente: (fuente) => set({ fuente }),
 
@@ -237,7 +243,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     },
 
     dispararEscaneo: async (intento = 1) => {
-      const { forzado, mesas, fuente, archivoPendiente, framePendiente } = get();
+      const { mesas, fuente, archivoPendiente, framePendiente } = get();
       // L2: en fuente ARCHIVO el disparo necesita imagen (REPETIR FOTO vuelve
       // al picker en vez de reventar el pipeline sin archivo).
       if (fuente === "ARCHIVO" && !archivoPendiente) {
@@ -263,7 +269,6 @@ export const useE14Store = create<E14Store>((set, get) => {
       try {
         const acta = await bridge.escanearActa({
           objetivo,
-          forzado,
           intento,
           maxIntentos: 2,
           fuente,
@@ -385,7 +390,7 @@ export const useE14Store = create<E14Store>((set, get) => {
       }
     },
 
-    aplicarRecorte: async (quad) => {
+    aplicarRecorte: async (quad, rotacionNueva) => {
       const { actaActual } = get();
       if (!actaActual?.fotoOriginal) {
         notificar("warn", "SIN FOTO ORIGINAL", "Solo las actas escaneadas se pueden recortar.");
@@ -396,8 +401,12 @@ export const useE14Store = create<E14Store>((set, get) => {
       try {
         // RecorTE manual → pipeline §5 re-ejecutado con F5-MANUAL; el acta
         // conserva identidad (intento/fuente/paginación) — rescate sin intento.
-        const acta = await bridge.recortar(actaActual, quad, (p) =>
-          set({ progresoAnalisis: p }),
+        // F4/D37: la rotación LOCAL del editor se hornea en fotoProcesada.
+        const acta = await bridge.recortar(
+          actaActual,
+          quad,
+          (p) => set({ progresoAnalisis: p }),
+          rotacionNueva,
         );
         set({ actaActual: acta, progresoAnalisis: null });
         if (acta.status === "OPTIMA" || acta.status === "ADVERTENCIA") {
@@ -414,9 +423,9 @@ export const useE14Store = create<E14Store>((set, get) => {
 
     rotarFoto: async () => {
       const { actaActual } = get();
-      // SOLO actas reales con foto procesada (en SIM ReviewView rota el papel
-      // sintético localmente y JAMÁS llama aquí — spec §7 ReviewView).
-      if (!actaActual?.fotoProcesada || actaActual.fuente === "SIMULACION") return;
+      // Actas con foto procesada (D35: SIMULACIÓN también — el gate es la foto;
+      // F-ROT-RAPID gira la PROCESADA sin re-ejecutar el pipeline).
+      if (!actaActual?.fotoProcesada) return;
       if (rotandoFotoEnVuelo) return;
       rotandoFotoEnVuelo = true;
       try {
@@ -435,6 +444,30 @@ export const useE14Store = create<E14Store>((set, get) => {
         notificar("crit", "ERROR DE ROTACIÓN", "No se pudo girar la foto.");
       } finally {
         rotandoFotoEnVuelo = false;
+      }
+    },
+
+    cambiarFiltro: async (filtro) => {
+      const { actaActual } = get();
+      if (!actaActual?.fotoOriginal) {
+        notificar("warn", "SIN FOTO ORIGINAL", "Solo las actas escaneadas se pueden filtrar.");
+        return;
+      }
+      if (get().revelando) return;
+      set({ revelando: true });
+      try {
+        // F2/D36: revelar = SOLO processImage (sin re-OCR/re-calidad — igual
+        // que setFilterOnPage del core); el acta conserva identidad por spread.
+        const acta = await bridge.revelar(actaActual, filtro);
+        set({ actaActual: acta });
+        // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L1214-1218
+        // (handleFilter — toast de éxito + cierre del sheet; el sheet lo cierra ReviewView).
+        const label = FILTER_PRESETS.find((f) => f.id === filtro)?.label ?? filtro;
+        notificar("ok", "FILTRO APLICADO", `Filtro aplicado: ${label}`);
+      } catch {
+        notificar("crit", "ERROR DE FILTRADO", "No se pudo re-procesar el acta.");
+      } finally {
+        set({ revelando: false });
       }
     },
 

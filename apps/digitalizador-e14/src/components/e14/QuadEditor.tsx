@@ -25,16 +25,24 @@
  *   · D19: PROHIBIDO el store del core — el editor es PURO: recibe
  *     fotoOriginal/quadInicial/rotation y devuelve el quad por onAplicar(quad).
  *
+ * UX-REAL F4 (SPEC-ux-real-bn-editor §F4, D37): ROTAR 90° y DETECCIÓN
+ * AUTOMÁTICA dentro del editor — handleDetect del lab (EditorView.tsx
+ * L1198–1212: detectDocumentEdges → quad) + botón pill L2123–2141 con
+ * spinner mientras detecta. La rotación es LOCAL (rotLocal) y solo llega al
+ * acta al APLICAR: onAplicar(quad, rotacion) (ReviewView → store).
+ *
  * Convención de coordenadas (idéntica al lab + core): quad en fracciones
  * 0–1 de la imagen ORIGINAL sin rotar; processImage(fotoOriginal, quad,
- * "original", rotation) aplica la rotación POST-warp — la misma convención
- * que F5-MANUAL respeta al píxel (sin refine).
+ * filtro, rotation) aplica la rotación POST-warp — la misma convención
+ * que F5-MANUAL respeta al píxel (sin refine). El overlay y las asas viven
+ * en el div rotado → rotan solidariamente (el quad NO se remapea).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { loadImage } from "@jg-stevan/scanner-core/image-processor";
+import { detectDocumentEdges, loadImage } from "@jg-stevan/scanner-core/image-processor";
 import { defaultQuad } from "@jg-stevan/scanner-core/types";
 import type { Point, Quad } from "@jg-stevan/scanner-core/types";
+import { RotateIcon, SparklesIcon } from "./icons";
 
 /** Tween de aterrizaje del quad (lab TWEEN_MS — 280 ms). */
 const TWEEN_MS = 280;
@@ -79,10 +87,11 @@ export interface QuadEditorProps {
   quadInicial: Quad;
   /** 0|90|180|270 — horneada en fotoProcesada; el editor la aplica en CSS. */
   rotation: number;
-  /** Descarta: cierra SIN tocar el acta. */
+  /** Descarta: cierra SIN tocar el acta (rotaciones/detecciones locales incluidas). */
   onCancelar: () => void;
-  /** Aplica: entrega el quad final (ReviewView → store.aplicarRecorte). */
-  onAplicar: (quad: Quad) => void;
+  /** Aplica (F4/D37): entrega quad final + rotación LOCAL del editor —
+   *  ReviewView → store.aplicarRecorte(quad, rotacion) hornea ambas. */
+  onAplicar: (quad: Quad, rotacion: number) => void;
   /** true mientras el pipeline re-corre (botón APLICAR → "PROCESANDO…"). */
   aplicando?: boolean;
 }
@@ -99,6 +108,13 @@ export function QuadEditor({
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [displayQuad, setDisplayQuad] = useState<Quad>(() => quadInicial);
+  // F4/D37: rotación LOCAL (inicial = prop) — solo llega al acta al APLICAR;
+  // DETECCIÓN AUTOMÁTICA mientras vuela (spinner del botón, patrón lab L2132-2135).
+  const [rotLocal, setRotLocal] = useState(rotationProp);
+  const [detectando, setDetectando] = useState(false);
+  /** Mensaje inline de error de detección en el readout del header (~2 s) —
+   *  `notificar` NO está disponible en el componente puro (D19). */
+  const [mensajeReadout, setMensajeReadout] = useState<string | null>(null);
   /** Lupa 3× durante el arrastre: {x,y} = centro en coords del contenedor del
    *  preview; {fx,fy} = punto de corte en fracciones de la imagen ORIGINAL
    *  (sin rotar — la lupa siempre muestra los píxeles que se van a cortar). */
@@ -117,10 +133,12 @@ export function QuadEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const displayRef = useRef<Quad>(displayQuad);
+  const rafRef = useRef(0);
   const draggingRef = useRef(false);
   const dragRef = useRef<{ kind: "corner" | "mid"; index: number } | null>(null);
 
-  const rotation = ((rotationProp % 360) + 360) % 360;
+  // F4/D37: la rotación del editor es LOCAL (rotLocal) — se hornea al APLICAR.
+  const rotation = ((rotLocal % 360) + 360) % 360;
 
   // ── Dimensiones naturales (loadImage UNA vez — regla anti re-decodes 12MP) ─
   useEffect(() => {
@@ -160,17 +178,16 @@ export function QuadEditor({
   // ── Aterrizaje del quad inicial (tween del lab L873–887, rAF propio) ──────
   // El marco provisional (defaultQuad) interpola hacia la detección real en
   // ~280 ms con easeOutCubic — el reemplazo del tween animado del lab (D29).
-  useEffect(() => {
-    const target = quadInicial;
-    const from = defaultQuad();
-    displayRef.current = from;
-    setDisplayQuad(from);
+  // F4 (§F4.3): el tween se EXTRAE a `animarQuadHacia` para reusarlo en
+  // DETECCIÓN AUTOMÁTICA (misma curva, mismo feel que el aterrizaje).
+  const animarQuadHacia = useCallback((target: Quad) => {
+    cancelAnimationFrame(rafRef.current);
+    const from = displayRef.current.map((p) => ({ x: p.x, y: p.y })) as Quad;
     if (quadsClose(from, target)) {
       displayRef.current = target;
       setDisplayQuad(target);
       return;
     }
-    let raf = 0;
     const start = performance.now();
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / TWEEN_MS);
@@ -181,11 +198,38 @@ export function QuadEditor({
       })) as Quad;
       displayRef.current = q;
       setDisplayQuad(q);
-      if (t < 1) raf = requestAnimationFrame(tick);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [quadInicial]);
+    rafRef.current = requestAnimationFrame(tick);
+  }, []);
+
+  useEffect(() => {
+    const target = quadInicial;
+    const from = defaultQuad();
+    displayRef.current = from;
+    setDisplayQuad(from);
+    animarQuadHacia(target);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [quadInicial, animarQuadHacia]);
+
+  // ── F4 (§F4.3) — DETECCIÓN AUTOMÁTICA: handleDetect del lab ───────────────
+  // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L1198-1212
+  // (detectDocumentEdges(page.original) → actualiza el quad). Sin store (D19):
+  // el quad SOLO llega al acta al APLICAR; si falla → mensaje inline en el
+  // readout del header ~2 s (prohibido alert; `notificar` no existe aquí).
+  const detectar = useCallback(async () => {
+    if (detectando || aplicando) return;
+    setDetectando(true);
+    try {
+      const quad = await detectDocumentEdges(fotoOriginal);
+      animarQuadHacia(quad);
+    } catch {
+      setMensajeReadout("NO SE PUDO DETECTAR");
+      window.setTimeout(() => setMensajeReadout(null), 2000);
+    } finally {
+      setDetectando(false);
+    }
+  }, [detectando, aplicando, fotoOriginal, animarQuadHacia]);
 
   // ── Geometría del preview (lab L905–926) ─────────────────────────────────
   const swapped = rotation === 90 || rotation === 270;
@@ -374,12 +418,16 @@ export function QuadEditor({
           Ajustar bordes
         </span>
         <span
-          className="font-data text-[10px] tracking-wider text-ok-tint tabular-nums min-w-[92px] text-right"
-          aria-live="off"
+          className={`font-data text-[10px] tracking-wider tabular-nums min-w-[92px] text-right ${
+            mensajeReadout ? "text-crit" : "text-ok-tint"
+          }`}
+          aria-live={mensajeReadout ? "assertive" : "off"}
         >
-          {puntoActivo
-            ? `X ${puntoActivo.x.toFixed(3)} · Y ${puntoActivo.y.toFixed(3)}`
-            : "8 ASAS · 3×"}
+          {mensajeReadout
+            ? mensajeReadout
+            : puntoActivo
+              ? `X ${puntoActivo.x.toFixed(3)} · Y ${puntoActivo.y.toFixed(3)}`
+              : "8 ASAS · 3×"}
         </span>
       </header>
 
@@ -409,7 +457,7 @@ export function QuadEditor({
                   aquí dentro, por lo que rotan solidariamente con la imagen. */}
               <div
                 ref={innerRef}
-                className="absolute left-1/2 top-1/2 select-none"
+                className="absolute left-1/2 top-1/2 select-none transition-transform duration-300"
                 style={{
                   width: innerW,
                   height: innerH,
@@ -528,15 +576,48 @@ export function QuadEditor({
         </div>
       </section>
 
-      {/* Footer de confirmación (APLICAR full-width, estado aplicando) */}
+      {/* Footer de confirmación — F4 (§F4.6): fila FIJA de ROTAR 90° +
+          DETECCIÓN AUTOMÁTICA sobre el hint, mismo estilo del footer
+          (border-outline-dim, font-data, alto táctil 44px). */}
       <footer className="shrink-0 border-t border-line bg-surface-1/90 backdrop-blur-md px-4 pt-2.5 pb-safe flex flex-col gap-1.5">
+        <div className="flex gap-2">
+          {/* F4 (§F4.2): rotación LOCAL — el quad NO se remapea (vive en
+              fracciones de la imagen sin rotar; overlay rota solidario). */}
+          <button
+            type="button"
+            aria-label="Rotar la imagen 90 grados"
+            onClick={aplicando ? undefined : () => setRotLocal((r) => (r + 90) % 360)}
+            disabled={aplicando}
+            className="flex-1 min-w-0 h-11 rounded-xl bg-surface-4/90 hover:bg-surface-5 border border-outline-dim/40 font-data text-[10px] font-bold tracking-widest uppercase text-ink flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-40"
+          >
+            <RotateIcon className="w-4 h-4 text-ok-tint shrink-0" />
+            <span className="truncate">ROTAR 90°</span>
+          </button>
+          {/* Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx
+              L2123-2141 (botón pill «Detección automática» — spinner dentro
+              mientras detecta, patrón L2132-2135). */}
+          <button
+            type="button"
+            aria-label="Detectar automáticamente los bordes del acta"
+            onClick={aplicando || detectando ? undefined : () => void detectar()}
+            disabled={aplicando || detectando}
+            className="flex-1 min-w-0 h-11 rounded-xl bg-surface-4/90 hover:bg-surface-5 border border-outline-dim/40 font-data text-[10px] font-bold tracking-widest uppercase text-ink flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-40"
+          >
+            {detectando ? (
+              <span className="h-4 w-4 shrink-0 rounded-full border-2 border-outline-dim border-t-ok-tint animate-spin" />
+            ) : (
+              <SparklesIcon className="w-4 h-4 text-ok-tint shrink-0" />
+            )}
+            <span className="truncate">DETECCIÓN AUTOMÁTICA</span>
+          </button>
+        </div>
         <span className="font-data text-[9px] tracking-[0.18em] text-ink-faint uppercase text-center">
           Arrastra las asas · la lupa amplía 3× el punto de corte
         </span>
         <button
           type="button"
           aria-label="Aplicar el recorte"
-          onClick={aplicando ? undefined : () => onAplicar(displayRef.current)}
+          onClick={aplicando ? undefined : () => onAplicar(displayRef.current, rotLocal)}
           disabled={aplicando}
           className="w-full h-12 py-3 px-5 bg-ok-tint hover:bg-ok active:bg-ok text-ok-ink font-extrabold text-sm uppercase tracking-wider rounded-xl flex items-center justify-center gap-2.5 shadow-[0_0_12px_rgba(63,229,108,0.45)] transition-all transform active:scale-[0.98] disabled:opacity-70 disabled:cursor-wait"
         >

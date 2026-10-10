@@ -4,22 +4,30 @@
  * REVISIÓN (§7.4–§7.5) — documento + banner por estado + CTAs.
  * Estados: ENVIADA · ADVERTENCIA · RECHAZADA (ILEGIBLE rica / GENERICO pill)
  * · EN_REVISION_HUMANA.
- * FASE LÓGICA L2 (§7 ReviewView): VER FOTO — con actas reales el área del
- * documento alterna papel sintético ↔ `fotoProcesada` del core (misma caja,
- * object-contain) y un badge avisa "FOTO REAL DISPONIBLE". En SIMULACIÓN no
- * hay foto → todo queda exactamente como en la fase gráfica.
- * FASE LÓGICA L5 (§7 ReviewView, toolbar REAL — solo fuente ≠ SIMULACIÓN):
- * RECORTAR abre el QuadEditor (§7.5, copiado del lab) · ROTAR 90° gira la
- * foto real (horneada para el PDF) · PANTALLA COMPLETA abre el visor modal.
- * En SIM los tres siguen como hoy (decorativos / rotación de papel).
+ * UX-REAL F1/F3 (SPEC-ux-real-bn-editor, D35–D37): el visor es ÚNICO y es la
+ * FOTO REAL del core (el papel sintético/ActaDocument se retiró — petición
+ * del dueño: «no la quiero volver a ver»). VER FOTO dejó de existir: la foto
+ * procesada es el contenido por defecto de la tarjeta. L5 (§7 ReviewView):
+ * RECORTAR abre el QuadEditor (§7.5) · ROTAR 90° gira la foto (horneada para
+ * el PDF) · PANTALLA COMPLETA abre el visor modal. F5: barra de controles
+ * FIJA en la parte inferior del editor (fuera de la tarjeta — D38).
  */
 import { useEffect, useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
-import { defaultQuad } from "@jg-stevan/scanner-core/types";
-import { ActaDocument } from "../ActaDocument";
+import { defaultQuad, FILTER_PRESETS } from "@jg-stevan/scanner-core/types";
+import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import { QuadEditor } from "../QuadEditor";
 import { Chip, PrimaryBtn, ScoreBadge, ToolbarBtn } from "../primitives";
-import { CropIcon, DownloadIcon, EyeIcon, FullscreenIcon, RefreshIcon, RotateIcon, WarnTriangleIcon } from "../icons";
+import { CropIcon, DownloadIcon, FullscreenIcon, RefreshIcon, RotateIcon, SlidersIcon, WarnTriangleIcon } from "../icons";
+
+// Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L89-L93
+// (CSS_FILTERS — aproximación CSS de cada filtro para las previews en vivo:
+// solo cosmética; el procesado real ocurre al elegir, vía store.cambiarFiltro).
+const CSS_FILTERS: Record<PageFilter, string> = {
+  original: "none",
+  text: "brightness(1.12) contrast(1.35)",
+  bw: "grayscale(1) contrast(2.6) brightness(1.05)",
+};
 
 /** Color de brackets según el estado del acta. */
 function tonoBrackets(status: string) {
@@ -114,14 +122,16 @@ export function ReviewView() {
   const acta = useE14Store((s) => s.actaActual);
   const paginaObjetivo = useE14Store((s) => s.paginaObjetivo);
   const recortando = useE14Store((s) => s.recortando);
+  const revelando = useE14Store((s) => s.revelando);
   const aplicarRecorte = useE14Store((s) => s.aplicarRecorte);
   const rotarFoto = useE14Store((s) => s.rotarFoto);
-  const [rotacion, setRotacion] = useState(0);
-  const [verFoto, setVerFoto] = useState(false);
+  const cambiarFiltro = useE14Store((s) => s.cambiarFiltro);
   // L5 §7.5: editor de recorte y visor a pantalla completa (estado local —
   // el acta solo cambia por store.aplicarRecorte al APLICAR).
   const [editando, setEditando] = useState(false);
   const [visorAbierto, setVisorAbierto] = useState(false);
+  // F2 (§F2.2): sheet de filtros (copia del lab EditorView L2253-2309).
+  const [filtrosAbierto, setFiltrosAbierto] = useState(false);
 
   // L5: Esc cierra el visor (tap en cualquier lado también).
   useEffect(() => {
@@ -139,7 +149,8 @@ export function ReviewView() {
   const mesa = paginaObjetivo?.mesaId.replace(/\D/g, "").padStart(3, "0") ?? acta.ubicacion.mesa;
   const status = acta.status;
   const hayFoto = Boolean(acta.fotoProcesada);
-  const esReal = acta.fuente !== undefined && acta.fuente !== "SIMULACION";
+  // D35: SIMULACIÓN produce fotos reales (pipeline real) — el gate es la foto, no la fuente.
+  const esReal = Boolean(acta.fotoProcesada);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -148,8 +159,10 @@ export function ReviewView() {
         <Breadcrumb mesa={mesa} tipo={tipo} pagina={acta.pagina.index} total={acta.pagina.total} />
       ) : null}
 
-      {/* Visor del documento */}
-      <main className="flex-1 relative overflow-hidden flex flex-col items-center justify-center px-4 py-2 max-w-md mx-auto w-full min-h-0">
+      {/* Visor del documento — F5 (D38): la tarjeta es SOLO visual (sin
+          toolbar dentro); mide lo que mida el documento. La barra de
+          controles vive FUERA, anclada abajo con alto CONSTANTE. */}
+      <main className="flex-1 relative overflow-hidden flex flex-col items-center px-4 py-2 max-w-md mx-auto w-full min-h-0">
         {/* Banner flotante superpuesto (no desplaza el visor) */}
         <div className="absolute top-2 inset-x-0 z-30 flex justify-center pointer-events-none">
           {status === "ENVIADA" && (
@@ -267,92 +280,37 @@ export function ReviewView() {
           )}
         </div>
 
-        {/* Visor con brackets */}
-        <section className="relative bg-surface-1 rounded-xl border border-line p-3 flex flex-col items-center justify-between w-full h-full min-h-0 max-h-[calc(100vh-260px)]">
-          <div className="w-full flex-1 relative flex items-center justify-center py-2 px-1 min-h-0">
+        {/* Visor con brackets — F3: la FOTO REAL es el visor ÚNICO (el papel
+            sintético se retiró — petición del dueño). El placeholder (solo
+            posible si el pipeline agotó el timeout sin procesar) es la MISMA
+            caja con brackets y texto centrado font-data. F5: la tarjeta es SOLO
+            visual (flex-1) — sin toolbar dentro (barra fija abajo, D38). */}
+        <section className="relative bg-surface-1 rounded-xl border border-line p-3 flex items-center justify-center w-full flex-1 min-h-0">
+          <div className="w-full h-full relative flex items-center justify-center py-2 px-1 min-h-0">
             <div className="absolute inset-x-1 inset-y-1 pointer-events-none z-10" aria-hidden>
               <div className={`absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 ${tonoBrackets(status)}`} />
               <div className={`absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 ${tonoBrackets(status)}`} />
               <div className={`absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 ${tonoBrackets(status)}`} />
               <div className={`absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 ${tonoBrackets(status)}`} />
             </div>
-            {/* L2 §7: papel sintético (default) ↔ foto real del core. */}
-            {hayFoto && verFoto ? (
+            {hayFoto ? (
               <img
                 src={acta.fotoProcesada}
                 alt="Foto real del acta procesada por el core"
                 className="w-full h-full object-contain rounded-sm"
               />
             ) : (
-              <ActaDocument acta={acta} rotacion={rotacion} />
-            )}
-            {hayFoto && !verFoto && (
-              <span
-                className="absolute bottom-1.5 left-1.5 z-20 font-data text-[8px] font-bold tracking-[0.18em] text-ok-tint bg-black/55 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none"
-              >
-                FOTO REAL DISPONIBLE
-              </span>
+              <div className="flex items-center justify-center w-full h-full">
+                <span className="font-data text-[10px] tracking-[0.2em] text-ink-faint uppercase">
+                  FOTO NO DISPONIBLE
+                </span>
+              </div>
             )}
           </div>
-
-          {/* Toolbar (ADVERTENCIA/RECHAZADA del code.html + ÓPTIMA rescatada real
-              L5). Con foto real (L2): 4ª columna VER FOTO — alterna papel ↔
-              foto del core. L5 §7 ReviewView: en actas REALES los tres botones
-              son REALES (editor §7.5 / rotación horneada / visor modal); en SIM
-              siguen como hoy (decorativos / rotación del papel). */}
-          {(status === "ADVERTENCIA" ||
-            status === "RECHAZADA" ||
-            (status === "OPTIMA" && esReal)) && (
-            <div
-              className={`w-full max-w-sm grid ${
-                hayFoto ? "grid-cols-4" : "grid-cols-3"
-              } gap-2 pt-2 shrink-0 z-20`}
-            >
-              <ToolbarBtn
-                icon={<CropIcon />}
-                label="Recortar"
-                onClick={esReal && acta.fotoOriginal ? () => setEditando(true) : undefined}
-              />
-              <ToolbarBtn
-                icon={<RotateIcon />}
-                label="Rotar 90°"
-                onClick={
-                  esReal
-                    ? () => void rotarFoto()
-                    : () => setRotacion((r) => (r + 90) % 360)
-                }
-              />
-              <ToolbarBtn
-                icon={<FullscreenIcon />}
-                label="Pantalla completa"
-                onClick={
-                  esReal && acta.fotoProcesada ? () => setVisorAbierto(true) : undefined
-                }
-              />
-              {hayFoto && (
-                <ToolbarBtn
-                  icon={<EyeIcon />}
-                  label={verFoto ? "VER PAPEL" : "VER FOTO"}
-                  onClick={() => setVerFoto((v) => !v)}
-                />
-              )}
-            </div>
-          )}
-
-          {/* VER FOTO en ENVIADA real (el diseño original no trae toolbar para
-              ENVIADA — solo el toggle de la foto, compacto y centrado). */}
-          {status === "ENVIADA" && hayFoto && (
-            <div className="w-full max-w-[200px] mx-auto grid grid-cols-1 gap-2 pt-2 shrink-0 z-20">
-              <ToolbarBtn
-                icon={<EyeIcon />}
-                label={verFoto ? "VER PAPEL" : "VER FOTO"}
-                onClick={() => setVerFoto((v) => !v)}
-              />
-            </div>
-          )}
         </section>
 
-        {/* Chips de envío automático (§7.4) */}
+        {/* Chips de envío automático (§7.4) — F5: quedan como están (ENVIADA
+            no tiene barra: los CTAs de abajo ya dan EXPORTAR PDF/SEGUIR). */}
         {status === "ENVIADA" && (
           <div className="w-full max-w-sm flex items-center justify-center gap-1.5 pt-2 flex-wrap">
             <Chip tone="ok" solid>
@@ -374,12 +332,52 @@ export function ReviewView() {
             )}
           </div>
         )}
+
+        {/* ── BARRA DE CONTROLES FIJA (F5/D38): full width del editor, shrink-0,
+            alto CONSTANTE, anclada al borde inferior (justo encima de los
+            CTAs/BottomNav que renderiza page.tsx). Al girar el documento
+            RETRATO↔APAISADO la tarjeta absorbe el cambio (flex-1) — la barra
+            NO se mueve ni un píxel. F2 (§F2.2): FILTROS → grid-cols-4. */}
+        {(status === "ADVERTENCIA" ||
+          status === "RECHAZADA" ||
+          (status === "OPTIMA" && esReal)) && (
+          <div className="w-full grid grid-cols-4 gap-2 pt-2 shrink-0 z-20">
+            <ToolbarBtn
+              icon={<CropIcon />}
+              label="Recortar"
+              onClick={esReal && acta.fotoOriginal ? () => setEditando(true) : undefined}
+            />
+            <ToolbarBtn
+              icon={<RotateIcon />}
+              label="Rotar 90°"
+              onClick={esReal ? () => void rotarFoto() : undefined}
+            />
+            {/* Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx
+                L2200-2204 (gatillo «Filtros» del toolbar del lab). */}
+            <ToolbarBtn
+              icon={<SlidersIcon />}
+              label="Filtros"
+              onClick={
+                esReal && acta.fotoOriginal && !revelando
+                  ? () => setFiltrosAbierto(true)
+                  : undefined
+              }
+            />
+            <ToolbarBtn
+              icon={<FullscreenIcon />}
+              label="Pantalla completa"
+              onClick={esReal && acta.fotoProcesada ? () => setVisorAbierto(true) : undefined}
+            />
+          </div>
+        )}
       </main>
 
       {/* L5 §7.5 — EDITOR DE RECORTE (overlay a pantalla completa sobre la
           foto ORIGINAL; quad inicial = detección automática o defaultQuad).
           Puro por props (D19): el acta solo cambia vía store.aplicarRecorte
-          al APLICAR; CANCELAR descarta sin tocar nada. */}
+          al APLICAR; CANCELAR descarta sin tocar nada (rotaciones y
+          detecciones del editor incluidas). F4/D37: APLICAR entrega
+          quad + rotación LOCAL del editor → quedan horneadas. */}
       {editando && acta.fotoOriginal ? (
         <QuadEditor
           fotoOriginal={acta.fotoOriginal}
@@ -387,10 +385,78 @@ export function ReviewView() {
           rotation={acta.rotation ?? 0}
           aplicando={recortando}
           onCancelar={() => setEditando(false)}
-          onAplicar={(quad) => {
-            void aplicarRecorte(quad).then(() => setEditando(false));
+          onAplicar={(quad, rotacion) => {
+            void aplicarRecorte(quad, rotacion).then(() => setEditando(false));
           }}
         />
+      ) : null}
+
+      {/* ── F2 (§F2.2) — SHEET DE FILTROS: copia del sheet del lab
+          (EditorView.tsx L2253-2309), re-vestida: vaul → fixed bottom sheet
+          + animate-editor-enter (e14 NO instala deps nuevas — SPEC §C);
+          #007AFF/#1c1c1e → tokens ok-tint/surface-1; page.original →
+          acta.fotoOriginal; activo por acta.filtro (default "bw", D36). */}
+      {filtrosAbierto && acta.fotoOriginal ? (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setFiltrosAbierto(false)}
+            aria-hidden
+          />
+          <div
+            role="dialog"
+            aria-label="Filtros del acta"
+            className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[22px] bg-surface-1 pb-safe outline-none animate-editor-enter"
+          >
+            <div className="mx-auto mt-2.5 h-1.5 w-9 rounded-full bg-white/25" />
+            <h3 className="px-5 pb-1 pt-3 text-center text-[17px] font-semibold text-white">
+              Filtros
+            </h3>
+            <p className="sr-only">Elige un filtro para el acta en edición</p>
+            <div className="flex gap-3 overflow-x-auto px-5 pb-5 pt-2">
+              {FILTER_PRESETS.map((f) => {
+                const activo = acta.filtro === f.id;
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx
+                    // L1214-1218 (handleFilter — aplica y cierra; el toast
+                    // «Filtro aplicado: …» lo emite el store.cambiarFiltro).
+                    onClick={() => {
+                      void cambiarFiltro(f.id);
+                      setFiltrosAbierto(false);
+                    }}
+                    className="flex w-[78px] shrink-0 flex-col items-center gap-1.5"
+                  >
+                    <span
+                      className={`block h-[104px] w-full overflow-hidden rounded-xl border-2 ${
+                        activo
+                          ? "border-ok-tint shadow-[0_0_0_3px_rgba(63,229,108,0.25)]"
+                          : "border-white/10"
+                      }`}
+                    >
+                      <img
+                        src={acta.fotoOriginal}
+                        alt=""
+                        draggable={false}
+                        style={{ filter: CSS_FILTERS[f.id] ?? "none" }}
+                        className="h-full w-full object-cover"
+                      />
+                    </span>
+                    <span
+                      className={`text-[11px] ${
+                        activo ? "font-medium text-white" : "text-ink-faint"
+                      }`}
+                    >
+                      {f.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
       ) : null}
 
       {/* L5 §7 — PANTALLA COMPLETA: visor modal de la foto procesada
@@ -428,11 +494,12 @@ export function ReviewCtas() {
 
   if (!acta) return null;
   const status = acta.status;
-  const esReal = acta.fuente !== undefined && acta.fuente !== "SIMULACION";
+  // D35: SIMULACIÓN produce fotos reales (pipeline real) — el gate es la foto, no la fuente.
+  const esReal = Boolean(acta.fotoProcesada);
 
   if (status === "ENVIADA") {
-    // L4 §6: EXPORTAR PDF junto a SEGUIR ESCANEANDO — solo actas REALES
-    // (en SIMULACIÓN no hay foto que exportar: el botón se oculta).
+    // L4 §6: EXPORTAR PDF junto a SEGUIR ESCANEANDO — actas con foto real
+    // (D35: SIMULACIÓN incluida — el gate es la foto, no la fuente).
     if (esReal) {
       return (
         <div className="flex flex-row items-center gap-2 w-full">

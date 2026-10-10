@@ -33,3 +33,12 @@ Leyenda: [ ] pendiente · [~] en progreso · [x] hecho
 - [x] H4 — TORCH_HINT verbatim completo (diagnóstico de campo para el operador)
 - [x] H5 — IMPORTAR: accept `.heic/.heif` en ambos inputs + guard F-IMPORT/HEIC del lab
 - [ ] H6 — (DECISIÓN del autor) PWA instalable + offline (manifest + SW network-first del lab) — valioso para operadores en zona de mala conexión; NO en este PR por alcance
+
+## UX REAL (SPEC-ux-real-bn-editor.md — fix/e14-ux-real)
+
+- [x] R0 — AGENTS.md en la RAÍZ con la REGLA DE ORO #0 (el lab es la fuente de verdad) + enlace al tope de README.md
+- [x] F1 — SIMULACIÓN = pipeline real sobre el acta E-14 REAL incluida (D35): mock retirado, chips de forzado obsoletos, gates esReal por foto
+- [x] F3 — VER FOTO y papel sintético eliminados: la foto real es el visor único (ActaDocument borrado)
+- [x] F5 — barra de controles FIJA en la parte inferior del editor de revisión (D38)
+- [x] F2 — filtro «B/N adaptativo» por defecto + selector de filtros (copia del lab, D36)
+- [x] F4 — QuadEditor con ROTAR 90° y DETECCIÓN AUTOMÁTICA (copia del lab, D37)

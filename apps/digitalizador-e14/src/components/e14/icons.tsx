@@ -229,3 +229,33 @@ export const DownloadIcon = ({ className = "w-3.5 h-3.5" }: IconProps) => (
     <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
   </svg>
 );
+
+/** Sliders (F2 — gatillo FILTROS de la barra de revisión; trazo calca el
+ *  `sliders-horizontal` de lucide, mismo patrón SVG inline del archivo). */
+export const SlidersIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg
+    className={`${className} stroke-current stroke-2 fill-none`}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4" />
+  </svg>
+);
+
+/** Sparkles (F4 — DETECCIÓN AUTOMÁTICA del editor de recorte; trazo calca el
+ *  `sparkles` de lucide, mismo patrón SVG inline del archivo). */
+export const SparklesIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg
+    className={`${className} stroke-current stroke-2 fill-none`}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z" />
+    <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" />
+    <path d="M5 16l.7 1.6L7.3 18l-1.6.7L5 20.3l-.7-1.6L2.7 18l1.6-.4L5 16z" />
+  </svg>
+);

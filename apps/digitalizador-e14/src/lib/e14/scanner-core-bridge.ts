@@ -24,7 +24,12 @@
  * maxIntentos/paginación se preservan por spread del acta de entrada).
  *
  * Lo que sigue simulado (votos/firmas/ubicación) se rellena del seed exacto
- * como hace el MockBridge (§0: no se presenta como extraído).
+ * (§0: no se presenta como extraído).
+ *
+ * UX-REAL F1 (SPEC-ux-real-bn-editor §F1, D35): SIMULACIÓN también pasa por
+ * este pipeline — la fuente carga el acta E-14 REAL incluida (§1) y la trata
+ * EXACTAMENTE como un `archivo` de IMPORTAR (mismo File → fileToCaptureDataUrl
+ * → F-IMPORT: EXIF/12MP). El mock de la fase gráfica se retiró.
  */
 import {
   detectDocumentEdges,
@@ -40,6 +45,7 @@ import {
 } from "@jg-stevan/scanner-core/pdf-export";
 import {
   excellentQuality,
+  defaultQuad,
   makeQuality,
 } from "@jg-stevan/scanner-core/types";
 import type {
@@ -50,6 +56,9 @@ import type {
 } from "@jg-stevan/scanner-core/types";
 import { ACTA_MOCK } from "./seed";
 import { statusDeScore } from "./types";
+// §1 (SPEC-ux-real-bn-editor): acta E-14 real del dueño (Galaxy A56 5G) —
+// import estático: Next resuelve el basePath /web-scanner del deploy estático.
+import actaSimUrl from "@/assets/acta-e14-real.jpg";
 import type { Acta, ActaFirma, ActaStatus, ProgresoAnalisis } from "./types";
 import type { E14Bridge, OpcionesEscaneo } from "./bridge";
 
@@ -83,6 +92,23 @@ function capturarFrame(video: HTMLVideoElement): string | null {
 
 /** Entrada del pipeline: File (ARCHIVO o foto CÁMARA) o dataUrl ya crudo. */
 type EntradaPipeline = { archivo: File } | { dataUrl: string };
+
+/**
+ * SIMULACIÓN = pipeline real sobre el acta E-14 incluida (D35).
+ * Mismo camino que IMPORTAR: File → fileToCaptureDataUrl (F-IMPORT: EXIF/12MP).
+ * Caché a nivel de módulo para no re-descargar en REINTENTAR/REPETIR FOTO
+ * (SPEC §F1.1 — el asset se decodifica al entrar a SIMULACIÓN, lazy).
+ */
+let actaSimCache: File | null = null;
+async function fetchActaSimulada(): Promise<File> {
+  if (actaSimCache) return actaSimCache;
+  // actaSimUrl es StaticImageData — .src ya resuelve el basePath /web-scanner
+  // del deploy estático (en dev: /_next/static/media/...).
+  const res = await fetch(actaSimUrl.src);
+  if (!res.ok) throw new Error("SIMULACIÓN: no se pudo cargar la imagen incluida");
+  actaSimCache = new File([await res.blob()], "acta-e14-real.jpg", { type: "image/jpeg" });
+  return actaSimCache;
+}
 
 function dosDigitos(n: number): string {
   return String(n).padStart(2, "0");
@@ -129,10 +155,12 @@ function conRampa<T>(
 export class RealCoreBridge implements E14Bridge {
   private contador = 0;
 
-  escanearActa(opciones: OpcionesEscaneo): Promise<Acta> {
-    // Resolución de la entrada (L3 §5 CAMARA):
+  async escanearActa(opciones: OpcionesEscaneo): Promise<Acta> {
+    // Resolución de la entrada (L3 §5 CAMARA + F1 SIMULACIÓN):
     //  · CAMARA + archivo (ZSL/captureSmart/iOS) → MISMO pipeline que ARCHIVO.
     //  · CAMARA sin archivo + frameActual (video vivo) → grab síncrono.
+    //  · SIMULACIÓN sin archivo (D35) → el acta E-14 incluida, EXACTAMENTE
+    //    como un archivo de IMPORTAR (la foto real del dueño, EXIF incluido).
     //  · Sin entrada → error explícito (el guard del store ya avisó).
     let entrada: EntradaPipeline | null = null;
     if (opciones.archivo) {
@@ -143,11 +171,15 @@ export class RealCoreBridge implements E14Bridge {
         ? capturarFrame(video)
         : null;
       if (!dataUrl) {
-        return Promise.reject(new Error("SIN CAPTURA PARA ANALIZAR (fuente CÁMARA)"));
+        throw new Error("SIN CAPTURA PARA ANALIZAR (fuente CÁMARA)");
       }
       entrada = { dataUrl };
+    } else if (opciones.fuente === "SIMULACION") {
+      // SIMULACIÓN = pipeline real sobre el acta E-14 incluida (D35).
+      // Mismo camino que IMPORTAR: File → fileToCaptureDataUrl (F-IMPORT: EXIF/12MP).
+      entrada = { archivo: await fetchActaSimulada() };
     } else {
-      return Promise.reject(new Error("SIN IMAGEN PARA ANALIZAR (fuente ARCHIVO)"));
+      throw new Error("SIN IMAGEN PARA ANALIZAR (fuente ARCHIVO)");
     }
 
     // Acumulador de lo que ya se tiene (el acta de timeout rellena lo que
@@ -235,11 +267,14 @@ export class RealCoreBridge implements E14Bridge {
     ms.detect = performance.now() - tDetect;
     emitir({ etapa: "DETECTANDO", progreso: 1 });
 
-    // 3) Recorte + realce (warp real INTER_CUBIC + "original").
+    // 3) Recorte + realce (warp real INTER_CUBIC + filtro default "bw").
     emitir({ etapa: "RECORTANDO", progreso: 0.2 });
     const tProceso = performance.now();
     const resultado = await conRampa(
-      processImage(fotoOriginal, quad, "original"),
+      // Fuente: apps/scanner-lab/src/components/scanner/CameraView.tsx L602-604
+      // (captura arranca en B/N adaptativo) + types.ts L50 (default del
+      // producto) — D36: e14 no tiene ajustes → el default fijo es "bw".
+      processImage(fotoOriginal, quad, "bw"),
       1400,
       // RECORTANDO .2→.6 (warp) → REALZANDO .4→1 (enhance), interpolado.
       (f) =>
@@ -281,6 +316,7 @@ export class RealCoreBridge implements E14Bridge {
         `(decode=${Math.round(ms.decode)} detect=${Math.round(ms.detect)} ` +
         `proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
         `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +
+        `filtro=${"bw"} ` +
         `metricas={sharpness:${calidad.sharpness} brightness:${calidad.brightness} ` +
         `contrast:${calidad.contrast} level:${calidad.level}})`,
     );
@@ -309,17 +345,20 @@ export class RealCoreBridge implements E14Bridge {
    * conserva IDENTIDAD (fuente/intento/maxIntentos/paginación/título…) — el
    * rescate NO es una captura nueva, no consume intento. Timeout 15 s igual
    * que escanearActa: resuelve un acta RECHAZADA ILEGIBLE controlada.
+   * F4/D37: `rotacionOverride` (4º parámetro) hornea la rotación LOCAL del
+   * editor — el retorno de pipelineRecorte fija `rotation: rotacionUsada`.
    */
   recortar(
     acta: Acta,
     quad: Quad,
     onProgreso?: (p: ProgresoAnalisis) => void,
+    rotacionOverride?: number,
   ): Promise<Acta> {
     const fotoOriginal = acta.fotoOriginal;
     if (!fotoOriginal) {
       return Promise.reject(new Error("SIN FOTO ORIGINAL PARA RECORTAR"));
     }
-    const rotacion = acta.rotation ?? 0;
+    const rotacion = rotacionOverride ?? acta.rotation ?? 0;
     let vencido = false; // tras el timeout no se emite más progreso (§5)
     const emitir = (p: ProgresoAnalisis) => {
       if (!vencido) onProgreso?.(p);
@@ -366,12 +405,14 @@ export class RealCoreBridge implements E14Bridge {
   ): Promise<Acta> {
     const ms = { proceso: 0, calidad: 0, ocr: 0, total: 0 };
     const inicio = performance.now();
+    // F2/D36: el recorte conserva el filtro del acta (default del producto "bw").
+    const filtro: PageFilter = acta.filtro ?? "bw";
 
-    // 1) Recorte + realce (warp real INTER_CUBIC + "original", F5-MANUAL).
+    // 1) Recorte + realce (warp real INTER_CUBIC + filtro del acta, F5-MANUAL).
     emitir({ etapa: "RECORTANDO", progreso: 0.2 });
     const tProceso = performance.now();
     const resultado = await conRampa(
-      processImage(fotoOriginal, quad, "original", rotacion, { manual: true }),
+      processImage(fotoOriginal, quad, filtro, rotacion, { manual: true }),
       1400,
       // RECORTANDO .2→.6 (warp) → REALZANDO .4→1 (enhance), interpolado.
       (f) =>
@@ -411,16 +452,20 @@ export class RealCoreBridge implements E14Bridge {
       `[e14] recorte ${acta.fuente} total=${Math.round(ms.total)}ms ` +
         `(proceso=${Math.round(ms.proceso)} calidad=${Math.round(ms.calidad)} ` +
         `ocr=${Math.round(ms.ocr)} motor=${motor} legible=${legible} score=${score} ` +
+        `filtro=${filtro} ` +
         `metricas={sharpness:${calidad.sharpness} brightness:${calidad.brightness} ` +
         `contrast:${calidad.contrast} level:${calidad.level}})`,
     );
 
     // Acta ACTUALIZADA: identidad intacta (spread), campos reales nuevos y
-    // rechazo LIMPIO si el rescate mejora el estado (D20).
+    // rechazo LIMPIO si el rescate mejora el estado (D20). F4/D37: la
+    // rotación usada queda HORNEADA (rotation) — la respeta el PDF §6 y un
+    // eventual re-recorte/filtrado.
     return {
       ...acta,
       fotoProcesada,
       quadDetectado: quad,
+      rotation: rotacion,
       ocrTexto: texto,
       metricas: {
         sharpness: calidad.sharpness,
@@ -437,6 +482,32 @@ export class RealCoreBridge implements E14Bridge {
           : null,
       firmas: this.firmasPorStatus(acta.firmas, status),
     };
+  }
+
+  /**
+   * F2 (§F2.2, D36) — FILTRO: re-procesa la foto con el filtro elegido,
+   * IGUAL que setFilterOnPage del core (apps/scanner-lab/src/components/
+   * scanner/…/store.ts L644-669): SOLO processImage — sin re-OCR, sin
+   * re-calidad (el gate ya resolvió). Devuelve el acta con fotoProcesada y
+   * filtro actualizados. Sin timeout: es un ÚNICO processImage con fallback
+   * canvas (misma exposición al cuelgue que tiene el lab aquí — documentado
+   * en worklog como ADAPTACIÓN de la opción «timeout 15 s» del spec).
+   */
+  async revelar(acta: Acta, filtro: PageFilter): Promise<Acta> {
+    const fotoOriginal = acta.fotoOriginal;
+    if (!fotoOriginal) {
+      throw new Error("SIN FOTO ORIGINAL PARA FILTRAR");
+    }
+    // Fuente: apps/scanner-lab/…/store.ts L644-669 (setFilterOnPage) —
+    // processImage(original, quad, filter, rotation, { manual }).
+    const resultado = await processImage(
+      fotoOriginal,
+      acta.quadDetectado ?? defaultQuad(),
+      filtro,
+      acta.rotation ?? 0,
+      { manual: true },
+    );
+    return { ...acta, fotoProcesada: resultado.processed, filtro };
   }
 
   /** Firmas coherentes con el estado (misma regla del mock/§7.5):
@@ -513,6 +584,9 @@ export class RealCoreBridge implements E14Bridge {
       motor: campos.motor ?? "canvas",
       quadDetectado: campos.quadDetectado,
       rotation: 0,
+      // F2/D36: default del producto (types.ts L50 del core) — toda captura
+      // nace en B/N adaptativo (Fuente: CameraView.tsx L602-604 del lab).
+      filtro: "bw" as PageFilter,
     };
   }
 
@@ -540,7 +614,8 @@ export class RealCoreBridge implements E14Bridge {
           original: acta.fotoOriginal ?? foto,
           processed: foto,
           thumbnail: foto,
-          filter: "original" as PageFilter,
+          // F2/D36: el PDF se genera con el filtro del acta (default "bw").
+          filter: (acta.filtro ?? "bw") as PageFilter,
           quad: [
             { x: 0, y: 0 },
             { x: 1, y: 0 },

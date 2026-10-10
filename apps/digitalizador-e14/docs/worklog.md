@@ -645,3 +645,73 @@ PROFILER / snapA+TORCH_HINT+accept.
 - **Commits:** baa4990
 - **Cómo probar:** lint+check limpios; flujo dorado SIM idéntico; IMPORTAR archivo no-imagen → toast "ARCHIVO NO VÁLIDO".
 - **Pendiente/Bloqueado:** QA en el teléfono del dueño (checklist §6.2 del spec de auditoría) + push/PR/merge/deploy.
+
+### [2026-10-10 12:20 (Bogotá)] — R0 + F1: REGLA DE ORO #0 + SIMULACIÓN = pipeline real — Z.ai Code (rama fix/e14-ux-real)
+**Spec:** docs/SPEC-ux-real-bn-editor.md (Rev. 1) — 5 defectos del flujo real reportados por el dueño.
+- **Hecho (R0 / commit 4675f52):** `AGENTS.md` NUEVO en la raíz del monorepo con la REGLA DE ORO #0 (petición literal del dueño: «si ya existe en apps/scanner-lab, se COPIA verbatim con comentario de Fuente; nunca se re-inventa ni se simplifica» — referencia al bug F-LENS/D33) + línea de advertencia al tope del cuerpo de `README.md`.
+- **Hecho (F1 / commit 04ba712):** asset canónico `src/assets/acta-e14-real.jpg` (copia del dueño vía upload: 1.417.292 bytes, sha256 `c3f0bd7c…` — VERIFICADO idéntico a la tabla §1; CDN no fue necesario). `RealCoreBridge.escanearActa` (async) gana la rama SIMULACIÓN → `fetchActaSimulada()` (caché de módulo; `StaticImageData.src` resuelve basePath) tratada EXACTAMENTE como archivo IMPORTAR. MockBridge + Forzado + OPTIMA/ADVERTENCIA/RECHAZADA_SCORES + pick + dormir ELIMINADOS; CompositeBridge simplificado (escanearActa siempre al real; recortar/exportarPdf gatean por FOTO); store sin `forzado`; ScanView sin chips (línea estática «IMAGEN REAL INCLUIDA · ACTA E-14 (KIT 745 — CONSULADO FRANKFURT)»); `rotarFoto` sin cláusula SIM; `esReal` = foto en ReviewView.
+- **Veredictos de fidelidad (bloques F1):**
+  | Bloque | Origen | Veredicto |
+  |---|---|---|
+  | fetchActaSimulada + rama SIMULACION | SPEC §F1.1 (código dado) | FIEL (verbatim del spec) |
+  | MockBridge/Forzado/gates | SPEC §F1.2–F1.5 | DECISIÓN PROPIA (D35) — el spec ordena la RETIRADA del mock: no hay bloque del lab que copiar (la fuente es la spec misma) |
+  | Timeout 15 s + pipeline §5 | diseño propio e14 (L2) | INTACTO (no se tocó — spec §F1.1) |
+- **QA:** lint:e14 + e14:check 0 errores.
+- **Archivos:** AGENTS.md, README.md, src/assets/acta-e14-real.jpg, src/lib/e14/{bridge,scanner-core-bridge,store,get-bridge,types}.ts, src/components/e14/screens/{ScanView,ReviewView}.tsx
+- **Commits:** 4675f52, 04ba712
+
+### [2026-10-10 12:35 (Bogotá)] — F3 + F5: visor único + barra fija — Z.ai Code (rama fix/e14-ux-real)
+- **Hecho (F3 / commit 2610dcd):** `verFoto`, toggle del toolbar, bloque ENVIADA, badge «FOTO REAL DISPONIBLE» y `rotacion` local ELIMINADOS de ReviewView; visor único `{hayFoto ? <img fotoProcesada> : placeholder «FOTO NO DISPONIBLE»}` (misma caja con brackets); `ActaDocument.tsx` BORRADO (grep: su único import era ReviewView — queda en el historial de git por si el dueño lo quiere); ROTAR 90° siempre real (store.rotarFoto).
+- **Hecho (F5 / commit 553af8a):** main reestructurado — tarjeta SOLO visual (flex-1, sin toolbar dentro, sin max-h) + barra `grid grid-cols-3` (→4 en F2) `shrink-0` anclada abajo encima de los CTAs; ToolbarBtn con `min-h-11` + label `truncate`; ENVIADA sin barra; banners flotantes y chips de envío intactos.
+- **Veredictos de fidelidad:**
+  | Bloque | Origen | Veredicto |
+  |---|---|---|
+  | Visor único + placeholder | SPEC §F3 | DECISIÓN PROPIA (D35/F3) — eliminación dirigida por la spec, el layout de la caja existente se conserva |
+  | Barra fija (estructura main) | SPEC §F5 | DECISIÓN PROPIA (D38) — la spec define el árbol (visor flex-1 + barra shrink-0); re-vestido con tokens existentes |
+- **QA:** lint:e14 + e14:check 0 errores.
+- **Archivos:** src/components/e14/screens/ReviewView.tsx (−ActaDocument.tsx), src/components/e14/primitives.tsx
+- **Commits:** 2610dcd, 553af8a
+
+### [2026-10-10 12:50 (Bogotá)] — F2: B/N adaptativo por defecto + selector de filtros — Z.ai Code (rama fix/e14-ux-real)
+- **Hecho (commit 1daae7f):** `Acta.filtro?: PageFilter` (types); captura con `processImage(..., "bw")` (Fuente: CameraView L602-604 + types L50); recorte conserva `acta.filtro ?? "bw"`; `construirActa` fija `filtro: "bw"`; PDF con `acta.filtro ?? "bw"`; logs con `filtro=`; `E14Bridge.revelar` (contrato + CompositeBridge + RealCoreBridge — espejo de setFilterOnPage: SOLO processImage, sin re-OCR/re-calidad, sin timeout — ADAPTACIÓN documentada); store `cambiarFiltro` + `revelando` + toast «Filtro aplicado: …»; ReviewView: gatillo FILTROS (grid-cols-4) + sheet con 3 miniaturas; `SlidersIcon` en icons.tsx.
+- **Veredictos de fidelidad (copias del lab, regla de oro 6):**
+  | Bloque | Origen (lab) | Veredicto |
+  |---|---|---|
+  | `CSS_FILTERS` | EditorView.tsx L89-93 | FIEL (literal + comentario Fuente) |
+  | Sheet UI (handle/título «Filtros»/3 miniaturas 78×104/borde activo) | EditorView.tsx L2253-2309 | ADAPTACIÓN (re-vestido: vaul → fixed bottom + animate-editor-enter — e14 NO instala deps; #007AFF→ok-tint; page.original→acta.fotoOriginal; activo por acta.filtro) |
+  | `handleFilter` (aplica+cierra+toast) | EditorView.tsx L1214-1218 | ADAPTACIÓN (llama a store.cambiarFiltro en vez de updateCapturePage; toast verbatim «Filtro aplicado: ${label}» lo emite el store) |
+  | Gatillo «Filtros» del toolbar | EditorView.tsx L2200-2204 | ADAPTACIÓN (ToolItem lucide → ToolbarBtn e14 con SlidersIcon) |
+  | `revelar` (solo processImage) | store.ts L644-669 (setFilterOnPage) | ADAPTACIÓN (quad = quadDetectado ?? defaultQuad; sin timeout — decisión del agente permitida por §F2.2, documentada) |
+  | Default `bw` en captura | CameraView.tsx L602-604 + types.ts L50 | FIEL (misma regla: e14 sin ajustes → default fijo del producto) |
+- **QA:** lint:e14 + e14:check 0 errores.
+- **Archivos:** src/lib/e14/{types,bridge,scanner-core-bridge,store}.ts, src/components/e14/screens/ReviewView.tsx, src/components/e14/icons.tsx
+- **Commits:** 1daae7f
+
+### [2026-10-10 13:05 (Bogotá)] — F4: QuadEditor con ROTAR 90° + DETECCIÓN AUTOMÁTICA — Z.ai Code (rama fix/e14-ux-real)
+- **Hecho (commit 0a9394b):** `rotLocal` (estado local, inicial = rotationProp; todos los usos de `rotation` pasan por ella); botón ROTAR 90° (determinista, sin guard); `transition-transform duration-300` SOLO en el div interior (los arrastres no lo tocan — el transform del div no cambia con los drags); DETECCIÓN AUTOMÁTICA (detectDocumentEdges del core + tween reutilizado: efecto de aterrizaje extraído a `animarQuadHacia` — misma curva easeOutCubic 280 ms para el aterrizaje Y el botón; cancela rAF previo); fallo → «NO SE PUDO DETECTAR» en el readout del header ~2 s (sin alert, sin store — D19); APLICAR entrega `onAplicar(quad, rotLocal)`; fila de botones 44px sobre el hint en el footer; cables: ReviewView → `store.aplicarRecorte(quad, rotacion)` → `bridge.recortar(..., rotacionOverride)` → `rotacion = rotacionOverride ?? acta.rotation ?? 0` y `rotation: rotacion` HORNEADA en el retorno del rescate. `SparklesIcon` en icons.tsx.
+- **Veredictos de fidelidad (copias del lab, regla de oro 6):**
+  | Bloque | Origen (lab) | Veredicto |
+  |---|---|---|
+  | `handleDetect` (detectDocumentEdges→quad) | EditorView.tsx L1198-1212 | ADAPTACIÓN (actualiza el quad LOCAL por tween en vez de updateCapturePage al store — D19 prohíbe store en el editor; el quad llega al acta al APLICAR) |
+  | Botón DETECCIÓN (spinner dentro) | EditorView.tsx L2123-2141 | ADAPTACIÓN (pill lucide → botón del footer e14; Sparkles lucide → SparklesIcon propio) |
+  | Tween easeOutCubic 280 ms | EditorView.tsx L873-887 | FIEL (mismo rAF; extraído a función para reuso — refactor interno) |
+  | ROTAR dentro del editor | SPEC §F4.2 (el lab rota en REVIEW F-ROT-RAPID L1080-1119) | DECISIÓN PROPIA (D37) — el dueño pide el botón DENTRO del editor; la mecánica quad-en-marco-rotado ya estaba en QuadEditor |
+  | `onAplicar(quad, rotacion)` + rotacionOverride | SPEC §F4.4/F4.5 | FIEL (cableado según spec) |
+- **QA:** lint:e14 + e14:check 0 errores (tras corregir import `./icons` en QuadEditor).
+- **Archivos:** src/components/e14/QuadEditor.tsx, src/components/e14/screens/ReviewView.tsx, src/lib/e14/{bridge,scanner-core-bridge,store}.ts, src/components/e14/icons.tsx
+- **Commits:** 0a9394b
+
+### [2026-10-10 13:55 (Bogotá)] — QA integral con navegador (agent-browser 390×844) + fix h-dvh — Z.ai Code (rama fix/e14-ux-real)
+- **Hallazgo y fix (commit 0ea4a20):** con el re-estruccionado F5, el caso RETRATO desbordaba el viewport (scrollH=1313 > 844): la cadena de alturas era INDEFINIDA (shell `min-h-dvh` crece con el contenido) y la altura INTRÍNSECA de la foto (acta 1715×2287) empujaba la barra a y=1103 (bajo el fold). Fix: shell `h-dvh overflow-hidden` en page.tsx — cadena DEFINITA (main flex-1 → tarjeta flex-1 → img h-full object-contain); Actas/Resumen ya gestionan su scroll interno (overflow-y-auto) y ScanView cabe por diseño (verificado: scrollH=844 en las 5 vistas).
+- **Verificación por navegador (todo en dev :3001, headless Chromium):**
+  1. **F1 SIMULACIÓN real:** ESCANEAR → pipeline real → consola `[e14] pipeline SIMULACION/file total=8220ms (decode=2092 detect=110 proceso=491 calidad=37 ocr=5489 motor=worker legible=false score=8.1 filtro=bw metricas={sharpness:100 brightness:36 contrast:100 level:excellent})` — foto real del E-14 VERTICAL (EXIF aplicado, VLM confirma «ACTA ELECTORAL — ELECCIONES PRESIDENCIALES», procesado monocromo B/N), chips ÓPTIMA/ADVERTENCIA/RECHAZADA inexistentes, panel SIM con la línea «IMAGEN REAL INCLUIDA · ACTA E-14 (KIT 745 — CONSULADO FRANKFURT)». Resultado real: RECHAZADA por gate OCR (legible=false) con score 8.1 — ver A/B abajo.
+  2. **A/B del gate (F2 no es la causa):** recorte re-ejecutado con filtro `original` → `[e14] recorte SIMULACION total=5018ms … legible=false score=8.1 filtro=original` — el gate falla IGUAL sin B/N: es la foto real (mesa oscura, brightness 36) la que el OCR local no resuelve como E-14/REGISTRADURÍA, NO una regresión del default `bw`. La salida de rescate (recorte manual para incluir cabecera) queda disponible para el dueño.
+  3. **F2 selector:** sheet con 3 miniaturas (Original/Texto claro/B/N adaptativo, 78×104, borde ok-tint en la activa) + toast verbatim «Filtro aplicado: Original» + foto re-procesada sin re-OCR.
+  4. **F4 editor:** VLM confirma fila [ROTAR 90° · DETECCIÓN AUTOMÁTICA] sobre el hint y APLICAR; ROTAR gira el preview (transition 300 ms, quad solidario); DETECCIÓN re-detecta (sin errores); APLICAR hornea quad+rotación (console recorte, rotation devuelta); CANCELAR tras rotar NO toca el acta (foto sigue retrato 0°, img 324×520).
+  5. **F5 barra fija (criterio al píxel):** barY=635/barH=44 en 0°, 90°, 180° y 270° — IDÉNTICA; scrollH=844 en todos los estados; CTAs/BottomNav bottom=844; ENVIADA sin barra (código — el flujo no era alcanzable con esta acta RECHAZADA).
+  6. **Regresión:** ScanView cabe (scrollH=844), ACTAS/RESUMEN sin overflow y con scroll interno intacto, cero errores de página y cero warnings de consola en toda la sesión.
+- **Build estático (§C):** `BUILD_STATIC=1 bunx next build` VERDE — asset emitido `out/_next/static/media/acta-e14-real.*.jpg` con sha256 idéntico (`c3f0bd7c…`) y referencia con prefijo `/web-scanner` en los chunks (basePath resuelto por el import estático).
+- **Archivos:** src/app/page.tsx
+- **Commits:** 0ea4a20
+- **Cómo probar (dueño):** Preview → SIMULACIÓN → ESCANEAR → ANALIZANDO real (~8 s) → REVISIÓN con la foto real en B/N; probar FILTROS (sheet), RECORTAR (ROTAR 90° + DETECCIÓN AUTOMÁTICA + APLICAR/CANCELAR), ROTAR 90° de la barra (la barra no se mueve) y EXPORTAR PDF en una acta ENVIADA real (CÁMARA/IMPORTAR).
+- **Pendiente/Bloqueado:** verificación de CÁMARA real y del flujo ENVIADA→EXPORTAR PDF en el teléfono del dueño (headless no tiene cámara); merge del PR por el dueño.
