@@ -112,9 +112,19 @@ const ANCLA_VERPAG = /Ver\.?\s*:?\s*(\d{1,2})\s*Pag\.?\s*:?\s*(\d{1,2})\s*de\s*(
 const ANCLA_KIT = /KIT\s*(\d{1,6})/i;
 const ANCLA_FORM = /No\.?\s*Form\.?\s*:?\s*(\d{1,6})/i;
 
+// Código 1D IMPRESO debajo del barcode (ANALISIS §D.2/§F — 8/8 muestras):
+// 15 dígitos · d9: 3=TRANSMISIÓN, 2=CÓNSUL/EMBAJADOR · d12-13: página ·
+// d14-15: total. Evidencia en vivo: «710003993010102» → d9=3 (T), d12-15=01/02.
+const ANCLA_CODIGO_1D = /\b(\d{15})\b/g;
+
 // BANDA (tipo copia, §D.1): señal primaria — CLAVEROS existe pero NO se archiva.
+// CORRECCIÓN con evidencia (captura del dueño 2026-10-10): el `C[OÓ]NSUL` suelto
+// matcheaba la caja impresa «CONSULADO: 88 - CONSULADOS» (presente en TODAS las
+// copias de consulado) y marcaba DELEGADOS falso en un acta TRANSMISIÓN. La
+// banda de delegados imprime el literal «CÓNSUL/EMBAJADOR» (ANALISIS §D.1) →
+// EMBAJADOR ya la cubre sin colisionar con la caja del encabezado.
 const BANDA_TRANSMISION = /TRANSMISI[OÓ]N/;
-const BANDA_DELEGADOS = /C[OÓ]NSUL|EMBAJADOR|DELEGADOS/;
+const BANDA_DELEGADOS = /EMBAJADOR|DELEGADOS/;
 
 // ---------- Umbrales (§3.3) ----------
 
@@ -198,14 +208,28 @@ export function clasificarCabecera(ocrTexto: string, base: DivipolBase): Clasifi
   const mesaLeida = mMesa ? numeroLimpio(mMesa[1]) : null;
   const lugarLeido = mLugar?.[1] ? normalizarNombre(mLugar[1]) : null;
 
-  // ---- PÁGINA (§C) + KIT (pie — §3.2: KIT preferido, No. Form de respaldo). ----
+  // ---- PÁGINA (§C): «Ver/Pag/de» impreso primero; respaldo d12-13/d14-15 del
+  //      código 1D impreso (ANALISIS §D.2 — «710003993010102» → 01/02 = «1 de 2»,
+  //      verificado en vivo con el OCR del dueño). Solo si hay UN único código
+  //      de 15 dígitos y la aritmética cuadra. ----
+  const codigos1D = [...texto.matchAll(ANCLA_CODIGO_1D)].map((m) => m[1]);
+  const codigo1DUnico = codigos1D.length === 1 ? codigos1D[0] : null;
   const pagina =
     mVerPag && Number.isFinite(numeroLimpio(mVerPag[2]))
       ? {
           index: Math.max(1, numeroLimpio(mVerPag[1]) || 1),
           total: Math.max(1, numeroLimpio(mVerPag[3]) || 2),
         }
-      : null;
+      : codigo1DUnico
+        ? (() => {
+            const idx = parseInt(codigo1DUnico.slice(11, 13), 10);
+            const tot = parseInt(codigo1DUnico.slice(13, 15), 10);
+            return Number.isFinite(idx) && Number.isFinite(tot) && idx >= 1 && tot >= idx && tot <= 9
+              ? { index: idx, total: tot }
+              : null;
+          })()
+        : null;
+  // ---- KIT (pie — §3.2: KIT preferido, No. Form de respaldo). ----
   const kit =
     mKit && Number.isFinite(numeroLimpio(mKit[1]))
       ? numeroLimpio(mKit[1])
@@ -214,7 +238,9 @@ export function clasificarCabecera(ocrTexto: string, base: DivipolBase): Clasifi
         : null;
 
   // ---- TIPO (banda §D.1 — orden del spec: TRANSMISIÓN primero, DELEGADOS
-  //      solo si la banda de transmisión NO aparece). ----
+  //      solo si la banda de transmisión NO aparece). Respaldo §D.2: dígito 9
+  //      del código 1D impreso (3=TRANSMISIÓN, 2=DELEGADOS) SOLO si la banda
+  //      no se leyó; confianza 0.9 (señal impresa verificada 8/8, §F). ----
   let tipo: TipoCopia | null = null;
   let confianzaTipo = 0;
   if (BANDA_TRANSMISION.test(texto)) {
@@ -223,6 +249,15 @@ export function clasificarCabecera(ocrTexto: string, base: DivipolBase): Clasifi
   } else if (BANDA_DELEGADOS.test(texto)) {
     tipo = "DELEGADOS";
     confianzaTipo = 1;
+  } else {
+    const codigos = [...texto.matchAll(ANCLA_CODIGO_1D)].map((m) => m[1]);
+    if (codigos.length >= 1) {
+      const novenos = new Set(codigos.map((c) => c[8]));
+      if (novenos.size === 1 && (novenos.has("3") || novenos.has("2"))) {
+        tipo = novenos.has("3") ? "TRANSMISION" : "DELEGADOS";
+        confianzaTipo = 0.9;
+      }
+    }
   }
 
   // ---- DEPARTAMENTO (§3.3 regla 1-2) ----
@@ -451,4 +486,36 @@ export function nombreExportacion(c: ClasificacionE14): string | null {
   const tipo = c.tipo; // ASCII: TRANSMISION/DELEGADOS
   const pag = c.pagina?.index ?? 1;
   return `E14_${kit}_${clave.replaceAll("-", "_")}_${tipo}-${pag}`;
+}
+
+// ---------- Título y ubicación reales (SPEC-titulo-ubicacion §1) ----------
+
+/**
+ * Deriva el TÍTULO y la UBICACIÓN del acta desde una clasificación RESUELTA
+ * (nivel AUTO — del gate o del panel de corrección). Devuelve null cuando la
+ * clasificación no está en AUTO o le falta la ruta — el llamador conserva el
+ * seed (§0: sin datos reales no se inventa nada).
+ *
+ * Convención de ActaUbicacion (igual que ACTA_MOCK): departamento/municipio
+ * por NOMBRE, zona/puesto por CÓDIGO, mesa con 3 dígitos. El título es el
+ * standName del puesto en MAYÚSCULAS (p. ej. «EL CAIRO - CONSULADO») — la
+ * TarjetaRica ya lo renderiza uppercase; el visor y el export lo usan crudo.
+ */
+export function tituloYUbicacionDe(
+  c: ClasificacionE14 | null | undefined,
+): {
+  titulo: string;
+  ubicacion: { departamento: string; municipio: string; zona: string; puesto: string; mesa: string };
+} | null {
+  if (!c || c.nivel !== "AUTO" || !c.puesto || c.mesa === null) return null;
+  return {
+    titulo: (c.puesto.nombre || "PUESTO SIN NOMBRE").toUpperCase(),
+    ubicacion: {
+      departamento: c.departamento?.nombre ?? "",
+      municipio: c.municipio?.nombre ?? "",
+      zona: c.zona?.codigo ?? "",
+      puesto: c.puesto.codigo,
+      mesa: String(c.mesa).padStart(3, "0"),
+    },
+  };
 }

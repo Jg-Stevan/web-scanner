@@ -12,7 +12,7 @@ import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import type { PaginaObjetivo } from "./bridge";
 import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
 import type { Quad } from "@jg-stevan/scanner-core/types";
-import { claveDeMesa, tipoPaginaDe, type ClasificacionE14 } from "./clasificador";
+import { claveDeMesa, tipoPaginaDe, tituloYUbicacionDe, type ClasificacionE14 } from "./clasificador";
 import {
   COLA_OFFLINE_INICIAL,
   SOLICITUDES_RESCANEO_INICIAL,
@@ -469,10 +469,18 @@ export const useE14Store = create<E14Store>((set, get) => {
         confianzas: { departamento: 1, municipio: 1, puesto: 1, tipo: 1 },
       };
       const { nuevas, duplicado } = archivarHueco(archivadas, final);
+      // §1.4 (SPEC-titulo-ubicacion): la corrección del panel también pasa el
+      // título/ubicación al acta (AUTO-manual → el helper aplica).
+      const titUbi = tituloYUbicacionDe(final);
       // §5: «pasa a flujo normal de envío (ADVERTENCIA-equivalente)» — la
       // foto era buena, la ubicación ya está corregida.
       set({
-        actaActual: { ...actaActual, clasificacion: final, status: "ADVERTENCIA" },
+        actaActual: {
+          ...actaActual,
+          clasificacion: final,
+          status: "ADVERTENCIA",
+          ...(titUbi ? { titulo: titUbi.titulo, ubicacion: titUbi.ubicacion } : {}),
+        },
         archivadas: nuevas,
       });
       const titulo =
