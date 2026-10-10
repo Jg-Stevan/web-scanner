@@ -42,6 +42,25 @@
 
 ---
 
+## 0-ter. FIX v5 — Calidad de importación, recorte doble, cámara y UX (rama `fix/ux-editor-camera-v5`)
+
+**Base:** `fix/camera-black-recovery-v4` (v4 aún abierto en el PR #12 al ramificar, como exigen las instrucciones). Documentación completa (plan, decisiones, evidencia E2E): `apps/scanner-lab/docs/fix-ux-v5.md`. 8 puntos, un commit por punto.
+
+**Cambios:**
+
+- **5.1 Importaciones nítidas en el editor** — separación DATO/display: `PreviewEntry.displayUrl` (JPEG ≤2560 q0.92, `makeDisplayUrl` re-encodea siempre) consumida por los `<img>` del editor y la presentación; el DATO (`res.processed` PNG 4032, regla R-10) intacto para rotación/export/OCR/guardado. El guardado reprocesa desde `page.original` con 4032 → **WYSIWYG conservado por construcción**. E2E: PNG 3024×4032 de galería → preview `data:image/jpeg` 1971×2560 (~231 KB).
+- **5.2 Fin del «doble recorte»** — con detección viva confiable (corners + score ≥ 0.6), la página NACE con el quad del overlay (`liveRef` fresco al instante del disparo, guarda de aspect ±2 %) y NO se lanza la re-detección full-res que entregaba OTRO recorte. `applyAutoQuad`: micro-salto evitado (`quadDrift` < 2 % de la diagonal no reemplaza).
+- **5.3 Arranque rápido de cámara** — `localStorage["escaner-main-camera-v1"]`: la 2ª apertura va DIRECTA a la deviceId cacheada (mismas constraints del preview ideal); fallo → caché borrada + sondeo completo. Sondeos con plazo de 2000 ms (`probeCamera(timeoutMs)`) con cierre de la apertura tardía (sin fugas de cámara). Telemetría `__cameraChoice` ahora distingue `cache: true/false`.
+- **5.4 Modo espera (nivel 1)** — sin documento 30 s y sin interacción → `CameraFrameLoop.setIdle(true)`: análisis a **2 fps** (500 ms fijos, sin adaptación), stream INTACTO (el watchdog del v4 vigila el track, que sigue vivo — convivencia por construcción). Pill «Modo espera — toca para reactivar»; sale con toque, corners de nuevo o captura. Nivel 2 (parar stream a los 3 min) deliberadamente fuera (instrucción: opcional; un track parado es indistinguible de muerto para el watchdog).
+- **5.5 Flash por captura** — `ScannerSettings.flashMode` ("off"/"auto"/"on", default "off", persistido). Ajustes › Procesamiento (Select) + botón rayo en la barra de cámara (cicla, «A» = Auto, rayo relleno = Encendido). En `captureSmart`: "on" fuerza torch; "auto" decide con la exposición FRESCA de snapA (umbral `AUTO_FLASH_EXPOSURE=0.30`, re-medición en el instante que pedía la instrucción); try/finally retira SOLO el torch que el modo encendió — el manual del usuario nunca se apaga. iOS manual (input nativo) intacto.
+- **5.6 Toasts deslizables** — `swipeDirections={["left","right","top"]}` en `<Sonner>` (sonner 2.0.8; «up» se llama `top`). E2E: swipe izquierdo sobre un toast → desaparece.
+- **5.7 Presentación navegable** — swipe que SIGUE al dedo: `drag="x"` en el contenedor de página (solo a 1× y >1 página, sin momentum), navega con ≥80 px o fling ≥500 px/s y si no rebota (`dragSnapToOrigin`); el swipe a ciegas del pointerup se retira. Doble toque 1×↔**2×** centrado en el punto. **+ fix de bug preexistente (F-NAV):** el guard `e.target !== e.currentTarget` contaba la IMAGEN como «botón hijo» → NINGÚN toque sobre la foto funcionaba (ni chrome ni doble-toque); ahora solo cuentan controles (`button/a/[role=tab]`). E2E: drag bidireccional + rebote, doble tap 2×↔1× sobre la imagen, teclado, thumbnail sin alternar chrome.
+- **5.8 Ajustes sin «Proyecto»** — grupo + `ProjectDownloadRow` + constantes + imports huérfanos eliminados. Ajustes queda: Apariencia, Instalación, Procesamiento, Exportación, Almacenamiento, Acerca de.
+
+**Verificado:** `tsc` core + app, `eslint` (0 errores), E2E headless (import galería → editor nítido JPEG ≤2560, presentación con swipe/doble-tap/teclado, toasts deslizables, Ajustes sin «Proyecto», persistencia de flashMode) con **0 errores de consola**. Pendiente QA físico: 5.2 (detección viva), 5.3 (caché con cámara real, criterio <1,5 s), 5.4 (fps ≈ 2 con `live.fps`), 5.5-auto (torch). `apps/digitalizador-e14`: 0 archivos en el diff.
+
+---
+
 ## Resumen de commits
 
 | # | Commit | Título |
