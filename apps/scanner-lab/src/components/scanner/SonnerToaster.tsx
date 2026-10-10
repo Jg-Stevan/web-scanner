@@ -22,6 +22,7 @@ export function SonnerToaster() {
     <Sonner
       position="top-center"
       theme={dark ? "dark" : "light"}
+      swipeDirections={["left", "right", "top"]}
       toastOptions={{
         style: {
           borderRadius: "20px",
