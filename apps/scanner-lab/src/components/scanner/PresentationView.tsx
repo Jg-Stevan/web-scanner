@@ -4,15 +4,18 @@
  * MODO PRESENTACIÓN — visor inmersivo a pantalla completa (patrón Fotos de iOS):
  * · Fondo negro puro, página centrada con object-contain.
  * · Pinza con dos dedos para ampliar (1×–6×), arrastrar para desplazar ampliado,
- *   doble toque para alternar 1× ↔ 2.5× centrado en el punto, rueda en escritorio.
- * · Deslizar horizontalmente (a 1×) cambia de página con slide direccional.
+ *   doble toque para alternar 1× ↔ 2× centrado en el punto, rueda en escritorio.
+ * · FIX v5 (5.7): deslizar horizontalmente (a 1×) ARRASTRA la página con el
+ *   dedo (drag="x" de framer-motion + snap de vuelta) y al soltar navega por
+ *   desplazamiento (≥80 px) o velocidad (fling) — antes el swipe era a ciegas
+ *   (la página no seguía el dedo hasta el cambio).
  * · Toque simple alterna el chrome (barras con degradado estilo iOS).
  * · Teclado: ←/→ páginas, +/- zoom, Escape cierra. El zoom se reinicia al
  *   cambiar de página y la panorámica se acota a los bordes de la imagen.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion, useMotionValue } from "framer-motion";
+import { AnimatePresence, motion, useMotionValue, type PanInfo } from "framer-motion";
 import { ChevronLeft, ChevronRight, Eye, X } from "lucide-react";
 
 import type { ScanPage } from "@jg-stevan/scanner-core/types";
@@ -22,9 +25,14 @@ const IOS_EASE = [0.32, 0.72, 0, 1] as const;
 /** Límites del zoom. */
 const MIN_SCALE = 1;
 const MAX_SCALE = 6;
-const DOUBLE_TAP_SCALE = 2.5;
-/** Umbral horizontal (px) para considerar un swipe de cambio de página. */
-const SWIPE_THRESHOLD = 60;
+/** FIX v5 (5.7): doble toque alterna 1× ↔ 2× (criterio de aceptación). */
+const DOUBLE_TAP_SCALE = 2;
+/** FIX v5 (5.7): umbral de desplazamiento (px) del drag horizontal para
+ *  cambiar de página al soltar; por debajo, la página rebota a su sitio. */
+const DRAG_THRESHOLD_PX = 80;
+/** FIX v5 (5.7): umbral de velocidad (px/s) — un fling rápido navega aunque
+ *  el recorrido sea corto (mismo lenguaje que el pager nativo de iOS). */
+const DRAG_VELOCITY_PX = 500;
 /** Umbral de movimiento (px) bajo el cual un pointerup cuenta como toque. */
 const TAP_SLOP = 8;
 
@@ -180,6 +188,23 @@ export function PresentationView({
     [index, totalPages, resetZoom, onIndexChange]
   );
 
+  /** FIX v5 (5.7) — swipe con arrastre: el drag="x" del contenedor de página
+   *  mueve la página CON el dedo (solo a 1×; con zoom manda el paneo del
+   *  wrapper interior). Al soltar: ≥80 px de recorrido o fling ≥500 px/s
+   *  navega; si no, dragSnapToOrigin la devuelve con muelle a su sitio. */
+  const onSwipeDragEnd = useCallback(
+    (_e: unknown, info: PanInfo) => {
+      const ox = info.offset.x;
+      const vx = info.velocity.x;
+      if (ox < -DRAG_THRESHOLD_PX || vx < -DRAG_VELOCITY_PX) {
+        goTo(index + 1);
+      } else if (ox > DRAG_THRESHOLD_PX || vx > DRAG_VELOCITY_PX) {
+        goTo(index - 1);
+      }
+    },
+    [goTo, index]
+  );
+
   /* ── Teclado ─────────────────────────────────────────────────────────── */
 
   useEffect(() => {
@@ -218,7 +243,16 @@ export function PresentationView({
     }
     const p = relToCenter(e.clientX, e.clientY);
     pointers.current.set(e.pointerId, p);
-    downOnChild.current = e.target !== e.currentTarget;
+    // F-NAV + FIX v5 (5.7): solo los CONTROLES hijos (flechas, miniaturas,
+    // botón de cierre) cuentan como «child» — su click no debe alternar el
+    // chrome ni disparar tap/doble-toque. La IMAGEN es parte del stage a
+    // todos los efectos: el guard original (e.target !== e.currentTarget)
+    // la excluía y NINGÚN toque sobre la foto funcionaba (sin chrome, sin
+    // doble-toque de zoom) — bug preexistente de F-NAV que el criterio de
+    // 5.7 (doble tap sobre el documento) deja al descubierto.
+    const t = e.target instanceof Element ? e.target : null;
+    downOnChild.current =
+      !!t && t !== e.currentTarget && !!t.closest('button,a,[role="tab"]');
     downAt.current = { x: p.x, y: p.y, t: Date.now() };
 
     // Comparación: solo con un dedo a escala 1× (pinza/pan la cancelan).
@@ -367,15 +401,10 @@ export function PresentationView({
         }, 310);
         return;
       }
-
-      // Swipe horizontal a 1× → cambio de página.
-      if (scale.get() === 1 && elapsed < 600 && Math.abs(p.x - d.x) > SWIPE_THRESHOLD) {
-        const horizontal = Math.abs(p.x - d.x) > Math.abs(p.y - d.y) * 1.3;
-        if (horizontal) {
-          if (p.x - d.x < 0) goTo(index + 1);
-          else goTo(index - 1);
-        }
-      }
+      // FIX v5 (5.7): el swipe a 1× ya NO se resuelve aquí — lo lleva el
+      // drag="x" del contenedor de página (onSwipeDragEnd), con la página
+      // siguiendo al dedo. Un arrastre que no fue tap llega aquí y no hace
+      // nada (el drag ya decidió navegar o rebotar).
     } else if (pointers.current.size === 1 && gesture.current?.type === "pinch") {
       // Un dedo quedó tras la pinza → pasa a pan.
       const [p] = [...pointers.current.values()];
@@ -450,6 +479,16 @@ export function PresentationView({
             exit={{ x: dir === 0 ? 0 : -dir * 80, opacity: 0 }}
             transition={{ duration: 0.24, ease: IOS_EASE }}
             className="absolute inset-0 flex items-center justify-center p-4"
+            /* FIX v5 (5.7): swipe que SIGUE al dedo — drag="x" SOLO a 1×
+             * (con zoom manda el paneo del wrapper interior, fix v3 1.2) y
+             * solo con varias páginas. Sin constraints: la página acompaña
+             * al dedo 1:1; al soltar, onSwipeDragEnd decide navegar (≥80 px
+             * o fling ≥500 px/s) o rebotar (dragSnapToOrigin). Sin momentum:
+             * la decisión de navegar es del umbral, no de la inercia. */
+            drag={zoomPct === 100 && totalPages > 1 ? "x" : false}
+            dragSnapToOrigin
+            dragMomentum={false}
+            onDragEnd={onSwipeDragEnd}
           >
             {/* FIX v3 (1.1): wrapper de tamaño DEFINITIVO (h-full w-full).
                 ANTES era max-h-full/max-w-full (altura AUTO): el
