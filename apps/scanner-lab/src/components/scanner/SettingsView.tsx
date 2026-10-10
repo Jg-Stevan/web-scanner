@@ -292,6 +292,35 @@ export default function SettingsView() {
             />
           </SettingsRow>
           <SettingsRow
+            title="Flash de captura"
+            subtitle="Auto lo enciende solo en escenas oscuras (y lo apaga al disparar)"
+          >
+            <Select
+              value={settings.flashMode}
+              onValueChange={(v) =>
+                updateSettings({ flashMode: v as ScannerSettings["flashMode"] })
+              }
+            >
+              <SelectTrigger
+                aria-label="Flash de captura"
+                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] px-3.5 text-[14px] font-medium text-[#3c3c43] dark:text-white shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl border-[#e5e5ea] dark:border-[#38383a]">
+                <SelectItem value="off" className="text-[14px]">
+                  Apagado
+                </SelectItem>
+                <SelectItem value="auto" className="text-[14px]">
+                  Auto
+                </SelectItem>
+                <SelectItem value="on" className="text-[14px]">
+                  Encendido
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+          <SettingsRow
             title="Motor de precisión"
             subtitle="OpenCV · contornos + RANSAC + homografía"
           >

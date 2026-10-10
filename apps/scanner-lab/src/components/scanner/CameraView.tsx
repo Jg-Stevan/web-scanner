@@ -34,6 +34,7 @@ import {
   MoreVertical,
   Scan,
   X,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -68,6 +69,11 @@ import {
 } from "@jg-stevan/scanner-core/sensor-profiler";
 
 type CameraStatus = "idle" | "live" | "synthetic" | "simulated";
+
+/** FIX v5 (5.5) — umbral de exposición (0-1, fracción de píxeles bien
+ *  expuestos) por debajo del cual el modo Auto enciende el torch para el
+ *  disparo. Constante local ajustable (empezar en 0.30). */
+const AUTO_FLASH_EXPOSURE = 0.3;
 
 /* ── Lecciones de compatibilidad del producto (ARQUITECTURA §4) ──────────
  *  E3: presupuesto de píxeles — SOLO anchos/altos IDEAL, sin exact/min ni
@@ -523,6 +529,7 @@ export default function CameraView() {
   const capturePages = useScannerStore((s) => s.capturePages);
   const addCapturePage = useScannerStore((s) => s.addCapturePage);
   const settings = useScannerStore((s) => s.settings);
+  const updateSettings = useScannerStore((s) => s.updateSettings);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
 
   // ── Refs y estado ──
@@ -1149,7 +1156,29 @@ export default function CameraView() {
 
     // §5.4 — frame A ANTES de la foto: si takePhoto cuelga y cae (5 s),
     // ya queda un candidato válido medido.
+    // FIX v5 (5.5): frame A SIRVE ADEMÁS de medición FRESCA de exposición
+    // para el flash Auto (misma escala que la telemetría del loop:
+    // 1 − (under+over)/total) — resuelve el caso «duda entre el frame y el
+    // disparo >1 s» re-midiendo EN el instante del disparo.
     const snapA = snapshotVideo();
+
+    /* FIX v5 (5.5) — flash por captura: «on» fuerza torch para el disparo;
+     * «auto» decide con la exposición de snapA (fresca, pre-torch) o, si no
+     * hubo frame, la del último frame del loop; «off» nunca. El torch
+     * MANUAL (linterna de sesión) MANDA: si ya está ON no se toca — y por
+     * tanto tampoco se apaga al terminar. flashAppliedByUs marca lo que
+     * NOSOTROS encendimos (→ retirar tras obtener blob/frames). */
+    const flashMode = useScannerStore.getState().settings.flashMode;
+    let flashWanted = false;
+    if (flashMode === "on") {
+      flashWanted = true;
+    } else if (flashMode === "auto") {
+      const exp = snapA?.m?.exposure ?? window.__cameraTelemetry?.score?.exposure;
+      flashWanted = typeof exp === "number" && exp < AUTO_FLASH_EXPOSURE;
+    }
+    const flashAppliedByUs =
+      flashWanted && !torchOnRef.current ? await setTorchState(true) : false;
+    try {
     // FIX v4 4.1 — lista negra temporal: si un takePhoto ya expiró en este
     // stream, NO se vuelve a intentar (cada disparo volvería a congelar el
     // visor 5 s) — directo al fallback de frames hasta un stream nuevo.
@@ -1214,7 +1243,14 @@ export default function CameraView() {
       return;
     }
     await dispatchBestFrame([snapA, snapB]);
-  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status, isStreamDead, recoverStream]);
+    } finally {
+      // FIX v5 (5.5): retirar el torch que NOSOTROS encendimos para ESTE
+      // disparo (foto/frames ya en memoria). El torch MANUAL del usuario
+      // no se apaga nunca aquí (flashAppliedByUs solo es true si partía
+      // de OFF y el modo lo pidió).
+      if (flashAppliedByUs) void setTorchState(false);
+    }
+  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status, isStreamDead, recoverStream, setTorchState]);
 
   /** Captura inteligente con el obturador BLOQUEADO durante TODO el
    *  disparo (FIX v4 4.2). Antes solo processingRef protegía — y se activa
@@ -2008,6 +2044,59 @@ export default function CameraView() {
             confundía con el símbolo del flash. La linterna baja a la
             toolbar inferior, junto al disparador. */}
         <div className="flex shrink-0 items-center gap-0.5">
+          {/* FIX v5 (5.5) — Flash de captura (preferencia): cicla
+              Apagado → Auto → Encendido. Mismo estilo del selector de
+              captura automática; la «A» distingue Auto de Encendido
+              (rayo relleno). Persistido en Ajustes › Procesamiento. */}
+          <button
+            type="button"
+            aria-label={`Flash de captura: ${
+              settings.flashMode === "off"
+                ? "Apagado"
+                : settings.flashMode === "auto"
+                  ? "Auto"
+                  : "Encendido"
+            }`}
+            title="Flash de captura (Apagado · Auto · Encendido)"
+            onClick={() => {
+              const order = ["off", "auto", "on"] as const;
+              const cur = useScannerStore.getState().settings.flashMode;
+              const next = order[(order.indexOf(cur) + 1) % order.length]!;
+              updateSettings({ flashMode: next });
+              toast(
+                next === "off"
+                  ? "Flash: Apagado"
+                  : next === "auto"
+                    ? "Flash: Auto · solo en escenas oscuras"
+                    : "Flash: Encendido",
+                { icon: "⚡", duration: 1400 }
+              );
+            }}
+            className={cn(
+              "relative flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
+              settings.flashMode !== "off"
+                ? "bg-[#ffd60a]/18 ring-1 ring-[#ffd60a]/60"
+                : "bg-black/30"
+            )}
+          >
+            <Zap
+              className={cn(
+                "h-5 w-5",
+                settings.flashMode !== "off" ? "text-[#ffd60a]" : "text-white/70"
+              )}
+              strokeWidth={2.2}
+              fill={settings.flashMode === "on" ? "currentColor" : "none"}
+              aria-hidden="true"
+            />
+            {settings.flashMode === "auto" && (
+              <span
+                className="absolute -right-0.5 -top-0.5 flex h-[13px] w-[13px] items-center justify-center rounded-[4px] bg-[#ffd60a] text-[8px] font-bold leading-none text-black"
+                aria-hidden="true"
+              >
+                A
+              </span>
+            )}
+          </button>
           <button
             type="button"
             aria-label={`Captura automática: ${autoCapture ? "activada" : "desactivada"}`}

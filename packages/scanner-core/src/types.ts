@@ -193,6 +193,11 @@ export interface ScannerSettings {
   enhance: boolean;
   ocrEnabled: boolean;
   exportQuality: "standard" | "alta" | "máxima";
+  /** FIX v5 (5.5) — flash por captura: "off" nunca, "auto" solo si la
+   *  escena está oscura (exposición del último frame < umbral), "on"
+   *  siempre. El torch manual (linterna) es estado de SESIÓN aparte y
+   * manda: si el usuario lo dejó ON, no se apaga tras el disparo. */
+  flashMode: "off" | "auto" | "on";
 }
 
 export const DEFAULT_SETTINGS: ScannerSettings = {
@@ -205,6 +210,9 @@ export const DEFAULT_SETTINGS: ScannerSettings = {
   /** "máxima" por defecto (F-OCR): el usuario exige la mayor calidad de
    *  imagen posible para extraer bien el texto. */
   exportQuality: "máxima",
+  /** FIX v5 (5.5): sin flash por defecto — el disparo con LED es una
+   *  decisión del usuario (ahorro de batería + reflejos especulares). */
+  flashMode: "off",
 };
 
 export function defaultQuad(): Quad {
