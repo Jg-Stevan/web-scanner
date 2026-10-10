@@ -44,3 +44,11 @@ Leyenda: [ ] pendiente · [~] en progreso · [x] hecho
 - [x] F4 — QuadEditor con ROTAR 90° y DETECCIÓN AUTOMÁTICA (copia del lab, D37)
 
 **Estado:** PR #8 MERGEADO a `main` (merge commit `eda6714`, 2026-10-10) · CI Pages verde · smoke test de producción OK (golden path + editor + filtros + barra fija al píxel + h-dvh móvil + lab sin regresión — ver worklog 14:40). **En producción:** https://jg-stevan.github.io/web-scanner/
+
+## F-OCR — BOTÓN «TEXTO» (SPEC-texto-ocr-editor.md — feat/e14-texto-ocr)
+
+- [x] B1 — ToolbarBtn.active (re-vestido ToolItem L2208) + barra grid-cols-5 con TEXTO en 4ª posición, `active={hayTexto}` (D39)
+- [x] B2 — bridge.reconocerTexto (requestOcr sobre fotoProcesada) + store.reconocerTextoActa con toasts del lab (D39)
+- [x] B3+B4+B6 — sheet «Texto reconocido» 3 estados + contadores + «Reconocer de nuevo»/«Copiar texto» (patrón del sheet de filtros, sin vaul) (D39)
+- [x] B5 — OcrHighlightedText completo (mark #ffd60a literal, query={null} hoy) (D39)
+- [ ] F-FIND — barra de coincidencias del lab (L2347-2366 + pendingFindQuery): EXCLUIDA de esta copia — su único punto de entrada es la búsqueda de la biblioteca del lab; e14 no tiene biblioteca. `OcrHighlightedText` YA queda listo (solo faltará pasarle la query cuando exista un buscador).
