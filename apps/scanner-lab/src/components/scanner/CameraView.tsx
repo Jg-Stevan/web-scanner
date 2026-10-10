@@ -115,6 +115,14 @@ const IDEAL_PREVIEW_HEIGHT = HAS_IMAGE_CAPTURE ? 540 : 1440;
 /** Tope suave de FPS del preview: «ideal» NO rechaza cámaras que solo
  *  ofrecen 60, solo evita negociar 60 cuando el hardware lo permite. */
 const IDEAL_PREVIEW_FPS = 30;
+
+/** FIX v4 4.5 — tope de lado mayor de las copias del ring ZSL. El ring es
+ *  SOLO el fallback de la auto-captura (anti tap-shock): no necesita
+ *  resolución completa. Con el stream alto de iOS (1920×1440, fix v3), 8
+ *  slots a resolución completa ≈ 88 MB + scratch de ~11 MB a 5 Hz — esa
+ *  presión hacía que WebKit matara la capa de video (visor negro en
+ *  iPhones modestos). Presupuesto resultante: ≤ 8 × (1280×960×4) ≈ 37 MB. */
+const RING_MAX_LONG_SIDE = 1280;
 // 2. LA CAPTURA EN EXCELENTE RESOLUCIÓN (3840px / 12–48 MP) la hace
 //    ImageCapture.takePhoto(), que NO DEPENDE de la resolución del
 //    <video>: dispara directo al sensor físico a la máxima resolución
@@ -310,6 +318,15 @@ interface BurstFrame {
   m: BurstMeasures | null;
 }
 
+/** FIX v4 4.1 — resultado de UN intento de takePhoto: blob, error y si
+ *  expiró por TIMEOUT. Un timeout = sensor colgado → NO se reintenta y se
+ *  activa la lista negra temporal (takePhotoBrokenRef). */
+interface TakePhotoAttempt {
+  blob: Blob | null;
+  err: unknown;
+  timedOut: boolean;
+}
+
 /** Laplaciano 3×3 (varianza) + histograma de exposición (under < 30,
  *  over > 225) sobre la luma de un canvas de ≤ 400 px — la misma
  *  matemática del motor (quality.ts) que exige §5.4. */
@@ -393,6 +410,11 @@ export default function CameraView() {
   const syntheticRef = useRef<SyntheticCamera | null>(null);
   const loopRef = useRef<CameraFrameLoop | null>(null);
   const processingRef = useRef(false);
+  /** FIX v4 4.2 — UN solo flujo de captura a la vez: cierra la ventana de
+   *  los hasta 5 s del disparo en la que el obturador seguía activo y N
+   *  toques encolaban N takePhoto() simultáneos (cascada de
+   *  InvalidStateError → sensor roto). */
+  const capturingRef = useRef(false);
   const cooldownRef = useRef(0);
   // F-LOCAL: auto-captura y linterna son ESTADO LOCAL de la sesión de cámara
   // (el usuario las quitó de Ajustes). Arranque: auto ON, linterna OFF.
@@ -424,9 +446,16 @@ export default function CameraView() {
   // (permiso revocado, otra app roba la cámara) — antes el preview quedaba
   // congelado sin recuperación.
   const [camRestartNonce, setCamRestartNonce] = useState(0);
+  /** FIX v4 4.3 — anti-bucle de recuperación: mientras corre un
+   *  recoverStream no se dispara otro (el watchdog vuelve a vigilar a los
+   *  4 s, cuando el nuevo stream ya está abriéndose). */
+  const recoveringRef = useRef(false);
   const [stable, setStable] = useState(false); // solo fallback simulado
   const [quad, setQuad] = useState<Quad>(() => defaultQuad());
   const [processing, setProcessing] = useState(false);
+  /** FIX v4 4.2 — espejo visual de capturingRef (botón deshabilitado +
+   *  feedback mientras dura el disparo). */
+  const [isCapturing, setIsCapturing] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [precisionReady, setPrecisionReady] = useState(false);
@@ -439,6 +468,12 @@ export default function CameraView() {
    *  Android). En Safari/iOS es false SIEMPRE → el shutter manual abre la
    *  cámara NATIVA (input capture=environment) — HQ-iOS, error #5. */
   const canTakePhotoRef = useRef(false);
+  /** FIX v4 4.1 — lista negra TEMPORAL de takePhoto: true tras un intento
+   *  que expiró por timeout (sensor colgado: cada disparo volvería a
+   *  congelar el visor 5 s). Mientras esté marcado, captureSmart va directo
+   *  al fallback de frames. Se rehabilita con un stream nuevo o si un
+   *  takePhoto futuro vuelve a entregar un blob válido. */
+  const takePhotoBrokenRef = useRef(false);
   /** F-SENSOR-PROFILER (PASO 2): perfil del sensor de FOTO del track vivo
    *  (resolución nativa vía getPhotoCapabilities + tope técnico único
    *  4032 px — fix v3: sin tope por gama). null = aún sin sondear. */
@@ -523,6 +558,44 @@ export default function CameraView() {
       }, ms);
     }
   }, [setTorchState]);
+
+  /* ── FIX v4 4.3 — Salud y recuperación del stream ────────────────── */
+
+  /** ¿El stream murió EN SILENCIO? Un track puede quedar muted o dejar de
+   *  producir frames con readyState "live" (takePhoto colgado, otra app se
+   *  llevó el sensor) sin disparar NUNCA el evento "ended" → el efecto de
+   *  apertura no se re-ejecuta, status sigue "live" (sin CTA) y el visor
+   *  queda NEGRO para siempre. Esta es la condición que el watchdog vigila. */
+  const isStreamDead = useCallback((): boolean => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    const video = videoRef.current;
+    return (
+      !track ||
+      track.readyState !== "live" ||
+      track.muted ||
+      !video ||
+      video.readyState < 2 ||
+      !video.videoWidth
+    );
+  }, []);
+
+  /** Recuperación del stream muerto: para los tracks, resetea el estado y
+   *  re-dispara el efecto de apertura (camRestartNonce → sondas + cascada
+   *  completas — el efecto YA existe y ya maneja cascada/sintética; aquí
+   *  solo se dispara). recoveringRef evita bucles; el reset a los 4 s deja
+   *  al watchdog volver a vigilar tras el reinicio. */
+  const recoverStream = useCallback(() => {
+    if (recoveringRef.current) return;
+    recoveringRef.current = true;
+    toast.info("Reiniciando cámara…", { description: "El sensor dejó de responder." });
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    setStatus("idle");
+    setCamRestartNonce((n) => n + 1); // re-ejecuta el efecto de apertura
+    window.setTimeout(() => {
+      recoveringRef.current = false;
+    }, 4000);
+  }, []);
 
   /* ── Captura ─────────────────────────────────────────────────────── */
 
@@ -642,14 +715,19 @@ export default function CameraView() {
   /** DUAL PIPELINE (pilar 2) — Captura a RESOLUCIÓN DEL SENSOR como Blob
    *  (aún SIN convertir a data URL): takePhoto() IGNORA la resolución del
    *  <video> de 540p y dispara directo al sensor físico (12–48 MP, p.ej.
-   *  4000×3000). La medición §5.4 (createImageBitmap nativo) y la
-   *  conversión corren EN PARALELO — nunca en serie. Carrera de 8 s
-   *  (takePhoto puede colgarse — error #29); null → el llamador cae al
-   *  fallback ZSL pre-tap y a los frames del video. La orientación EXIF
-   *  la aplica el pipeline al decodificar (loadImage). */
-  const takePhotoBlob = useCallback(async (): Promise<Blob | null> => {
+   *  4000×3000). La orientación EXIF la aplica el pipeline al decodificar
+   *  (loadImage).
+   *  FIX v4 4.1 — UN intento de 5 s (antes: 8 s + reintento = hasta 16 s
+   *  con el visor congelado en hardware con takePhoto roto). El reintento
+   *  sin photoSettings SOLO procede si el primer intento falló RÁPIDO
+   *  (constraints rechazadas, InvalidStateError); un TIMEOUT = sensor
+   *  colgado → no se reintenta y se marca la lista negra temporal
+   *  (takePhotoBrokenRef) para que captureSmart no vuelva a colgar 5 s en
+   *  cada disparo. Devuelve el blob y el flag timedOut (el llamador evalúa
+   *  la salud del stream tras un timeout — fix 4.3). */
+  const takePhotoBlob = useCallback(async (): Promise<{ blob: Blob | null; timedOut: boolean }> => {
     const track = streamRef.current?.getVideoTracks()[0];
-    if (!track || typeof ImageCapture === "undefined") return null;
+    if (!track || typeof ImageCapture === "undefined") return { blob: null, timedOut: false };
     try {
       const capture = new ImageCapture(track);
       // Dispara a resolución completa del hardware (4000×3000 / 3840×2160):
@@ -659,29 +737,46 @@ export default function CameraView() {
       // (capa 1) y el blob del gigante jamás llega a decodificarse.
       const profile = sensorProfileRef.current;
       const settings = profile ? buildCappedPhotoSettings(profile) : undefined;
-      const attempt = async (ps?: PhotoSettings): Promise<Blob | null> => {
+      const attempt = async (ps?: PhotoSettings): Promise<TakePhotoAttempt> => {
         try {
           const blob = await Promise.race([
             capture.takePhoto(ps),
             new Promise<never>((_, reject) =>
-              window.setTimeout(() => reject(new Error("takePhoto timeout 8s")), 8000)
+              window.setTimeout(() => reject(new Error("takePhoto timeout 5s")), 5000)
             ),
           ]);
-          return blob && blob.size > 0 ? blob : null;
-        } catch {
-          return null;
+          return {
+            blob: blob && blob.size > 0 ? blob : null,
+            err: blob && blob.size > 0 ? null : new Error("takePhoto devolvió un blob vacío"),
+            timedOut: false,
+          };
+        } catch (err) {
+          return {
+            blob: null,
+            err,
+            timedOut: err instanceof Error && err.message.includes("timeout"),
+          };
         }
       };
-      let blob = await attempt(settings);
-      // Reintento sin photoSettings si el ajuste del profiler fue rechazado
-      // (hardware exótico): mejor foto sin tope que perder la captura.
-      if (!blob && settings) blob = await attempt(undefined);
-      if (!blob) return null;
+      let res = await attempt(settings);
+      // Reintento sin photoSettings SOLO si el primer intento falló RÁPIDO
+      // (constraints del profiler rechazadas, InvalidStateError…): mejor
+      // foto sin tope que perder la captura. Si expiró por timeout, el
+      // sensor quedó colgado — reintentar solo doblaría la espera.
+      if (!res.blob && settings && !res.timedOut && res.err) {
+        res = await attempt(undefined);
+      }
+      // FIX v4 4.1 — lista negra temporal: marcar si expiró, rehabilitar si
+      // respondió (un takePhoto que vuelve a funcionar vuelve a usarse).
+      if (res.blob) takePhotoBrokenRef.current = false;
+      else if (res.timedOut) takePhotoBrokenRef.current = true;
+      if (!res.blob) return { blob: null, timedOut: res.timedOut };
       // Capa 2 — red de seguridad post-decode (solo recorta si el blob
       // excede el tope; si no, el blob original pasa intacto).
-      return await clampBlobToSafeCap(blob, profile?.safeCapPx ?? getSensorSafeCap());
+      const clamped = await clampBlobToSafeCap(res.blob, profile?.safeCapPx ?? getSensorSafeCap());
+      return { blob: clamped, timedOut: false };
     } catch {
-      return null;
+      return { blob: null, timedOut: false };
     }
   }, []);
 
@@ -711,14 +806,21 @@ export default function CameraView() {
 
   /** F-ZSL — Buffer circular ZSL en CameraView: copia el fotograma al ring
    *  (máx 8) y suelta YA el backing store del expulsado (no espera al GC;
-   *  disciplina de memoria iOS, error #22). */
+   *  disciplina de memoria iOS, error #22).
+   *  FIX v4 4.5 — la copia se dibuja ESCALADA para que su lado mayor sea
+   *  ≤ RING_MAX_LONG_SIDE (1280 px): a resolución completa (stream alto de
+   *  iOS 1920×1440) 8 slots ≈ 88 MB y esa presión de memoria hacía que
+   *  WebKit matara la capa de video (visor negro). El ring es SOLO el
+   *  fallback: no necesita resolución completa. */
   const pushRingFrame = useCallback(
     (canvas: HTMLCanvasElement, lapVar: number) => {
       const ring = bestShotRingRef.current;
+      const srcLong = Math.max(canvas.width, canvas.height);
+      const scale = srcLong > RING_MAX_LONG_SIDE ? RING_MAX_LONG_SIDE / srcLong : 1;
       const copy = document.createElement("canvas");
-      copy.width = canvas.width;
-      copy.height = canvas.height;
-      copy.getContext("2d")?.drawImage(canvas, 0, 0);
+      copy.width = Math.max(1, Math.round(canvas.width * scale));
+      copy.height = Math.max(1, Math.round(canvas.height * scale));
+      copy.getContext("2d")?.drawImage(canvas, 0, 0, copy.width, copy.height);
       ring.push({ canvas: copy, lapVar, timestamp: performance.now() });
       if (ring.length > 8) {
         const old = ring.shift();
@@ -745,14 +847,21 @@ export default function CameraView() {
     if (!video || video.readyState < 2 || !video.videoWidth) return;
     if (!ringScratchRef.current) ringScratchRef.current = document.createElement("canvas");
     const scratch = ringScratchRef.current;
-    if (scratch.width !== video.videoWidth || scratch.height !== video.videoHeight) {
-      scratch.width = video.videoWidth;
-      scratch.height = video.videoHeight;
+    // FIX v4 4.5 — el scratch se dimensiona a la medida ESCALADA (lado mayor
+    // ≤ 1280 px), no a la resolución del track: el ring no necesita más y la
+    // medición (measurePixels remuestrea a 400 px) es idéntica.
+    const srcLong = Math.max(video.videoWidth, video.videoHeight);
+    const scale = srcLong > RING_MAX_LONG_SIDE ? RING_MAX_LONG_SIDE / srcLong : 1;
+    const dw = Math.max(1, Math.round(video.videoWidth * scale));
+    const dh = Math.max(1, Math.round(video.videoHeight * scale));
+    if (scratch.width !== dw || scratch.height !== dh) {
+      scratch.width = dw;
+      scratch.height = dh;
     }
     const ctx = scratch.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
-    const m = measurePixels(scratch, scratch.width, scratch.height);
+    ctx.drawImage(video, 0, 0, dw, dh);
+    const m = measurePixels(scratch, dw, dh);
     pushRingFrame(scratch, m?.lapVar ?? 0);
   }, [pushRingFrame]);
 
@@ -778,7 +887,7 @@ export default function CameraView() {
    *  la FOTO FULL-SENSOR MANDA (12–48 MP vía takePhoto, independiente
    *  del preview de 540p):
    *  1. Frame A: solo píxeles + medidas (respaldo sin coste).
-   *  2. Foto hi-res del sensor (takePhoto, carrera de 8 s) → data URL.
+   *  2. Foto hi-res del sensor (takePhoto, carrera de 5 s — FIX v4 4.1) → data URL.
    *  3. Si hay foto → dispatch YA (los frames se descartan, R-14).
    *  Fallback premium si takePhoto no existe o cuelga: el ganador ZSL
    *  pre-tap (80–450 ms antes del disparo, anti tap-shock) del buffer
@@ -787,7 +896,11 @@ export default function CameraView() {
    *  Nunca un frame reemplaza una foto existente (el gate de nitidez de
    *  v5 hacía que un 720p «nítido» sustituyera a una foto de 3264 px →
    *  texto ilegible). Cooldown anti doble-disparo 1500 ms (§5.2). */
-  const captureSmart = useCallback(async () => {
+  /** FIX v4 4.2 — flujo COMPLETO de captura (helpers ZSL + burst + foto).
+   *  Vive aparte para que captureSmart sea un wrapper fino con el guard
+   *  anti doble-disparo (capturingRef) y un try/finally SIMÉTRICO que
+   *  SIEMPRE libera el obturador. */
+  const runCaptureFlow = useCallback(async () => {
     if (processingRef.current) return;
     if (cooldownRef.current > Date.now()) return;
     loopRef.current?.notifyCaptured();
@@ -826,7 +939,16 @@ export default function CameraView() {
     const dispatchBestFrame = async (framesRaw: Array<BurstFrame | null>) => {
       const frames = framesRaw.filter((f): f is BurstFrame => f !== null);
       if (frames.length === 0) {
-        // B8: el disparo no debe perderse en silencio.
+        // FIX v4 4.4 — burst 100 % nulo: si el stream está MUERTO, recuperar
+        // la cámara (antes: solo el toast → el editor jamás abría y el visor
+        // quedaba negro para siempre — exactamente el final del síntoma
+        // reportado por el propietario).
+        if (isStreamDead()) {
+          recoverStream();
+          return; // el toast de recoverStream ya informa al usuario
+        }
+        // B8: el disparo no debe perderse en silencio (stream vivo, frames
+        // vacíos por otra causa).
         toast.error("No se pudo capturar", { description: "Inténtalo de nuevo." });
         return;
       }
@@ -845,21 +967,43 @@ export default function CameraView() {
       }
     };
 
-    // §5.4 — frame A ANTES de la foto: si takePhoto cuelga y cae (8 s),
+    // §5.4 — frame A ANTES de la foto: si takePhoto cuelga y cae (5 s),
     // ya queda un candidato válido medido.
     const snapA = snapshotVideo();
-    const photoBlob = canTakePhotoRef.current ? await takePhotoBlob() : null;
+    // FIX v4 4.1 — lista negra temporal: si un takePhoto ya expiró en este
+    // stream, NO se vuelve a intentar (cada disparo volvería a congelar el
+    // visor 5 s) — directo al fallback de frames hasta un stream nuevo.
+    const shot =
+      canTakePhotoRef.current && !takePhotoBrokenRef.current ? await takePhotoBlob() : null;
+    const photoBlob = shot?.blob ?? null;
     if (!photoBlob) {
-      // takePhoto colgó (> 8 s) o no existe (iOS). FIX v3: con el stream
-      // alto de iOS (1920×1440) el frame YA es un original decente — el
-      // aviso de baja resolución solo tiene sentido cuando el frame es
-      // REALMENTE bajo (<1280 px, p.ej. gama baja Android sin ImageCapture).
-      const frameW = videoRef.current?.videoWidth ?? 0;
-      if (status === "live" && frameW > 0 && frameW < 1280) {
-        toast.warning("Cámara lenta: baja resolución esta vez", {
-          description:
-            "La foto de alta resolución no respondió; se guardó el fotograma de vista previa.",
-        });
+      // FIX v4 4.3 — chequeo post-timeout: un takePhoto colgado puede dejar
+      // el track muted/en silencio (readyState "live", sin frames). Si el
+      // stream murió, recuperar YA — no disparamos el burst contra un video
+      // muerto (el editor abriría sin imagen o nada).
+      if (shot?.timedOut && isStreamDead()) {
+        recoverStream();
+        return;
+      }
+      // FIX v4 4.6 — copy honesto: si takePhoto EXISTE pero no entregó foto
+      // en ESTE disparo, el texto «Cámara lenta» confundía (el frame no es
+      // lento: es la foto la que no respondió). El caso SIN ImageCapture
+      // con frame realmente bajo (<1280 px) conserva el texto clásico.
+      if (status === "live") {
+        if (canTakePhotoRef.current) {
+          toast.warning("La foto de alta resolución no respondió", {
+            description:
+              "Se usó el fotograma de vista previa. Las próximas capturas irán directas.",
+          });
+        } else {
+          const frameW = videoRef.current?.videoWidth ?? 0;
+          if (frameW > 0 && frameW < 1280) {
+            toast.warning("Cámara lenta: baja resolución esta vez", {
+              description:
+                "La foto de alta resolución no respondió; se guardó el fotograma de vista previa.",
+            });
+          }
+        }
       }
       // DUAL PIPELINE — fallback: el ganador ZSL pre-tap (estable, anti
       // tap-shock) compite por lapVar con snapA y el frame actual.
@@ -890,7 +1034,26 @@ export default function CameraView() {
       return;
     }
     await dispatchBestFrame([snapA, snapB]);
-  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status]);
+  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status, isStreamDead, recoverStream]);
+
+  /** Captura inteligente con el obturador BLOQUEADO durante TODO el
+   *  disparo (FIX v4 4.2). Antes solo processingRef protegía — y se activa
+   *  DESPUÉS del burst/takePhoto — así que en los hasta 5-16 s del disparo
+   *  el botón seguía activo: N toques encolaban N takePhoto() simultáneos
+   *  → cascada de InvalidStateError y el sensor terminaba roto (feed del
+   *  negro permanente). capturingRef + isCapturing cierran esa ventana:
+   *  un solo flujo de captura, feedback visual y finally SIEMPRE libera. */
+  const captureSmart = useCallback(async () => {
+    if (capturingRef.current) return;
+    capturingRef.current = true;
+    setIsCapturing(true);
+    try {
+      await runCaptureFlow();
+    } finally {
+      capturingRef.current = false;
+      setIsCapturing(false);
+    }
+  }, [runCaptureFlow]);
 
   const captureSmartRef = useRef(captureSmart);
   captureSmartRef.current = captureSmart;
@@ -916,7 +1079,9 @@ export default function CameraView() {
    *  · Stream sintético (QA sin hardware) → frames del stream.
    *  · Escena estática → demo. Sin stream → galería. */
   const onShutter = useCallback(() => {
-    if (processingRef.current) return;
+    // FIX v4 4.2 — además del guard de captureSmart, corta aquí el click
+    // para no encolar nada mientras dura un disparo en curso.
+    if (capturingRef.current || processingRef.current) return;
     if (hasStream && videoRef.current && videoRef.current.readyState >= 2) {
       if (canTakePhotoRef.current || status !== "live") {
         void captureSmart();
@@ -1037,6 +1202,9 @@ export default function CameraView() {
       // el shutter manual abrirá la cámara nativa y la auto-captura usará
       // frames de video (≤ 1080p). Toast único por sesión (§5.2).
       canTakePhotoRef.current = typeof ImageCapture !== "undefined";
+      // FIX v4 4.1 — stream nuevo = nueva oportunidad para takePhoto: la
+      // lista negra temporal era del stream anterior (sensor colgado).
+      takePhotoBrokenRef.current = false;
       // F-SENSOR-PROFILER (PASO 2): mide la nativa de FOTO del sensor y
       // fija el tope técnico único (4032 px) para takePhotoBlob.
       profileActiveSensor(stream);
@@ -1277,6 +1445,34 @@ export default function CameraView() {
     return () => video.removeEventListener("playing", onPlaying);
   }, [hasStream, status, applySavedTorchWithRetry]);
 
+  // FIX v4 4.3 — WATCHDOG de salud del stream: mientras está "live", vigila
+  // cada 2 s la MISMA condición de isStreamDead. Un track roto EN SILENCIO
+  // (muted / sin frames con readyState "live") NUNCA dispara "ended" → sin
+  // esto el efecto de apertura no se re-ejecutaba y el visor quedaba NEGRO
+  // para siempre (la causa raíz del bug reportado). Requiere 2 strikes
+  // CONSECUTIVOS (un frame perdido no cuenta), con 8 s de gracia tras abrir
+  // (el video tarda en empezar a reproducir) y sin contar strikes durante
+  // un disparo (el sensor puede pausar el preview al hacer la foto) ni
+  // mientras corre una recuperación.
+  useEffect(() => {
+    if (status !== "live") return;
+    const startedAt = Date.now();
+    let strikes = 0;
+    const iv = window.setInterval(() => {
+      if (recoveringRef.current || capturingRef.current) {
+        strikes = 0;
+        return;
+      }
+      if (Date.now() - startedAt < 8000) return; // gracia de arranque
+      strikes = isStreamDead() ? strikes + 1 : 0;
+      if (strikes >= 2) {
+        strikes = 0;
+        recoverStream();
+      }
+    }, 2000);
+    return () => window.clearInterval(iv);
+  }, [status, isStreamDead, recoverStream]);
+
   // B2 — CTA «Activar cámara»: reintenta getUserMedia; si el usuario concedió
   // el permiso en ajustes del navegador, adopta el stream real en caliente
   // (mismas transiciones que applyStream: status live + torch + canvas).
@@ -1304,6 +1500,7 @@ export default function CameraView() {
       setCamNotice(null);
       setStatus("live");
       canTakePhotoRef.current = typeof ImageCapture !== "undefined";
+      takePhotoBrokenRef.current = false; // FIX v4 4.1: stream nuevo, takePhoto rehabilitado
       profileActiveSensor(stream); // F-SENSOR-PROFILER: tope 4032/3200 px
       setTorchAvailable(true);
       if (flashRef.current) applySavedTorchWithRetry();
@@ -1981,11 +2178,11 @@ export default function CameraView() {
             type="button"
             aria-label="Capturar página"
             onClick={onShutter}
-            disabled={processing}
+            disabled={processing || isCapturing}
             className={cn(
               "relative -mt-[20px] flex h-[72px] w-[72px] items-center justify-center rounded-full border-4 border-white bg-white/10",
-              "shadow-[0_6px_20px_rgba(0,0,0,0.4)] transition-all duration-150 active:scale-90",
-              processing && "opacity-50"
+              "shadow-[0_6px_20px_rgba(0,0,0,0.4)] transition-all duration-150",
+              processing || isCapturing ? "opacity-60" : "active:scale-90"
             )}
           >
             <FileText className="h-8 w-8 text-white" strokeWidth={2} aria-hidden="true" />
