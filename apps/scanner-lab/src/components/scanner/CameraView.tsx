@@ -166,18 +166,48 @@ function readCapsNum(v: unknown): number {
  *  medir el sensor real requiere abrir la cámara "pelada". Devuelve null
  *  si la cámara no se pudo abrir (queda descartada). El `finally` CIERRA
  *  el stream SIEMPRE — nunca hay dos cámaras abiertas a la vez (era la
- *  causa del bug v3: sondas con el stream vivo → NotReadableError). */
+ *  causa del bug v3: sondas con el stream vivo → NotReadableError).
+ *  FIX v5 (5.3): `timeoutMs` opcional — una sonda colgada (getUserMedia
+ *  que nunca resuelve, típico en algún driver Android) caduca y devuelve
+ *  null; si la apertura llega TARDE, su stream se cierra igualmente para
+ *  no dejar la cámara ocupada para siempre. */
 async function probeCamera(
   media: MediaDevices,
   deviceId: string,
-  label: string
+  label: string,
+  timeoutMs = 0
 ): Promise<CameraProbeResult | null> {
   let stream: MediaStream | null = null;
+  let timedOut = false;
   try {
-    stream = await media.getUserMedia({
+    const opening = media.getUserMedia({
       video: { deviceId: { exact: deviceId } },
       audio: false,
     });
+    if (timeoutMs > 0) {
+      stream = await Promise.race([
+        opening,
+        new Promise<null>((resolve) => {
+          window.setTimeout(() => {
+            timedOut = true;
+            resolve(null);
+          }, timeoutMs);
+        }),
+      ]);
+      if (timedOut || stream === null) {
+        // La sonda caducó: si la apertura resuelve después, cerrarla (sin
+        // esto la cámara quedaría abierta y las siguientes sondas darían
+        // NotReadableError en cadena).
+        void opening
+          .then((s) => {
+            s.getTracks().forEach((t) => t.stop());
+          })
+          .catch(() => undefined);
+        return null;
+      }
+    } else {
+      stream = await opening;
+    }
     const track = stream.getVideoTracks()[0];
     if (!track) return null;
     const caps = (track.getCapabilities?.() ?? {}) as {
@@ -243,6 +273,69 @@ interface LiveUi {
   fps: number;
   searching: boolean;
 }
+
+/* ── FIX v5 (5.3) — caché de la cámara principal elegida ──────────────
+ *  El arranque sondeaba TODAS las cámaras una por una (abrir, medir,
+ *  cerrar) antes de abrir la ganadora: en Android multi-cámara eran
+ *  varios segundos de pantalla vacía. La elección se persiste en
+ *  localStorage y los arranques siguientes abren la deviceId cacheada
+ *  DIRECTAMENTE. Sin TTL (el hardware no cambia); invalidación SOLO por
+ *  fallo de apertura (NotFound/NotReadable/…) → borrado y sondeo completo. */
+const MAIN_CAMERA_CACHE_KEY = "escaner-main-camera-v1";
+
+interface MainCameraCache {
+  deviceId: string;
+  label: string;
+  /** score = maxWidth×maxHeight (regla D3) — solo telemetría/depuración. */
+  score: number;
+  at: number;
+  torch: boolean;
+  focusModes: string[];
+  maxWidth: number;
+  maxHeight: number;
+}
+
+function readMainCameraCache(): MainCameraCache | null {
+  try {
+    const raw = localStorage.getItem(MAIN_CAMERA_CACHE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw) as MainCameraCache;
+    if (!c || typeof c.deviceId !== "string" || c.deviceId === "") return null;
+    return c;
+  } catch {
+    return null; // almacenamiento corrupto/bloqueado — sondeo completo
+  }
+}
+
+function writeMainCameraCache(p: CameraProbeResult): void {
+  try {
+    const entry: MainCameraCache = {
+      deviceId: p.deviceId,
+      label: p.label,
+      score: p.maxWidth * p.maxHeight,
+      at: Date.now(),
+      torch: p.torch,
+      focusModes: p.focusModes,
+      maxWidth: p.maxWidth,
+      maxHeight: p.maxHeight,
+    };
+    localStorage.setItem(MAIN_CAMERA_CACHE_KEY, JSON.stringify(entry));
+  } catch {
+    /* cuota llena / modo privado — solo es una caché */
+  }
+}
+
+function clearMainCameraCache(): void {
+  try {
+    localStorage.removeItem(MAIN_CAMERA_CACHE_KEY);
+  } catch {
+    /* idem */
+  }
+}
+
+/** FIX v5 (5.3) — plazo por sonda (ms): una cámara lenta no puede bloquear
+ *  el arranque 10 s; caduca y se sigue con la siguiente. */
+const PROBE_TIMEOUT_MS = 2000;
 
 /** FIX v5 (5.2) — suelo de confianza para crear la página con el quad
  *  VIVO en vez del marco completo + re-detección. SHUTTER_SCORE (0,8) es
@@ -1356,16 +1449,109 @@ export default function CameraView() {
     };
 
     /** F-LENS v4 — arranque estilo codigo-test (donde el flash SÍ funciona):
+     *  0) FIX v5 (5.3) — CACHÉ: deviceId guardada → apertura DIRECTA con las
+     *     constraints del preview ideal (sin desbloqueo/sondeos/elección).
+     *     Falla → caché borrada y camino completo.
      *  1) desbloquea labels con un stream genérico que se cierra al instante;
      *  2) sondea TODAS las cámaras UNA POR UNA cerrando cada una antes de
      *     abrir la siguiente (v3 las sondeaba con el stream vivo → en muchos
      *     Android la 2ª apertura lanza NotReadableError y NADA cambiaba);
+     *     FIX v5 (5.3): cada sonda con plazo de 2 s (una cámara lenta no
+     *     puede bloquear el arranque);
      *  3) elige la principal con la regla D3/D6 (autofocus real → mayor
      *     resolución; torch desempata; sin AF → label más simple);
      *  4) abre SOLO la ganadora con el preview ligero (960×540 ideal —
-     *     DUAL PIPELINE; la captura hi-res va por takePhoto al sensor).
+     *     DUAL PIPELINE; la captura hi-res va por takePhoto al sensor) y
+     *     persiste la elección para el próximo arranque rápido.
      *  Devuelve el stream de la principal o null (→ cascade/sintética). */
     const openMainCamera = async (): Promise<MediaStream | null> => {
+      /** FIX v5 (5.3): post-procesado común a cualquier apertura exitosa —
+       *  corrección de zoom (vía zoom < 1 → 1) y telemetría de QA. */
+      const polishStream = async (
+        stream: MediaStream,
+        info: { label: string; torch: boolean; focusModes: string[] } | null,
+        probes: CameraProbeResult[],
+        cacheHit: boolean
+      ): Promise<MediaStream> => {
+        // Vía zoom: si el track abrió con zoom < 1 (equivalente 0.5× del
+        // MISMO track), súbelo a 1 para el FOV de la principal.
+        try {
+          const track = stream.getVideoTracks()[0];
+          const zcaps = track?.getCapabilities?.() as
+            | { zoom?: { min?: number; max?: number } }
+            | undefined;
+          const zst = track?.getSettings?.() as { zoom?: number } | undefined;
+          if (
+            zcaps?.zoom &&
+            typeof zcaps.zoom.min === "number" &&
+            zcaps.zoom.min < 1 &&
+            typeof zst?.zoom === "number" &&
+            zst.zoom < 1
+          ) {
+            await track
+              ?.applyConstraints({
+                advanced: [{ zoom: 1 }],
+              } as MediaTrackConstraints & { advanced: unknown[] })
+              .catch(() => undefined);
+          }
+        } catch {
+          /* sin soporte de zoom */
+        }
+        // Telemetría de QA (window.__cameraChoice): qué lente quedó abierta
+        // y qué se midió en las sondas — útil para depurar remotamente.
+        try {
+          const track = stream.getVideoTracks()[0];
+          const st = track?.getSettings?.() as {
+            width?: number;
+            height?: number;
+          } | undefined;
+          (window as unknown as { __cameraChoice?: unknown }).__cameraChoice = {
+            elegida: info?.label ?? track?.label ?? "",
+            torch: info?.torch ?? false,
+            focusModes: info?.focusModes ?? [],
+            width: st?.width ?? 0,
+            height: st?.height ?? 0,
+            cache: cacheHit,
+            sondas: probes.map((p) => ({
+              label: p.label,
+              torch: p.torch,
+              af: p.focusModes,
+              max: `${p.maxWidth}x${p.maxHeight}`,
+            })),
+          };
+        } catch {
+          /* solo telemetría */
+        }
+        return stream;
+      };
+
+      // 0) FIX v5 (5.3) — vía rápida: abrir la deviceId cacheada con las
+      //    MISMAS constraints de preview ideal del camino completo.
+      const cached = readMainCameraCache();
+      if (cached) {
+        try {
+          const stream = await media.getUserMedia({
+            video: {
+              deviceId: { exact: cached.deviceId },
+              width: { ideal: IDEAL_PREVIEW_WIDTH },
+              height: { ideal: IDEAL_PREVIEW_HEIGHT },
+              frameRate: { ideal: IDEAL_PREVIEW_FPS },
+            },
+            audio: false,
+          });
+          return await polishStream(
+            stream,
+            { label: cached.label, torch: cached.torch, focusModes: cached.focusModes },
+            [],
+            true
+          );
+        } catch (err) {
+          // Invalidación SOLO por fallo (sin TTL): NotFound/NotReadable/
+          // permiso revocado → borrar y sondear completo como antes.
+          clearMainCameraCache();
+          if (isPermError(err)) permissionDenied = true;
+        }
+      }
       // 1) Desbloqueo de etiquetas (F1-a de codigo-test): sin permiso previo
       //    los labels/deviceIds llegan vacíos en enumerateDevices.
       try {
@@ -1376,6 +1562,7 @@ export default function CameraView() {
         /* sin permiso: los probes fallarán y se cae al cascade */
       }
       // 2) Sondeo secuencial: cada cámara se ABRE, se MIDE y se CIERRA.
+      //    FIX v5 (5.3): plazo de 2 s por sonda.
       let devices: MediaDeviceInfo[] = [];
       try {
         devices = (await media.enumerateDevices()).filter(
@@ -1386,7 +1573,7 @@ export default function CameraView() {
       }
       const probes: CameraProbeResult[] = [];
       for (const d of devices) {
-        const p = await probeCamera(media, d.deviceId, d.label);
+        const p = await probeCamera(media, d.deviceId, d.label, PROBE_TIMEOUT_MS);
         if (p) probes.push(p);
       }
       // 3) Elección de la principal (D3: AF real → mayor resolución).
@@ -1409,58 +1596,14 @@ export default function CameraView() {
           ]
         : [];
       attempts.push({ video: true, audio: false }); // último recurso
-      for (const c of attempts) {
+      for (let ai = 0; ai < attempts.length; ai += 1) {
         try {
-          const stream = await media.getUserMedia(c);
-          // Vía zoom: si el track abrió con zoom < 1 (equivalente 0.5× del
-          // MISMO track), súbelo a 1 para el FOV de la principal.
-          try {
-            const track = stream.getVideoTracks()[0];
-            const zcaps = track?.getCapabilities?.() as
-              | { zoom?: { min?: number; max?: number } }
-              | undefined;
-            const zst = track?.getSettings?.() as { zoom?: number } | undefined;
-            if (
-              zcaps?.zoom &&
-              typeof zcaps.zoom.min === "number" &&
-              zcaps.zoom.min < 1 &&
-              typeof zst?.zoom === "number" &&
-              zst.zoom < 1
-            ) {
-              await track
-                ?.applyConstraints({
-                  advanced: [{ zoom: 1 }],
-                } as MediaTrackConstraints & { advanced: unknown[] })
-                .catch(() => undefined);
-            }
-          } catch {
-            /* sin soporte de zoom */
-          }
-          // Telemetría de QA (window.__cameraChoice): qué lente quedó abierta
-          // y qué se midió en las sondas — útil para depurar remotamente.
-          try {
-            const track = stream.getVideoTracks()[0];
-            const st = track?.getSettings?.() as {
-              width?: number;
-              height?: number;
-            } | undefined;
-            (window as unknown as { __cameraChoice?: unknown }).__cameraChoice = {
-              elegida: main?.label ?? track?.label ?? "",
-              torch: main?.torch ?? false,
-              focusModes: main?.focusModes ?? [],
-              width: st?.width ?? 0,
-              height: st?.height ?? 0,
-              sondas: probes.map((p) => ({
-                label: p.label,
-                torch: p.torch,
-                af: p.focusModes,
-                max: `${p.maxWidth}x${p.maxHeight}`,
-              })),
-            };
-          } catch {
-            /* solo telemetría */
-          }
-          return stream;
+          const stream = await media.getUserMedia(attempts[ai]!);
+          // FIX v5 (5.3): persistir la elección SOLO si el stream abrió con
+          // la deviceId de la ganadora (los 2 primeros intentos la fijan;
+          // el "último recurso" {video:true} puede abrir OTRA cámara).
+          if (main && ai <= 1) writeMainCameraCache(main);
+          return await polishStream(stream, main, probes, false);
         } catch (err) {
           if (isPermError(err)) permissionDenied = true;
           /* siguiente nivel */
