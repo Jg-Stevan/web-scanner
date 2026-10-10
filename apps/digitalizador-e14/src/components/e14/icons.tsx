@@ -259,3 +259,53 @@ export const SparklesIcon = ({ className = "w-4 h-4" }: IconProps) => (
     <path d="M5 16l.7 1.6L7.3 18l-1.6.7L5 20.3l-.7-1.6L2.7 18l1.6-.4L5 16z" />
   </svg>
 );
+
+/** ScanText (F-OCR/D39 — botón TEXTO de la barra + título del sheet; trazo
+ *  calca el `scan-text` de lucide, mismo patrón SVG inline del archivo). */
+export const ScanTextIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg
+    className={`${className} stroke-current stroke-2 fill-none`}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+    <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+    <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+    <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+    <path d="M7 8h8" />
+    <path d="M7 12h10" />
+    <path d="M7 16h6" />
+  </svg>
+);
+
+/** Copy (F-OCR/D39 — botón «Copiar texto» del sheet; trazo calca el `copy`
+ *  de lucide, mismo patrón SVG inline del archivo). */
+export const CopyIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg
+    className={`${className} stroke-current stroke-2 fill-none`}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+  </svg>
+);
+
+/** LoaderCircle (F-OCR/D39 — spinner «Reconociendo texto…»; trazo calca el
+ *  `loader-circle` de lucide; se usa con clase animate-spin). */
+export const LoaderIcon = ({ className = "w-4 h-4" }: IconProps) => (
+  <svg
+    className={`${className} stroke-current stroke-2 fill-none`}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+    aria-hidden
+  >
+    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </svg>
+);

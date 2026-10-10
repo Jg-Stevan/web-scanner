@@ -57,6 +57,11 @@ export interface E14Bridge {
    * actualizada (fotoProcesada + filtro).
    */
   revelar(acta: Acta, filtro: PageFilter): Promise<Acta>;
+  /**
+   * F-OCR del lab (EditorView.tsx L1360-1395): corre requestOcr sobre la
+   * imagen PROCESADA del acta y devuelve el texto crudo.
+   */
+  reconocerTexto(acta: Acta): Promise<string>;
   /** HH:MM:SS — hora del envío automático. */
   horaEnvio(): string;
   /** HH:MM — hora de las filas del historial. */
@@ -117,6 +122,17 @@ export class CompositeBridge implements E14Bridge {
       return Promise.reject(new Error("FILTRAR NO APLICA SIN FOTO REAL"));
     }
     return this.real.revelar(acta, filtro);
+  }
+
+  reconocerTexto(acta: Acta): Promise<string> {
+    if (!this.real) {
+      return Promise.reject(new Error("FUENTE REAL NO IMPLEMENTADA (L2)"));
+    }
+    // D35: el gate es la foto, no la fuente (SIMULACIÓN tiene foto real).
+    if (!acta.fotoProcesada) {
+      return Promise.reject(new Error("RECONOCER TEXTO NO APLICA SIN FOTO REAL"));
+    }
+    return this.real.reconocerTexto(acta);
   }
 
   horaEnvio(): string {

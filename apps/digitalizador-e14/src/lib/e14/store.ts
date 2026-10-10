@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { getBridge } from "./get-bridge";
 import { rotateProcessedDataUrl } from "./image-utils";
+import { ocrTextIsValid } from "@jg-stevan/scanner-core/ocr";
 import { FILTER_PRESETS } from "@jg-stevan/scanner-core/types";
 import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import type { PaginaObjetivo } from "./bridge";
@@ -85,6 +86,12 @@ interface E14Store {
    * setFilterOnPage del core) y el toast copia el texto del lab (L1214-1218).
    */
   cambiarFiltro: (filtro: PageFilter) => Promise<void>;
+  /**
+   * F-OCR del lab (EditorView.tsx L1360-1395, D39): re-reconoce el texto del
+   * acta sobre la PROCESADA y lo guarda. Toaster = copia de los toasts del lab
+   * (títulos en mayúsculas = estilo de toasts e14, descripciones verbatim).
+   */
+  reconocerTextoActa: () => Promise<void>;
   /**
    * L5 §7 ReviewView: gira fotoProcesada 90° (rotateProcessedDataUrl del lab,
    * canvas puro) y hornea rotation para el PDF §6. Gate: foto (D35 — la
@@ -468,6 +475,35 @@ export const useE14Store = create<E14Store>((set, get) => {
         notificar("crit", "ERROR DE FILTRADO", "No se pudo re-procesar el acta.");
       } finally {
         set({ revelando: false });
+      }
+    },
+
+    reconocerTextoActa: async () => {
+      const { actaActual } = get();
+      // Guard (spec §F2.1): sin foto procesada no hay nada que reconocer.
+      // (El estado "corriendo" — ocrRunning del lab L347 — vive en ReviewView.)
+      if (!actaActual?.fotoProcesada) {
+        notificar("warn", "SIN FOTO", "Solo las actas escaneadas tienen texto reconocible.");
+        return;
+      }
+      try {
+        const texto = await bridge.reconocerTexto(actaActual);
+        // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L1380-1387
+        // (ocrTextIsValid → guardar + toast de éxito / toast de «sin texto»).
+        if (ocrTextIsValid(texto)) {
+          set({ actaActual: { ...actaActual, ocrTexto: texto } });
+          notificar("ok", "TEXTO RECONOCIDO", `${texto.length} caracteres · ya puedes copiarlo`);
+        } else {
+          notificar("warn", "SIN TEXTO LEGIBLE", "La página no parece tener texto legible");
+        }
+      } catch (err) {
+        // Fuente: apps/scanner-lab/src/components/scanner/EditorView.tsx L1389-1391
+        // (títulos en mayúsculas = estilo e14, descripción verbatim del lab).
+        notificar(
+          "crit",
+          "NO SE PUDO RECONOCER EL TEXTO",
+          err instanceof Error ? err.message : undefined,
+        );
       }
     },
 
