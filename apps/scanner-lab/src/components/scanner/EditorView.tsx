@@ -116,9 +116,17 @@ const LOUPE_GAP = 14;
 /** Mantener pulsado el preview (ms) antes de mostrar el original. */
 const COMPARE_HOLD_MS = 350;
 
-/** Preview procesado de la página en edición (modo review). */
+/** Preview procesado de la página en edición (modo review).
+ *  FIX v5 (5.1): `url` es el DATO completo (PNG hasta 4032 px — fuente de
+ *  verdad para rotación/export/guardado). `displayUrl` es la copia de
+ *  PANTALLA (JPEG ≤2560) que consumen todos los <img> del editor: en
+ *  dispositivos con poca RAM, decodificar un data URL PNG de 5–20 MB
+ *  through una superficie de baja resolución → preview borroso aunque el
+ *  dato esté intacto. Opcional: si falta, el <img> cae a `url`. */
 interface PreviewEntry {
   url: string;
+  /** Copia de display JPEG ≤ DISPLAY_MAX_LONG_SIDE (solo pantalla). */
+  displayUrl?: string;
   w: number;
   h: number;
   engine: "worker" | "canvas";
@@ -229,6 +237,62 @@ async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
   const blob = await res.blob();
   if (!blob || blob.size === 0) throw new Error("blob vacío");
   return blob;
+}
+
+/** FIX v5 (5.1) — lado mayor máximo de la copia de DISPLAY del editor. */
+const DISPLAY_MAX_LONG_SIDE = 2560;
+/** FIX v5 (5.1) — calidad JPEG de la copia de display (solo pantalla). */
+const DISPLAY_JPEG_QUALITY = 0.92;
+
+/** FIX v5 (5.1) — makeDisplayUrl: re-encode JPEG ≤2560 px para PANTALLA.
+ *
+ *  El editor mostraba el data URL PNG completo del worker (4032 px →
+ *  5–20 MB de cadena): en dispositivos con poca RAM el navegador lo
+ *  decodifica/renderiza por una superficie de baja resolución → preview
+ *  BORROSO aunque el dato esté intacto (al guardar se ve bien porque el
+ *  store reprocesa desde page.original).
+ *
+ *  Esta copia es SOLO de display: ligera, SIEMPRE JPEG (un PNG de 2560
+ *  seguiría pesando) y re-encodeada incluso si la fuente ya es ≤2560.
+ *  El DATO no cambia → WYSIWYG conservado por construcción (el guardado
+ *  re-procesa desde page.original con PROCESSED_MAX_LONG_SIDE=4032).
+ *  Ante cualquier fallo se devuelve la url original (mejor borrosa que
+ *  pantalla en blanco). */
+async function makeDisplayUrl(dataUrl: string): Promise<string> {
+  const img = await loadImage(dataUrl);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return dataUrl;
+  const scale = Math.min(1, DISPLAY_MAX_LONG_SIDE / Math.max(w, h));
+  const dw = Math.max(1, Math.round(w * scale));
+  const dh = Math.max(1, Math.round(h * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = dw;
+  canvas.height = dh;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return dataUrl;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, dw, dh);
+  return await new Promise<string>((resolve) => {
+    try {
+      canvas.toBlob(
+        (b) => {
+          if (!b || b.size === 0) {
+            resolve(dataUrl);
+            return;
+          }
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result ?? dataUrl));
+          fr.onerror = () => resolve(dataUrl);
+          fr.readAsDataURL(b);
+        },
+        "image/jpeg",
+        DISPLAY_JPEG_QUALITY
+      );
+    } catch {
+      resolve(dataUrl);
+    }
+  });
 }
 
 /** F-FIND — texto OCR con las coincidencias de la búsqueda resaltadas
@@ -453,7 +517,9 @@ export default function EditorView() {
    *  (4.5): tope 12 → 6 entradas — al procesar TODO a 4032 px, cada entrada
    *  (data URL PNG) pesa ~el doble (10-25 MB como cadena JS, ×2 en heap):
    *  mismo presupuesto TOTAL de memoria que antes, mitades entradas → sin
-   *  riesgo de jetsam en iOS con sesiones largas (runOcrAll incluido). */
+   *  riesgo de jetsam en iOS con sesiones largas (runOcrAll incluido).
+   *  FIX v5 (5.1): cada entrada lleva ADEMÁS su copia de display JPEG
+   *  ≤2560 (~0,3-1 MB) — +5-10 % por entrada, dentro del presupuesto. */
   const cachePreviewEntry = useCallback((key: string, entry: PreviewEntry) => {
     previewCache.current.set(key, entry);
     if (previewCache.current.size > 6) {
@@ -480,13 +546,35 @@ export default function EditorView() {
         engine: "canvas",
       });
     }
+    let cancelled = false;
     const cached = previewCache.current.get(cacheKey);
     if (cached) {
       setPreview(cached);
       setPreviewLoading(false);
-      return;
+      // FIX v5 (5.1): entrada sin copia de display (semilla desde
+      // page.processed, rotación rápida o siembra de runOcrAll) → se pinta
+      // YA con la url completa y la copia ligera se genera en 2º plano
+      // (al terminar se intercambia en cache + preview si sigue vigente).
+      if (!cached.displayUrl) {
+        const entry = cached;
+        void (async () => {
+          try {
+            const display = await makeDisplayUrl(entry.url);
+            if (cancelled) return;
+            if (previewCache.current.get(cacheKey) === entry) {
+              const updated = { ...entry, displayUrl: display };
+              previewCache.current.set(cacheKey, updated);
+              setPreview(updated);
+            }
+          } catch {
+            /* sin copia de display: se queda la url completa */
+          }
+        })();
+      }
+      return () => {
+        cancelled = true;
+      };
     }
-    let cancelled = false;
     // Cache-miss: limpiar el preview ANTERIOR — sin esto, durante el
     // reproceso (segundos en 12 MP) el preview sigue siendo el de la página
     // previa y el OCR podría capturarlo y persistir texto en la página
@@ -502,8 +590,14 @@ export default function EditorView() {
           maxLongSide: PROCESSED_MAX_LONG_SIDE,
         });
         if (cancelled) return;
+        // FIX v5 (5.1): el DATO (res.processed) se guarda intacto como
+        // fuente de verdad; la copia de DISPLAY (JPEG ≤2560) se genera
+        // aquí — los <img> del editor nunca decodifican el PNG gigante.
+        const display = await makeDisplayUrl(res.processed);
+        if (cancelled) return;
         const entry: PreviewEntry = {
           url: res.processed,
+          displayUrl: display,
           w: res.precision?.width ?? 0,
           h: res.precision?.height ?? 0,
           engine: res.precision?.engine === "worker" ? "worker" : "canvas",
@@ -1639,7 +1733,11 @@ export default function EditorView() {
   const [presentationPages, setPresentationPages] = useState<ScanPage[]>([]);
   const openPresentation = useCallback(() => {
     const pages = useScannerStore.getState().capturePages.map((p) => {
-      const url = previewCache.current.get(capturePageKey(p))?.url;
+      // FIX v5 (5.1): la presentación también consume la copia de DISPLAY
+      // (JPEG ≤2560) cuando existe en la caché — mismo problema de
+      // decodificación del PNG gigante en el <img> a pantalla completa.
+      const entry = previewCache.current.get(capturePageKey(p));
+      const url = entry?.displayUrl ?? entry?.url;
       return {
         id: p.id,
         original: p.original,
@@ -1808,7 +1906,7 @@ export default function EditorView() {
                 >
                   <img
                     ref={zoomImgRef}
-                    src={preview.url}
+                    src={preview.displayUrl ?? preview.url}
                     alt={`Página ${activeIdx + 1} escaneada y recortada`}
                     draggable={false}
                     className="max-h-full max-w-full select-none rounded-[6px] object-contain shadow-[0_18px_60px_rgba(0,0,0,0.65)]"
