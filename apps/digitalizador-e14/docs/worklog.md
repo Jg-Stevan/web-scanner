@@ -748,3 +748,19 @@ PROFILER / snapA+TORCH_HINT+accept.
 - **Commits:** da97a5f (C1) + este docs (C2)
 - **Cómo probar (dueño):** Preview → SIMULACIÓN → ESCANEAR → REVISIÓN → **TEXTO**: el sheet nace con el texto del OCR del pipeline (~12 s); «Reconocer de nuevo» re-corre el OCR sobre la procesada; «Copiar texto» al portapapeles; recortar una zona sin texto → TEXTO gris → sheet vacío → «Reconocer texto».
 - **Pendiente/Bloqueado:** PR abierto para verificación del dueño (§A) — NO se hace merge ni deploy hasta su visto bueno (spec §C: «NO subir deploy»).
+
+### [2026-10-10 16:15 (Bogotá)] — MERGE PR #9 + smoke test de PRODUCCIÓN — Z.ai Code (main)
+- **Hecho:** merge del PR #9 (`feat/e14-texto-ocr` → `main`, merge commit `83e5838`, método **merge** — narrativa de 2 commits preservada, sin squash) por orden del dueño («merge de este PR (contra main 9227d47)» = visto bueno del §A). Base: `9227d47` exacto, `mergeable_state: clean`. CI `Deploy to GitHub Pages` (run `38012198805`) → **success**. Deploy a producción verificado con agent-browser (móvil 390×844 + desktop 1280×800):
+  1. **Rutas:** e14 `/web-scanner/` 200 («Digitalizador E-14 — Precisión electoral») · lab `/web-scanner/lab/` 200 (onboarding «Digitaliza cualquier documento…» sin errores — SIN regresión).
+  2. **Golden path SIMULACIÓN:** ESCANEAR → pipeline real → REVISIÓN «ACTA NO RECONOCIDA · INTENTO 1 DE 2» — mismo resultado esperado del gate OCR con la foto real (ver A/B entrada 13:55; NO es regresión).
+  3. **F-OCR TEXTO (prod, móvil):** barra **grid-cols-5** con TEXTO en 4ª posición (Recortar · Rotar 90° · Filtros · **Texto** · Pantalla completa) → sheet «Texto reconocido» nace con el **texto REAL del OCR del pipeline** («[OPD] ACTA DE ESCRUTINIO DE LOS JURADOS DE VOTACIÓN… ELECCIÓN PRESIDENCIAL… CONSULADO: 88 — CONSULADOS · PAÍS: 120 — ALEMANIA · MESA: 012 · LUGAR: Frankfurt Consulado… ABELARDO DE LA ESPRIELLA · JOSÉ MANUEL RESTREPO… KIT 745») + contadores **170 palabras | 745 caracteres** — IDÉNTICOS al QA dev (entrada 15:50).
+  4. **«Reconocer de nuevo»:** spinner «Reconociendo texto…» → re-OCR sobre fotoProcesada (~8 s) → el texto vuelve al sheet.
+  5. **Botón TEXTO `active`:** clases `border-ok-tint/40 bg-ok-tint/10 text-ok-tint` con ocrTexto válido — tinte único, D38 intacto.
+  6. **«Copiar texto»:** toast **«TEXTO COPIADO»** capturado (B3 FIEL).
+  7. **Sheet backdrop:** clic fuera del sheet → cierra ✓.
+  8. **F5 barra fija al píxel (con 5 columnas):** Rotar 90°/Texto en y=635 h=44 **IDÉNTICOS antes/después de ROTAR 90°**; scrollHeight=844 exacto (móvil) y =800 exacto (desktop) — h-dvh sin overflow.
+  9. **Consola:** cero errores de página y cero warnings en AMBAS apps durante toda la sesión de smoke.
+- **Archivos:** (sin cambios de código — solo este registro + ROADMAP)
+- **Commits:** `83e5838` (merge en GitHub; este docs-commit va directo a main siguiendo la convención `c225fbe`/`9227d47`)
+- **Cómo probar (dueño):** abrir `https://jg-stevan.github.io/web-scanner/` → SIMULACIÓN → ESCANEAR → REVISIÓN → **TEXTO**: el sheet nace con el texto del OCR del pipeline; «Reconocer de nuevo» re-corre el OCR; «Copiar texto» al portapapeles; cerrar tocando fuera; la barra no se mueve al rotar.
+- **Pendiente/Bloqueado:** verificación en el TELÉFONO del dueño de: CÁMARA real, IMPORTAR (incl. HEIC), flujo ENVIADA→EXPORTAR PDF con foto real. H6 (PWA) sigue siendo decisión del autor. F-FIND queda como extensión futura (ROADMAP).
