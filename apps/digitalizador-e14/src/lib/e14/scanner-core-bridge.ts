@@ -61,6 +61,7 @@ import {
   clasificarCabecera,
   nombreExportacion,
   PATRON_CABECERA,
+  tituloYUbicacionDe,
   type ClasificacionE14,
 } from "./clasificador";
 // §1 (SPEC-ux-real-bn-editor): acta E-14 real del dueño (Galaxy A56 5G) —
@@ -487,7 +488,11 @@ export class RealCoreBridge implements E14Bridge {
     // rechazo LIMPIO si el rescate mejora el estado (D20). F4/D37: la
     // rotación usada queda HORNEADA (rotation) — la respeta el PDF §6 y un
     // eventual re-recorte/filtrado.
-    return {
+    // §1.3 (SPEC-titulo-ubicacion): el recorte re-corre el gate → clasificación
+    // AUTO nueva → título/ubicación reales. ADAPTACIÓN de nombre: el spec llama
+    // `resultado` a esta constante, pero ese identificador ya vive arriba (el
+    // `conRampa` del paso 1) → `actaActualizada` (misma forma, cero lógica nueva).
+    const actaActualizada: Acta = {
       ...acta,
       fotoProcesada,
       quadDetectado: quad,
@@ -505,6 +510,12 @@ export class RealCoreBridge implements E14Bridge {
       clasificacion: gate.clasificacion ?? undefined,
       firmas: this.firmasPorStatus(acta.firmas, gate.status),
     };
+    const titUbi = tituloYUbicacionDe(gate.clasificacion ?? null);
+    if (titUbi) {
+      actaActualizada.titulo = titUbi.titulo;
+      actaActualizada.ubicacion = titUbi.ubicacion;
+    }
+    return actaActualizada;
   }
 
   /**
@@ -593,7 +604,7 @@ export class RealCoreBridge implements E14Bridge {
     return firmas.map((f, i) => (i === 1 ? { ...f, estado: estadoFirma2 } : { ...f }));
   }
 
-  /** Acta final: relleno simulado (seed, igual que el mock) + campos reales §3.1. */
+  /** Acta final: seed SOLO cuando la clasificación no está resuelta (§1) + campos reales §3.1. */
   private construirActa(
     opciones: OpcionesEscaneo,
     parcial: { fotoOriginal?: string },
@@ -620,10 +631,13 @@ export class RealCoreBridge implements E14Bridge {
     const estadoFirma2: ActaFirma["estado"] =
       campos.status === "ADVERTENCIA" ? "TENUE" : campos.status === "RECHAZADA" ? "NO_DETECTADO" : "OK";
 
+    // §1.2 (SPEC-titulo-ubicacion): clasificación AUTO → el acta nace con
+    // título/ubicación REALES; sin ella se conserva el seed (no se inventa).
+    const titUbi = tituloYUbicacionDe(campos.clasificacion ?? null);
     return {
       id: `acta-${Date.now()}-${this.contador}`,
-      titulo: ACTA_MOCK.titulo,
-      ubicacion: {
+      titulo: titUbi?.titulo ?? ACTA_MOCK.titulo,
+      ubicacion: titUbi?.ubicacion ?? {
         departamento: ACTA_MOCK.departamento,
         municipio: ACTA_MOCK.municipio,
         zona: ACTA_MOCK.zona,

@@ -234,10 +234,15 @@ export function ReviewView() {
       : (paginaObjetivo?.mesaId.replace(/\D/g, "").padStart(3, "0") ?? acta.ubicacion.mesa);
   const paginaIdx = clasifAuto ? (clasifAuto.pagina?.index ?? 1) : acta.pagina.index;
   const paginaTotal = clasifAuto ? (clasifAuto.pagina?.total ?? 2) : acta.pagina.total;
-  const detalleUbicacion = clasifAuto
-    ? `${clasifAuto.departamento?.nombre ?? "—"} > ZONA ${clasifAuto.zona?.codigo ?? "—"} > ` +
-      `PUESTO ${clasifAuto.puesto?.codigo ?? "—"} > MESA ${clasifAuto.mesa ?? "—"} > ${tipo} > ` +
-      `PÁG ${paginaIdx} DE ${paginaTotal}`
+  // §2 (SPEC-titulo-ubicacion): el detalle muestra la clasificación REAL
+  // (cualquier nivel — AUTO o sugerencia del panel) con PAÍS/MUNICIPIO y mesa
+  // canónica de 3 dígitos. Sin clasificación → seed demo intacto.
+  const clasif = acta.clasificacion;
+  const detalleUbicacion = clasif
+    ? `${clasif.departamento?.nombre ?? "—"} > ${clasif.municipio?.nombre ?? "—"} > ` +
+      `ZONA ${clasif.zona?.codigo ?? "—"} > PUESTO ${clasif.puesto?.codigo ?? "—"} > ` +
+      `MESA ${clasif.mesa !== null && clasif.mesa !== undefined ? String(clasif.mesa).padStart(3, "0") : "—"} > ` +
+      `${tipo} > PÁG ${paginaIdx} DE ${paginaTotal}`
     : "ITALIA > ZONA 10 > PUESTO 02 > MESA 001 > TRANSMISIÓN > PÁG 1 DE 2";
   const status = acta.status;
   const hayFoto = Boolean(acta.fotoProcesada);
@@ -282,7 +287,7 @@ export function ReviewView() {
           tipo={tipo}
           pagina={paginaIdx}
           total={paginaTotal}
-          ruta={clasifAuto ? detalleUbicacion : undefined}
+          ruta={acta.clasificacion ? detalleUbicacion : undefined}
         />
       ) : null}
 

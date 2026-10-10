@@ -70,3 +70,11 @@ Leyenda: [ ] pendiente · [~] en progreso · [x] hecho
 - [ ] Manuscritos G.2/G.3 (votos/firmas/cédulas) — cubiertos por la revisión humana existente
 - [ ] Consulta viva AppSync (§G.4.6, fase futura)
 - [ ] H6 PWA — decisión del autor
+
+## F-INFO — TÍTULO/UBICACIÓN REALES + TIPO HONESTO + dígito 9 del 1D (SPEC-e14-titulo-ubicacion-clasificada.md — feat/e14-info-clasificada)
+
+- [x] S1 (§1) — pass-through de la clasificación al acta: helper ÚNICO `tituloYUbicacionDe` (AUTO con ruta → standName uppercase + ubicación por NOMBRE/CÓDIGO/mesa 3 dígitos; resto → null = seed) aplicado en los 3 puntos de entrada: `construirActa` (gate del escaneo) · `pipelineRecorte` (rescate L5) · `store.guardarUbicacion` (panel §5)
+- [x] S2 (§2) — `detalleUbicacion` (ReviewView): clasificación REAL a cualquier nivel con PAÍS/MUNICIPIO + `MESA ${padStart(3)}` canónica, «—» en lo no leído; `ruta` ahora con `acta.clasificacion` (antes solo AUTO)
+- [x] S3 (§3) — `BANDA_DELEGADOS = /EMBAJADOR|DELEGADOS/` (el `C[OÓ]NSUL` suelto matcheaba la caja «CONSULADO: 88» de TODAS las copias → DELEGADOS falso en la TRANSMISIÓN de El Cairo del dueño) + ancla `ANCLA_CODIGO_1D` (15 dígitos impresos, §D.2/§F 8/8) con d9 como RESPALDO del tipo (3=T/2=D, conf 0.9, solo sin banda; contradictorios → null) y d12-15 como respaldo de PÁGINA (solo código único y aritmética válida)
+
+**Estado:** **PR ABIERTO** (rama `feat/e14-info-clasificada` → main, base `main@d134fe2` — PR #11 mergeado + CI verde). QA AC1-AC7 COMPLETO (ver worklog 10:45): unitario 22/22 (AC3/AC4/S3-regresión/helpers/guardas/mandos) · navegador 390×844 dev :3001 todo verde (AC1 Frankfurt `CONSULADOS > ALEMANIA > … MESA 012 …` exacto · AC2 «EL CAIRO - CONSULADO» + detalle EGIPTO completo · AC3 d9=3 `tipo:T` AUTO sin palabra de banda y CERO «DELEGADOS» · AC4 banda → `tipo:D` · AC5 borrosa 5.7 RECHAZADA + seed ITALIA + formato historial · AC6 `%PDF` + nombre `E14_SINKIT_88_335_05_02_001_TRANSMISION-1.pdf` + /Title «EL CAIRO - CONSULADO — MESA 001» + visor Esc) · AC7 lint/tsc/build EXIT=0 + `diff apps/scanner-lab packages` VACÍO + 0 errores consola. Esperando re-auditoría del dueño para el merge.
