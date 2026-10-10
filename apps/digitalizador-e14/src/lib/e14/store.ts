@@ -12,6 +12,7 @@ import type { PageFilter } from "@jg-stevan/scanner-core/types";
 import type { PaginaObjetivo } from "./bridge";
 import type { Acta, FuenteCaptura, HistorialRow, Mesa, ProgresoAnalisis, TipoPagina } from "./types";
 import type { Quad } from "@jg-stevan/scanner-core/types";
+import { claveDeMesa, tipoPaginaDe, type ClasificacionE14 } from "./clasificador";
 import {
   COLA_OFFLINE_INICIAL,
   SOLICITUDES_RESCANEO_INICIAL,
@@ -51,6 +52,9 @@ interface E14Store {
   revelando: boolean;
   actasSesion: number;
   mesas: Mesa[];
+  /** Fase B (§6): archivado «dónde va» — clasificaciones guardadas por
+   *  clave de mesa real; la vista ACTAS las añade al seed (modo demo). */
+  archivadas: Record<string, ActaArchivada>;
   completadas: number;
   asignadasHoy: number;
   colaOffline: number;
@@ -71,6 +75,13 @@ interface E14Store {
   enviarActa: () => void;
   repetirFoto: () => void;
   enviarRevisionHumana: () => void;
+  /**
+   * Panel de corrección (SPEC-cabecera-clasificacion §5): persiste la
+   * ubicación corregida por el operador como nivel AUTO-manual, archiva su
+   * hueco (Fase B §6, con aviso §G.4.1 si duplicado) y pasa al flujo normal
+   * de envío (ADVERTENCIA-equivalente).
+   */
+  guardarUbicacion: (clasificacion: ClasificacionE14) => void;
   /** L4 §6: exporta el acta REAL (fotoProcesada) a PDF vía buildDocPdf del core. */
   exportarPdfActa: () => Promise<void>;
   /**
@@ -126,6 +137,56 @@ function recalcularMesa(mesa: Mesa): Mesa {
   return { ...mesa, progresoPct, estado: estado as Mesa["estado"] };
 }
 
+/** Hueco archivado de una mesa real (§6: cuerpo DELEGADOS|TRANSMISIÓN × pág 1/2). */
+export interface HuecoArchivado {
+  tipo: TipoPagina;
+  pagina: 1 | 2;
+}
+/** Entrada Fase B (§6): clasificación guardada + huecos ocupados de la mesa. */
+export interface ActaArchivada {
+  clasificacion: ClasificacionE14;
+  huecos: HuecoArchivado[];
+}
+
+/**
+ * Fase B (§6): archiva el hueco de una clasificación bajo su clave de mesa
+ * (códigos con ceros, p. ej. «88-335-05-02-001»). Duplicado del MISMO hueco
+ * → reemplaza (la clasificación más reciente queda como vigente) y avisa
+ * (análisis §G.4.1). Idempotente: re-archivar el mismo acta es silencioso
+ * para el llamador que ignora `duplicado`.
+ */
+function archivarHueco(
+  archivadas: Record<string, ActaArchivada>,
+  clasif: ClasificacionE14,
+): { nuevas: Record<string, ActaArchivada>; duplicado: boolean } {
+  const clave = claveDeMesa(clasif);
+  const tipo = clasif.tipo ? tipoPaginaDe(clasif.tipo) : null;
+  if (!clave || !tipo) return { nuevas: archivadas, duplicado: false };
+  const hueco: HuecoArchivado = {
+    tipo,
+    pagina: (clasif.pagina?.index ?? 1) === 2 ? 2 : 1,
+  };
+  const previa = archivadas[clave];
+  if (!previa) {
+    return {
+      nuevas: { ...archivadas, [clave]: { clasificacion: clasif, huecos: [hueco] } },
+      duplicado: false,
+    };
+  }
+  const yaEstaba = previa.huecos.some((h) => h.tipo === hueco.tipo && h.pagina === hueco.pagina);
+  return {
+    nuevas: {
+      ...archivadas,
+      [clave]: {
+        // hueco duplicado → REEMPLAZA (§G.4.1): la foto más reciente gana el hueco.
+        clasificacion: clasif,
+        huecos: yaEstaba ? previa.huecos : [...previa.huecos, hueco],
+      },
+    },
+    duplicado: yaEstaba,
+  };
+}
+
 function hashMock(): string {
   const hex = Array.from({ length: 12 }, () =>
     "0123456789abcdef"[Math.floor(Math.random() * 16)],
@@ -149,7 +210,7 @@ export const useE14Store = create<E14Store>((set, get) => {
   };
 
   const registrarEnvio = (tituloPagina: string) => {
-    const { online, historial, completadas, mesas, paginaObjetivo, actaActual } = get();
+    const { online, historial, completadas, mesas, paginaObjetivo, actaActual, archivadas } = get();
     const hora = bridge.horaHistorial();
     const fila: HistorialRow = {
       id: `h-${Date.now()}`,
@@ -179,18 +240,32 @@ export const useE14Store = create<E14Store>((set, get) => {
             : m,
         )
       : mesas;
+    // Fase B (§6): acta con clasificación AUTO (gate o panel) → archiva su
+    // hueco. Idempotente: si el panel ya la archivó, el reemplazo es
+    // silencioso (mismo acta, mismos datos).
+    let archivadasNuevas = archivadas;
+    if (actaActual?.clasificacion?.nivel === "AUTO") {
+      archivadasNuevas = archivarHueco(archivadas, actaActual.clasificacion).nuevas;
+    }
     set({
       historial: [fila, ...historial],
       completadas: Math.min(completadas + 1, get().asignadasHoy),
       colaOffline,
       mesas: mesasActualizadas,
+      archivadas: archivadasNuevas,
       actaActual: actaActual ? { ...actaActual, hashSha256: hash } : actaActual,
     });
     return { online, hora };
   };
 
   const tituloPaginaActual = (): string => {
-    const { paginaObjetivo } = get();
+    const { paginaObjetivo, actaActual } = get();
+    // Fase B (§6): título de mesa REAL cuando la clasificación está resuelta.
+    const c = actaActual?.clasificacion;
+    if (c?.nivel === "AUTO" && c.puesto && c.mesa !== null && c.tipo) {
+      const p = (c.pagina?.index ?? 1) === 1 ? "P1" : "P2";
+      return `${c.puesto.nombre} · MESA ${c.mesa} — ${tipoPaginaDe(c.tipo)} ${p}`;
+    }
     if (!paginaObjetivo) return "MESA 01 — TRANSMISIÓN P1";
     const p = paginaObjetivo.pagina === 1 ? "P1" : "P2";
     return `${paginaObjetivo.mesaId} — ${paginaObjetivo.tipo} ${p}`;
@@ -210,6 +285,7 @@ export const useE14Store = create<E14Store>((set, get) => {
     revelando: false,
     actasSesion: 0,
     mesas: mesasIniciales(),
+    archivadas: {},
     completadas: progresoInicial().completadas,
     asignadasHoy: progresoInicial().asignadasHoy,
     colaOffline: COLA_OFFLINE_INICIAL,
@@ -381,6 +457,34 @@ export const useE14Store = create<E14Store>((set, get) => {
         historial: [fila, ...get().historial],
       });
       notificar("warn", "ENVIADA A REVISIÓN HUMANA", "Un auditor validará esta acta.");
+    },
+
+    guardarUbicacion: (clasificacion) => {
+      const { actaActual, archivadas } = get();
+      if (!actaActual) return;
+      // §5: la corrección del operador es AUTO-manual (confianza plena).
+      const final: ClasificacionE14 = {
+        ...clasificacion,
+        nivel: "AUTO",
+        confianzas: { departamento: 1, municipio: 1, puesto: 1, tipo: 1 },
+      };
+      const { nuevas, duplicado } = archivarHueco(archivadas, final);
+      // §5: «pasa a flujo normal de envío (ADVERTENCIA-equivalente)» — la
+      // foto era buena, la ubicación ya está corregida.
+      set({
+        actaActual: { ...actaActual, clasificacion: final, status: "ADVERTENCIA" },
+        archivadas: nuevas,
+      });
+      const titulo =
+        final.puesto && final.mesa !== null
+          ? `${final.puesto.nombre} · MESA ${final.mesa}`
+          : "UBICACIÓN";
+      if (duplicado) {
+        // Análisis §G.4.1: duplicado del mismo hueco → reemplaza y AVISA.
+        notificar("warn", "HUECO REEMPLAZADO", `${titulo} — la foto anterior queda sustituida.`);
+      } else {
+        notificar("ok", "UBICACIÓN GUARDADA", `${titulo} — lista para envío.`);
+      }
     },
 
     exportarPdfActa: async () => {

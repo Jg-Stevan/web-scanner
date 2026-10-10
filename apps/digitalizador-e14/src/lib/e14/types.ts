@@ -4,6 +4,7 @@
  * compatibles (todo es opcional).
  */
 import type { PageFilter, Quad } from "@jg-stevan/scanner-core/types";
+import type { ClasificacionE14 } from "./clasificador";
 
 // ---------- Captura y análisis (SPEC fase lógica §3.1) ----------
 export type FuenteCaptura = "SIMULACION" | "CAMARA" | "ARCHIVO";
@@ -81,6 +82,12 @@ export interface Acta {
   rotation?: number;
   /** F2 (D36): filtro con el que se procesó (default del producto = "bw"). */
   filtro?: PageFilter;
+  /**
+   * Clasificación de cabecera contra la base DIVIPOL (SPEC-cabecera-
+   * clasificacion §4/§6 — opcional, compatible con seed): nivel AUTO →
+   * archivada en su mesa al envío; SUGERIDA/MANUAL → panel de corrección.
+   */
+  clasificacion?: ClasificacionE14;
 }
 
 // ---------- Control de mesas (vista ACTAS) ----------
@@ -98,6 +105,8 @@ export interface Mesa {
   estado: MesaEstado;
   progresoPct: number; // 100 | 50 | 0
   paginas: MesaPagina[]; // DELEGADOS P1/P2 · TRANSMISIÓN P1/P2
+  /** Fase B (§6): clave DIVIPOL de la mesa real (seed no la lleva). */
+  clave?: string;
 }
 
 // ---------- Resumen de trabajo (vista RESUMEN) ----------

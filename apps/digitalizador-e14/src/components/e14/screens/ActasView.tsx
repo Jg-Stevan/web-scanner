@@ -4,11 +4,15 @@
  * ACTAS (§7.6 / C1) — "CONTROL ACTAS E-14": puesto actual, alerta de mesas
  * incompletas y acordeón de mesas con chips de página (DELEGADOS/TRANSMISIÓN
  * × P1/P2). MESA 01 expandida por defecto; solo una a la vez.
+ * Fase B (SPEC-cabecera-clasificacion §6): la lista ya NO es solo el seed
+ * del modo demo — las mesas REALES se construyen de las clasificaciones
+ * guardadas (título `standName · MESA {mesa}`; la foto clasificada ocupa su
+ * hueco DELEGADOS|TRANSMISIÓN × pág 1/2 según «Ver/Pag/de»).
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useE14Store } from "@/lib/e14/store";
 import type { Mesa, MesaPagina } from "@/lib/e14/types";
-import { ChevronDownIcon, SensorsIcon, WarnTriangleIcon } from "../icons";
+import { ChevronDownIcon, MapPinIcon, SensorsIcon, WarnTriangleIcon } from "../icons";
 
 function chipPagina(p: MesaPagina): { label: string; clases: string } {
   switch (p.estado) {
@@ -84,12 +88,45 @@ function CardMesa({ mesa, abierta, onToggle }: { mesa: Mesa; abierta: boolean; o
 
 export function ActasView() {
   const mesas = useE14Store((s) => s.mesas);
+  const archivadas = useE14Store((s) => s.archivadas);
   const online = useE14Store((s) => s.online);
   const alternarConexion = useE14Store((s) => s.alternarConexion);
   const colaOffline = useE14Store((s) => s.colaOffline);
   const [mesaAbierta, setMesaAbierta] = useState<string | null>("MESA 01");
 
-  const incompletas = mesas.filter((m) => m.estado !== "COMPLETADA");
+  // Fase B (§6): mesas reales derivadas de las clasificaciones guardadas —
+  // cada entrada `archivadas` es una mesa con su(s) hueco(s) ocupado(s).
+  const mesasReales = useMemo<Mesa[]>(() => {
+    return Object.entries(archivadas).map(([clave, { clasificacion: c, huecos }]) => {
+      // Formato de la mesa: «Ver/Pag/de» leído (default 2 páginas).
+      const total = Math.min(2, c.pagina?.total ?? 2);
+      const paginas: MesaPagina[] = [];
+      for (const tipo of ["DELEGADOS", "TRANSMISIÓN"] as const) {
+        for (let p = 1; p <= total; p += 1) {
+          paginas.push({
+            tipo,
+            pagina: p as 1 | 2,
+            estado: huecos.some((h) => h.tipo === tipo && h.pagina === p)
+              ? ("OK" as const)
+              : ("PENDIENTE" as const),
+          });
+        }
+      }
+      const ocupadas = paginas.filter((p) => p.estado === "OK").length;
+      return {
+        // §6: tarjeta nueva con título `standName · MESA {mesa}` (la clave
+        // DIVIPOL queda como id único de la tarjeta).
+        id: `${c.puesto?.nombre ?? "PUESTO"} · MESA ${c.mesa ?? "?"}`,
+        estado: ocupadas === paginas.length ? "COMPLETADA" : "EN_PROCESO",
+        progresoPct: Math.round((ocupadas / paginas.length) * 100),
+        paginas,
+        clave,
+      };
+    });
+  }, [archivadas]);
+
+  const todas = useMemo(() => [...mesasReales, ...mesas], [mesasReales, mesas]);
+  const incompletas = todas.filter((m) => m.estado !== "COMPLETADA");
   const detalleIncompletas = incompletas
     .map((m) => `${m.id} (${m.estado === "EN_PROCESO" ? "En proceso" : "Pendiente"})`)
     .join(", ");
@@ -154,9 +191,19 @@ export function ActasView() {
           </div>
         )}
 
-        {/* Acordeón de mesas */}
+        {/* Acordeón de mesas: PRIMERO las reales (Fase B §6 — "dónde va" cada
+            foto clasificada), luego el seed del modo demo. */}
         <div className="flex flex-col gap-4">
-          {mesas.map((mesa) => (
+          {mesasReales.length > 0 && (
+            <div className="flex items-center gap-2 pt-1">
+              <MapPinIcon className="w-3.5 h-3.5 text-ok-tint shrink-0" />
+              <span className="label-caps !text-[10px] text-ok-tint">
+                MESAS CLASIFICADAS ({mesasReales.length})
+              </span>
+              <span className="h-px flex-1 bg-outline-dim" />
+            </div>
+          )}
+          {todas.map((mesa) => (
             <CardMesa
               key={mesa.id}
               mesa={mesa}
