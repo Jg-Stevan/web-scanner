@@ -1,0 +1,38 @@
+name: Quality Gate
+
+# Gate en PR y push a main: tipos (core + app) + lint + build estático.
+# NO despliega (eso lo hace deploy-pages.yml).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies (workspace raíz)
+        run: bun install --frozen-lockfile
+
+      - name: Type check — packages/scanner-core
+        run: bun run core:check
+
+      - name: Type check — apps/scanner-lab
+        run: bun run app:check
+
+      - name: Lint — apps/scanner-lab
+        run: bun run lint
+
+      - name: Build estático scanner-lab (sanity)
+        run: bun run build:static

@@ -1,0 +1,15 @@
+{
+  "name": "web-scanner",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "cd apps/scanner-lab && bun run dev",
+    "start": "cd apps/scanner-lab && bun run start",
+    "lint": "cd apps/scanner-lab && bun run lint",
+    "build:static": "cd apps/scanner-lab && BUILD_STATIC=1 bunx next build",
+    "core:check": "cd packages/scanner-core && bunx tsc --noEmit",
+    "core:build": "cd packages/scanner-core && bun run build",
+    "app:check": "cd apps/scanner-lab && bunx tsc --noEmit",
+    "db:push": "cd apps/scanner-lab && bun run db:push"
+  }
+}

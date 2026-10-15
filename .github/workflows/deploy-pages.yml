@@ -1,0 +1,60 @@
+name: Deploy to GitHub Pages
+
+# scanner-lab en la raíz: https://jg-stevan.github.io/web-scanner/
+# Build estático con basePath /web-scanner (raíz de project pages).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      BUILD_STATIC: "1"
+      NEXT_PUBLIC_BASE_PATH: /web-scanner
+      NEXT_PUBLIC_STATIC: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies (workspace raíz)
+        run: bun install --frozen-lockfile
+
+      # Los route handlers (src/app/api) requieren servidor y son
+      # incompatibles con el export estático. Solo se excluyen del build.
+      - name: Remove server-only API routes
+        run: rm -rf apps/scanner-lab/src/app/api
+
+      - name: Build estático scanner-lab (raíz del sitio)
+        run: bunx next build
+        working-directory: apps/scanner-lab
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: apps/scanner-lab/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

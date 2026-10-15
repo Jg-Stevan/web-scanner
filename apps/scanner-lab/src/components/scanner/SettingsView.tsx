@@ -1,0 +1,1157 @@
+"use client";
+
+/**
+ * ⚙️ Ajustes — grupos estilo iOS (Apariencia, Captura, Procesamiento,
+ * Exportación, Almacenamiento, Acerca de) con switches azules, select de
+ * calidad PDF y borrado de todos los documentos con confirmación.
+ */
+
+import { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import { Check, Copy, Download, FileText, Gauge, Layers, Loader2, Monitor, Moon, PlayCircle, PlusSquare, ScanText, Share2, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
+import { useTheme } from "next-themes";
+import { toast } from "sonner";
+
+import { useIsHydrated } from "@/hooks/use-is-hydrated";
+
+import { useScannerStore } from "@jg-stevan/scanner-core/store";
+import { type ScannerSettings } from "@jg-stevan/scanner-core/types";
+import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
+import { countTagUsage } from "@jg-stevan/scanner-core/tags";
+import { countWords } from "@jg-stevan/scanner-core/text-export";
+import { getScannerWorker } from "@jg-stevan/scanner-core/image-processor";
+import { PROCESSED_MAX_LONG_SIDE } from "@jg-stevan/scanner-core/image-processor";
+import { storageAvailable } from "@jg-stevan/scanner-core/page-store";
+import {
+  getPwaInstallState,
+  promptInstall,
+  subscribePwaState,
+  type PwaInstallState,
+} from "@jg-stevan/scanner-core/pwa";
+import { cn } from "@/lib/utils";
+import { diagTools } from "@/lib/diag-report";
+import {
+  qaStandardTest,
+  useQaTestStore,
+  type QaMode,
+} from "@/lib/qa-standard-test";
+import {
+  getDeviceSnapshot,
+  getBenchCache,
+  type DiagDeviceSnapshot,
+  type DiagBenchResults,
+} from "@/lib/device-profile";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
+/** Switch iOS: 51×31, thumb 25px, azul #007AFF cuando está activo. */
+const SWITCH_IOS =  "h-[31px] w-[51px] data-[state=checked]:bg-[#007aff] data-[state=unchecked]:bg-[#e9e9ea] dark:data-[state=unchecked]:bg-[#39393d] [&_[data-slot=switch-thumb]]:size-[25px]";
+
+/** Atajos de teclado de escritorio (mostrados en Acerca de). */
+const SHORTCUTS: { action: string; keys: string[]; hint?: string }[] = [
+  { action: "Atrás / cerrar vista", keys: ["Esc"] },
+  { action: "Salir de la selección múltiple", keys: ["Esc"] },
+  { action: "Buscar en la biblioteca", keys: ["/"] },
+  { action: "Página anterior · siguiente", keys: ["←", "→"] },
+  { action: "Navegar y zoom en presentación", keys: ["←", "→", "+", "−"] },
+  { action: "Salir de presentación", keys: ["Esc"] },
+  { action: "Buscar en el texto del documento", keys: ["⌘F"], hint: "En el tab OCR" },
+  { action: "Coincidencia anterior · siguiente", keys: ["⇧", "↩"] },
+];
+
+/** Gestos táctiles (documentados igual que los atajos). */
+const GESTURES: { action: string; hint: string }[] = [
+  { action: "Comparar con el original", hint: "Mantén pulsada la imagen del documento" },
+  { action: "Reordenar páginas", hint: "Mantén pulsada una miniatura y arrastra" },
+  { action: "Reordenar biblioteca", hint: "Orden Manual + asa ⠿ en la vista de lista" },
+  { action: "Selección múltiple", hint: "Pulsación larga sobre un documento" },
+];
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Mini-card de estadística (patrón widget de iOS: número grande + label). */
+function StatCard({
+  value,
+  label,
+  icon: Icon,
+  color,
+  delay = 0,
+}: {
+  value: string;
+  label: string;
+  icon: typeof FileText;
+  color: string;
+  delay?: number;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.32, delay, ease: [0.22, 1, 0.36, 1] }}
+      className="flex flex-col items-start gap-1 rounded-2xl bg-white dark:bg-[#1c1c1e] px-3 pb-2.5 pt-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
+    >
+      <Icon className="size-[15px]" strokeWidth={2.2} style={{ color }} aria-hidden="true" />
+      <span
+        className="text-[20px] font-semibold leading-none tracking-[-0.3px] text-[#1c1c1e] dark:text-white tabular-nums"
+      >
+        {value}
+      </span>
+      <span className="text-[11px] font-medium leading-tight text-[#8e8e93]">{label}</span>
+    </motion.div>
+  );
+}
+
+export default function SettingsView() {
+  const settings = useScannerStore((s) => s.settings);
+  const updateSettings = useScannerStore((s) => s.updateSettings);
+  const documents = useScannerStore((s) => s.documents);
+  const wipeLibrary = useScannerStore((s) => s.wipeLibrary);
+
+  const [confirmWipe, setConfirmWipe] = useState(false);
+
+  /* F-TRASH: las estadísticas cuentan solo la biblioteca VIVA (la papelera
+   *  se muestra aparte — es contenido distinto, como iOS Files). */
+  const liveDocs = useMemo(() => documents.filter((d) => d.deletedAt === undefined), [documents]);
+  const trashCount = useMemo(() => documents.length - liveDocs.length, [documents, liveDocs]);
+
+  const totalPages = useMemo(
+    () => liveDocs.reduce((n, d) => n + d.pages.length, 0),
+    [liveDocs]
+  );
+
+  /** Uso estimado: suma de todos los data URLs (originales + procesadas + miniaturas). */
+  const storageBytes = useMemo(() => {
+    let total = 0;
+    for (const d of liveDocs) {
+      for (const p of d.pages) {
+        total += dataUrlBytes(p.original) + dataUrlBytes(p.processed) + dataUrlBytes(p.thumbnail);
+      }
+    }
+    return total;
+  }, [liveDocs]);
+
+  const wipeAll = () => {
+    if (documents.length === 0) {
+      toast("No hay documentos que borrar");
+      setConfirmWipe(false);
+      return;
+    }
+    wipeLibrary();
+    toast.success("Se borraron todos los documentos");
+    setConfirmWipe(false);
+  };
+
+  /* ── Estadísticas de la biblioteca (panel resumen) ── */
+  const favoriteCount = useMemo(
+    () => liveDocs.filter((d) => d.favorite).length,
+    [liveDocs]
+  );
+  const tagCount = useMemo(() => countTagUsage(liveDocs).length, [liveDocs]);
+  const ocrPages = useMemo(
+    () => liveDocs.reduce((n, d) => n + d.pages.filter((p) => p.ocrDone).length, 0),
+    [liveDocs]
+  );
+  /** F-STATS: palabras totales extraídas por OCR en la biblioteca viva. */
+  const ocrWords = useMemo(
+    () =>
+      liveDocs.reduce(
+        (n, d) => n + d.pages.reduce((m, p) => m + countWords(p.ocrText ?? ""), 0),
+        0
+      ),
+    [liveDocs]
+  );
+
+  return (
+    <div className="flex h-full w-full flex-col bg-[#f2f2f7] dark:bg-black">
+      {/* Header */}
+      <header className="shrink-0 px-5 pb-2 pt-safe">
+        <h1 className="text-[30px] font-semibold leading-tight tracking-[-0.4px] text-black dark:text-white">
+          Ajustes
+        </h1>
+        <p className="mt-1 text-[13px] text-[#8e8e93]">Personaliza tu escáner</p>
+      </header>
+
+      {/* Grupos estilo iOS con scroll central */}
+      <div className="ios-scroll flex-1 overflow-y-auto overscroll-contain pb-8">
+        {/* Panel de estadísticas de la biblioteca */}
+        <section aria-label="Estadísticas de la biblioteca" className="px-5 pb-1 pt-2">
+          <h2 className="mb-2 px-1 text-[12px] font-semibold uppercase tracking-[0.06em] text-[#6d6d72] dark:text-[#98989e]">
+            Tu biblioteca
+          </h2>
+          <div className="grid grid-cols-3 gap-2">
+            <StatCard
+              value={String(liveDocs.length)}
+              label={plural(liveDocs.length, "documento", "documentos")}
+              icon={FileText}
+              color="#007aff"
+              delay={0.03}
+            />
+            <StatCard
+              value={String(totalPages)}
+              label={plural(totalPages, "página", "páginas")}
+              icon={Layers}
+              color="#5856d6"
+              delay={0.06}
+            />
+            <StatCard
+              value={String(ocrPages)}
+              label="con texto OCR"
+              icon={ScanText}
+              color="#34c759"
+              delay={0.09}
+            />
+            <StatCard
+              value={ocrWords >= 1000 ? `${(ocrWords / 1000).toFixed(1).replace(".0", "")}k` : String(ocrWords)}
+              label={ocrWords === 1 ? "palabra OCR" : "palabras OCR"}
+              icon={Type}
+              color="#30d158"
+              delay={0.12}
+            />
+            <StatCard
+              value={String(favoriteCount)}
+              label={plural(favoriteCount, "favorito", "favoritos")}
+              icon={Star}
+              color="#ff9500"
+              delay={0.15}
+            />
+            <StatCard
+              value={String(tagCount)}
+              label={plural(tagCount, "etiqueta", "etiquetas")}
+              icon={Tags}
+              color="#ff2d55"
+              delay={0.18}
+            />
+            <StatCard
+              value={formatBytes(storageBytes)}
+              label="espacio usado"
+              icon={HardDrive}
+              color="#8e8e93"
+              delay={0.21}
+            />
+            <StatCard
+              value={String(trashCount)}
+              label="en Eliminados"
+              icon={Trash2}
+              color="#ff453a"
+              delay={0.24}
+            />
+            <StatCard
+              value={String(liveDocs.length > 0 ? Math.round((totalPages / liveDocs.length) * 10) / 10 : 0)}
+              label="páginas/doc"
+              icon={Layers}
+              color="#64d2ff"
+              delay={0.27}
+            />
+          </div>
+        </section>
+
+        {/* Apariencia: tema claro/oscuro/sistema (persiste en localStorage) */}
+        <AppearanceSection />
+
+        {/* F-PWA: instalación en el móvil (Android: prompt nativo · iOS: guía) */}
+        <InstallSection />
+
+        <SettingsGroup label="Procesamiento" delay={0.1}>
+          {/* FIX v3: fila informativa estática (sin medición) — el benchmark
+              F-DEVBENCH se eliminó: la app procesa SIEMPRE al máximo del
+              lente con tope técnico único. */}
+          <SettingsRow
+            title="Resolución de procesado"
+            subtitle="Máxima calidad · tope técnico del canvas en iOS"
+          >
+            <span className="shrink-0 text-[15px] font-medium tabular-nums text-[#3c3c43] dark:text-white/85">
+              {PROCESSED_MAX_LONG_SIDE} px
+            </span>
+          </SettingsRow>
+          <SettingsRow
+            title="Mejora automática"
+            subtitle="Empieza cada captura con el filtro «B/N adaptativo» (apagado: Original puro)"
+          >
+            <Switch
+              checked={settings.enhance}
+              onCheckedChange={(v) => updateSettings({ enhance: v })}
+              aria-label="Mejora automática"
+              className={SWITCH_IOS}
+            />
+          </SettingsRow>
+          <SettingsRow
+            title="OCR automático"
+            subtitle="Reconoce el texto al capturar. Apagado por defecto para ahorrar memoria: usa el botón «Texto» del editor cuando lo necesites"
+          >
+            <Switch
+              checked={settings.ocrEnabled}
+              onCheckedChange={(v) => updateSettings({ ocrEnabled: v })}
+              aria-label="OCR automático"
+              className={SWITCH_IOS}
+            />
+          </SettingsRow>
+          <SettingsRow
+            title="Flash de captura"
+            subtitle="Auto lo enciende solo en escenas oscuras (y lo apaga al disparar)"
+          >
+            <Select
+              value={settings.flashMode}
+              onValueChange={(v) =>
+                updateSettings({ flashMode: v as ScannerSettings["flashMode"] })
+              }
+            >
+              <SelectTrigger
+                aria-label="Flash de captura"
+                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] px-3.5 text-[14px] font-medium text-[#3c3c43] dark:text-white shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl border-[#e5e5ea] dark:border-[#38383a]">
+                <SelectItem value="off" className="text-[14px]">
+                  Apagado
+                </SelectItem>
+                <SelectItem value="auto" className="text-[14px]">
+                  Auto
+                </SelectItem>
+                <SelectItem value="on" className="text-[14px]">
+                  Encendido
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+          <SettingsRow
+            title="Motor de precisión"
+            subtitle="OpenCV · contornos + RANSAC + homografía"
+          >
+            <EngineBadge />
+          </SettingsRow>
+        </SettingsGroup>
+
+        <SettingsGroup label="Exportación" delay={0.15}>
+          <SettingsRow
+            title="Calidad de foto"
+            subtitle="Auto: equipos con 8+ GB RAM fotografían a resolución completa (espera del sensor). El resto: rápida (1-2 s + afinado en segundo plano)."
+          >
+            <Select
+              value={settings.photoMode ?? "auto"}
+              onValueChange={(v) =>
+                updateSettings({ photoMode: v as ScannerSettings["photoMode"] })
+              }
+            >
+              <SelectTrigger
+                aria-label="Calidad de foto"
+                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] px-3.5 text-[14px] font-medium text-[#3c3c43] dark:text-white shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="calidad">Calidad completa</SelectItem>
+                <SelectItem value="rapida">Rápida</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+          <SettingsRow title="Calidad PDF">
+            <Select
+              value={settings.exportQuality}
+              onValueChange={(v) =>
+                updateSettings({ exportQuality: v as ScannerSettings["exportQuality"] })
+              }
+            >
+              <SelectTrigger
+                aria-label="Calidad PDF"
+                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] px-3.5 text-[14px] font-medium text-[#3c3c43] dark:text-white shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl border-[#e5e5ea] dark:border-[#38383a]">
+                <SelectItem value="standard" className="text-[14px]">
+                  Estándar
+                </SelectItem>
+                <SelectItem value="alta" className="text-[14px]">
+                  Alta
+                </SelectItem>
+                <SelectItem value="máxima" className="text-[14px]">
+                  Máxima
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+        </SettingsGroup>
+
+        <SettingsGroup label="Almacenamiento" delay={0.15}>
+          <SettingsRow
+            title="Uso estimado"
+            subtitle={`${plural(liveDocs.length, "documento", "documentos")} · ${plural(
+              totalPages,
+              "página",
+              "páginas"
+            )}`}
+          >
+            <span className="shrink-0 text-[15px] text-[#8e8e93]">{formatBytes(storageBytes)}</span>
+          </SettingsRow>
+          <SettingsRow
+            title="Persistencia local"
+            subtitle="IndexedDB · los documentos sobreviven al recargar"
+          >
+            <span
+              className={cn(
+                "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold",
+                storageAvailable()
+                  ? "bg-[#34c759]/12 text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+                  : "bg-[#8e8e93]/15 text-[#8e8e93]"
+              )}
+              role="status"
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  storageAvailable()
+                    ? "bg-[#34c759] shadow-[0_0_5px_rgba(52,199,89,0.8)]"
+                    : "bg-[#8e8e93]"
+                )}
+                aria-hidden="true"
+              />
+              {storageAvailable() ? "Activa" : "No disp."}
+            </span>
+          </SettingsRow>
+          <SettingsRow
+            title="Borrar todos los documentos"
+            destructive
+            disabled={documents.length === 0}
+            onClick={documents.length > 0 ? () => setConfirmWipe(true) : undefined}
+          >
+            <Trash2 className="h-[18px] w-[18px] shrink-0 text-[#ff3b30]" strokeWidth={2} aria-hidden="true" />
+          </SettingsRow>
+        </SettingsGroup>
+
+        <SettingsGroup label="Acerca de" delay={0.2}>
+          <SettingsRow title="Versión">
+            <span className="shrink-0 text-[15px] text-[#8e8e93]">2.0.0</span>
+          </SettingsRow>
+          <div className="border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3">
+            <p className="text-[15px] text-[#1c1c1e] dark:text-white">Atajos de teclado</p>
+            <div className="mt-2 flex flex-col gap-1.5">
+              {SHORTCUTS.map((s) => (
+                <div key={s.action} className="flex items-center justify-between gap-3">
+                  <span className="text-[13px] leading-snug text-[#8e8e93]">
+                    {s.action}
+                    {s.hint && (
+                      <span className="ml-1.5 text-[11px] text-[#c7c7cc]">{s.hint}</span>
+                    )}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1">
+                    {s.keys.map((k) => (
+                      <kbd
+                        key={k}
+                        className="flex h-[22px] min-w-[22px] items-center justify-center rounded-[6px] border border-[#d1d1d6] border-b-2 bg-white dark:border-[#48484a] dark:bg-[#2c2c2e] dark:shadow-none px-1.5 font-sans text-[11px] font-semibold text-[#3c3c43] dark:text-white shadow-[0_1px_0_rgba(0,0,0,0.04)]"
+                      >
+                        {k}
+                      </kbd>
+                    ))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3">
+            <p className="text-[15px] text-[#1c1c1e] dark:text-white">Gestos</p>
+            <div className="mt-2 flex flex-col gap-1.5">
+              {GESTURES.map((g) => (
+                <div key={g.action} className="flex items-center justify-between gap-3">
+                  <span className="text-[13px] leading-snug text-[#8e8e93]">{g.action}</span>
+                  <span className="max-w-[190px] text-right text-[11px] leading-snug text-[#c7c7cc]">
+                    {g.hint}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex min-h-[44px] items-center border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3">
+            <p className="text-[15px] text-[#8e8e93]">Hecho con precisión</p>
+          </div>
+        </SettingsGroup>
+
+        {/* DIAG (spec diag §7) — informe del dispositivo: resumen real +
+            compartir/descargar/copiar + re-medir benchmarks. */}
+        <DiagSection />
+
+      </div>
+
+      {/* AlertDialog: borrar todos los documentos */}
+      <AlertDialog open={confirmWipe} onOpenChange={setConfirmWipe}>
+        <AlertDialogContent className="max-w-[320px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Borrar todos los documentos?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se eliminarán {plural(documents.length, "documento", "documentos")} con todas sus
+              páginas. Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={wipeAll}
+              className="flex-1 rounded-full border-0 bg-[#ff3b30] text-[15px] font-semibold text-white hover:bg-[#ff453a]"
+            >
+              Borrar todo
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Piezas de los grupos estilo iOS                                     */
+/* ------------------------------------------------------------------ */
+
+/** Badge vivo del motor de precisión (worker + OpenCV) en Ajustes. */
+function EngineBadge() {
+  const [state, setState] = useState<"checking" | "on" | "off">("checking");
+  useEffect(() => {
+    let stop = false;
+    const apply = (s: "on" | "off") => {
+      if (!stop) setState(s);
+    };
+    const c = getScannerWorker();
+    if (c && !c.isDead) {
+      void c.waitReady().then((ok) => {
+        if (ok) apply("on");
+      });
+    }
+    const iv = window.setInterval(() => {
+      const cc = getScannerWorker();
+      if (cc?.isReady) {
+        apply("on");
+        window.clearInterval(iv);
+      } else if (cc?.isDead) {
+        apply("off");
+        window.clearInterval(iv);
+      }
+    }, 800);
+    return () => {
+      stop = true;
+      window.clearInterval(iv);
+    };
+  }, []);
+  return (
+    <span
+      className={cn(
+        "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold",
+        state === "on"
+          ? "bg-[#34c759]/12 text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+          : state === "checking"
+            ? "bg-[#8e8e93]/15 text-[#8e8e93]"
+            : "bg-[#ff3b30]/10 text-[#ff3b30] dark:text-[#ff453a]"
+      )}
+      role="status"
+      aria-label={`Motor de precisión ${state === "on" ? "activo" : state === "checking" ? "cargando" : "no disponible"}`}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          state === "on"
+            ? "bg-[#34c759] shadow-[0_0_5px_rgba(52,199,89,0.8)]"
+            : state === "checking"
+              ? "animate-pulse bg-[#8e8e93]"
+              : "bg-[#ff3b30]"
+        )}
+        aria-hidden="true"
+      />
+      {state === "on" ? "Activo" : state === "checking" ? "Cargando…" : "No disp."}
+    </span>
+  );
+}
+
+/** Sección de apariencia — tema Claro / Oscuro / Sistema (next-themes).
+ *  · Filas estilo iOS con icono + check azul en la preferencia activa.
+ *  · next-themes persiste la elección en localStorage (clave "theme")
+ *    y "Sistema" sigue el esquema de color del dispositivo.
+ *  · El check solo se pinta tras la hidratación (resolvedTheme no existe
+ *    en SSR — evita el mismatch de hidratación). */
+function AppearanceSection() {
+  const { theme, resolvedTheme, setTheme } = useTheme();
+  const mounted = useIsHydrated();
+
+  const current = theme ?? "system";
+
+  const options: {
+    id: "light" | "dark" | "system";
+    label: string;
+    icon: typeof Sun;
+  }[] = [
+    { id: "light", label: "Claro", icon: Sun },
+    { id: "dark", label: "Oscuro", icon: Moon },
+    { id: "system", label: "Sistema", icon: Monitor },
+  ];
+
+  return (
+    <SettingsGroup label="Apariencia" delay={0.05}>
+      {options.map((o) => {
+        const active = mounted && current === o.id;
+        const Icon = o.icon;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            aria-pressed={active}
+            aria-label={`Tema ${o.label.toLowerCase()}`}
+            onClick={() => setTheme(o.id)}
+            className="flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3 text-left transition-colors first:border-t-0 active:bg-[#f7f7f9] dark:active:bg-[#2c2c2e]"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Icon
+                className="size-5 shrink-0 text-[#3c3c43] dark:text-white"
+                strokeWidth={1.8}
+                aria-hidden="true"
+              />
+              <span className="min-w-0">
+                <span className="block text-[15px] leading-snug text-black dark:text-white">
+                  {o.label}
+                </span>
+                {o.id === "system" && (
+                  <span className="block text-[12px] leading-snug text-[#8e8e93]">
+                    {mounted && resolvedTheme === "dark" ? "Ahora: oscuro" : "Ahora: claro"}
+                  </span>
+                )}
+              </span>
+            </span>
+            {active ? (
+              <Check
+                className="size-5 shrink-0 text-[#007aff] dark:text-[#0a84ff]"
+                strokeWidth={2.6}
+                aria-hidden="true"
+              />
+            ) : (
+              <span className="size-5 shrink-0" aria-hidden="true" />
+            )}
+          </button>
+        );
+      })}
+    </SettingsGroup>
+  );
+}
+
+function SettingsGroup({
+  label,
+  delay = 0,
+  children,
+}: {
+  label: string;
+  delay?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.section
+      aria-label={label}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, delay, ease: "easeOut" }}
+    >
+      <h2 className="px-5 pb-1.5 pt-4 text-[13px] font-medium uppercase tracking-[0.04em] text-[#8e8e93]">
+        {label}
+      </h2>
+      <div className="mx-4 overflow-hidden rounded-xl bg-white dark:bg-[#1c1c1e] shadow-[0_2px_8px_rgba(0,0,0,0.08)]">
+        {children}
+      </div>
+    </motion.section>
+  );
+}
+
+function SettingsRow({
+  title,
+  subtitle,
+  destructive,
+  disabled,
+  onClick,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  destructive?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+  children?: React.ReactNode;
+}) {
+  const className = cn(
+    "flex min-h-[44px] w-full items-center justify-between gap-3 border-t border-[#f2f2f7] dark:border-[#38383a] px-4 py-3 text-left first:border-t-0 transition-colors",
+    onClick && "cursor-pointer active:bg-[#f7f7f9] dark:active:bg-[#2c2c2e]",
+    disabled && "cursor-default opacity-40"
+  );
+
+  const content = (
+    <>
+      <div className="min-w-0">
+        <p
+          className={cn(
+            "text-[15px] leading-snug",
+            destructive ? "font-medium text-[#ff3b30]" : "text-black dark:text-white"
+          )}
+        >
+          {title}
+        </p>
+        {subtitle ? (
+          <p className="mt-0.5 text-[12px] leading-snug text-[#8e8e93]">{subtitle}</p>
+        ) : null}
+      </div>
+      {children}
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} disabled={disabled} className={className}>
+        {content}
+      </button>
+    );
+  }
+  return <div className={className}>{content}</div>;
+}
+
+/** F-PWA — Sección de instalación en el móvil. Android/Chrome: botón que
+ *  dispara el prompt nativo; iOS: instrucciones de "Añadir a pantalla de
+ *  inicio"; ya instalada → estado "Instalada". */
+function InstallSection() {
+  const [state, setState] = useState<PwaInstallState>(() => getPwaInstallState());
+
+  useEffect(() => subscribePwaState(setState), []);
+
+  const onInstall = async () => {
+    const outcome = await promptInstall();
+    if (outcome === "accepted") toast.success("¡App instalada!");
+    else if (outcome === "dismissed") toast("Puedes instalarla más tarde desde este mismo panel");
+    else if (state.isIos) {
+      toast("En iPhone: Compartir → «Añadir a pantalla de inicio»", { duration: 8000, icon: "📲" });
+    } else {
+      toast("Tu navegador no ofrece instalación — usa el menú del navegador", { duration: 7000 });
+    }
+  };
+
+  return (
+    <SettingsGroup label="Instalación" delay={0.12}>
+      {state.installed ? (
+        <SettingsRow title="App instalada" subtitle="Corre a pantalla completa y sin conexión">
+          <span
+            className="flex shrink-0 items-center gap-1.5 rounded-full bg-[#34c759]/12 px-2.5 py-1 text-[12px] font-semibold text-[#248a3d] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+            role="status"
+          >
+            <Check className="h-3.5 w-3.5" strokeWidth={2.6} aria-hidden="true" />
+            Instalada
+          </span>
+        </SettingsRow>
+      ) : state.isIos ? (
+        <SettingsRow
+          title="Añadir a pantalla de inicio"
+          subtitle="En iPhone: botón Compartir → «Añadir a pantalla de inicio»"
+        >
+          <button
+            type="button"
+            aria-label="Ver cómo instalar la app"
+            onClick={() =>
+              toast("Comparte esta página y elige «Añadir a pantalla de inicio»", {
+                duration: 9000,
+                icon: "📲",
+              })
+            }
+            className="shrink-0 rounded-full bg-[#007aff] px-3.5 py-1.5 text-[13px] font-semibold text-white transition-transform active:scale-95"
+          >
+            Cómo
+          </button>
+        </SettingsRow>
+      ) : (
+        <SettingsRow
+          title="Instalar app en este dispositivo"
+          subtitle="Funciona sin conexión y abre como app nativa"
+        >
+          <button
+            type="button"
+            aria-label="Instalar la app"
+            onClick={() => void onInstall()}
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-full bg-[#007aff] px-3.5 py-1.5 text-[13px] font-semibold text-white transition-transform active:scale-95",
+              !state.canPrompt && "opacity-80"
+            )}
+          >
+            <PlusSquare className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
+            Instalar
+          </button>
+        </SettingsRow>
+      )}
+    </SettingsGroup>
+  );
+}
+
+/* F-DEVBENCH (DeviceSection) — ELIMINADO en el fix v3 (fix-editor-quality):
+ * la app procesa y guarda SIEMPRE al máximo del lente (tope técnico único
+ * 4032 px). Su hueco lo cubre la fila informativa estática
+ * "Resolución de procesado" del grupo Procesamiento. */
+
+/** DIAG (spec diag §7) — Sección «Diagnóstico»: resumen compacto con datos
+ *  REALES del dispositivo (modelo · RAM · bench CPU · refresh) y 3 acciones
+ *  sobre el informe: Compartir (primaria — Web Share a WhatsApp con
+ *  fallback a descarga), Descargar JSON y Copiar TXT. Botón secundario
+ *  «Re-medir benchmarks» con confirmación (tarda ~2 s). El informe NUNCA
+ *  sale del dispositivo salvo que el dueño lo comparta él mismo. */
+function DiagSection() {
+  const [snap, setSnap] = useState<DiagDeviceSnapshot | null>(null);
+  const [bench, setBench] = useState<DiagBenchResults | null>(null);
+  const [benchAgeDays, setBenchAgeDays] = useState<number | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [remeasuring, setRemeasuring] = useState(false);
+  const [confirmBench, setConfirmBench] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = await getDeviceSnapshot();
+        const cache = getBenchCache();
+        if (cancelled) return;
+        setSnap(s);
+        if (cache) {
+          setBench(cache.results);
+          setBenchAgeDays(Math.round(((Date.now() - cache.ts) / 86_400_000) * 10) / 10);
+        }
+      } catch {
+        /* el resumen queda en «—» */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onShare = async () => {
+    if (sharing) return;
+    setSharing(true);
+    try {
+      const r = await diagTools.share();
+      if (r === "shared") {
+        toast.success("Informe compartido");
+      } else if (r === "downloaded") {
+        toast("Compartir no está disponible aquí", {
+          description: "El informe TXT se descargó para que lo envíes por WhatsApp.",
+          duration: 7000,
+        });
+      } else if (r === "failed") {
+        toast.error("No se pudo compartir el informe");
+      }
+      /* "cancelled": el usuario cerró el diálogo — sin toast */
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const onDownload = async () => {
+    try {
+      await diagTools.download();
+      toast.success("Informe JSON descargado");
+    } catch {
+      toast.error("No se pudo descargar el informe");
+    }
+  };
+
+  const onCopy = async () => {
+    const ok = await diagTools.copy();
+    if (ok) toast.success("Informe TXT copiado al portapapeles");
+    else toast.error("No se pudo copiar el informe");
+  };
+
+  const onRemeasure = async () => {
+    setConfirmBench(false);
+    setRemeasuring(true);
+    try {
+      const r = await diagTools.bench(true);
+      setBench(r);
+      setBenchAgeDays(0);
+      toast.success("Benchmarks re-medidos");
+    } catch {
+      toast.error("No se pudieron medir los benchmarks");
+    } finally {
+      setRemeasuring(false);
+    }
+  };
+
+  const summary = snap
+    ? [
+        snap.model ?? snap.os ?? "Dispositivo",
+        snap.ramGB !== null ? `${snap.ramGB} GB RAM` : null,
+        bench?.cpuBenchMs != null ? `CPU ${bench.cpuBenchMs} ms` : "CPU —",
+        snap.screen.refreshHz !== null ? `${snap.screen.refreshHz} Hz` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "Midiendo dispositivo…";
+
+  return (
+    <SettingsGroup label="Diagnóstico" delay={0.22}>
+      <SettingsRow
+        title="Informe del dispositivo"
+        subtitle={summary}
+      >
+        <Gauge
+          className="h-[18px] w-[18px] shrink-0 text-[#8e8e93]"
+          strokeWidth={2}
+          aria-hidden="true"
+        />
+      </SettingsRow>
+      <div className="flex flex-col gap-2 border-t border-[#f2f2f7] px-4 py-3 dark:border-[#38383a]">
+        <button
+          type="button"
+          aria-label="Compartir informe de diagnóstico"
+          onClick={() => void onShare()}
+          disabled={sharing}
+          className={cn(
+            "flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-[#007aff] px-4 py-2.5 text-[15px] font-semibold text-white transition-transform active:scale-[0.98]",
+            sharing && "opacity-60"
+          )}
+        >
+          {sharing ? (
+            <Loader2 className="h-[18px] w-[18px] animate-spin" aria-hidden="true" />
+          ) : (
+            <Share2 className="h-[18px] w-[18px]" strokeWidth={2.2} aria-hidden="true" />
+          )}
+          {sharing ? "Preparando informe…" : "Compartir informe"}
+        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            aria-label="Descargar informe JSON"
+            onClick={() => void onDownload()}
+            className="flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl bg-[#f2f2f7] px-3 py-2 text-[13.5px] font-semibold text-[#3c3c43] transition-transform active:scale-[0.98] dark:bg-[#2c2c2e] dark:text-white"
+          >
+            <Download className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
+            Descargar JSON
+          </button>
+          <button
+            type="button"
+            aria-label="Copiar informe TXT al portapapeles"
+            onClick={() => void onCopy()}
+            className="flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl bg-[#f2f2f7] px-3 py-2 text-[13.5px] font-semibold text-[#3c3c43] transition-transform active:scale-[0.98] dark:bg-[#2c2c2e] dark:text-white"
+          >
+            <Copy className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
+            Copiar TXT
+          </button>
+        </div>
+        <button
+          type="button"
+          aria-label="Volver a medir los benchmarks del dispositivo"
+          onClick={() => setConfirmBench(true)}
+          disabled={remeasuring}
+          className={cn(
+            "flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl border border-[#e5e5ea] px-3 py-2 text-[13.5px] font-medium text-[#3c3c43] transition-transform active:scale-[0.98] dark:border-[#3a3a3c] dark:text-white/85",
+            remeasuring && "opacity-60"
+          )}
+        >
+          {remeasuring ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Midiendo… (~2 s)
+            </>
+          ) : (
+            <>
+              <Gauge className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+              Re-medir benchmarks
+              {benchAgeDays !== null ? ` · ${benchAgeDays} d` : ""}
+            </>
+          )}
+        </button>
+        <p className="text-[11.5px] leading-snug text-[#8e8e93]">
+          Datos medidos en este dispositivo · 100 % local. El informe NO contiene
+          imágenes, contenido de documentos ni texto OCR — solo métricas.
+        </p>
+      </div>
+
+      {/* Confirmación de re-medición (tarda ~2 s y revienta la caché de 7 días) */}
+      <AlertDialog open={confirmBench} onOpenChange={setConfirmBench}>
+        <AlertDialogContent className="max-w-[320px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Re-medir benchmarks?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Vuelve a correr las pruebas de CPU y canvas (~2 s). Útil tras un
+              cambio de modo de ahorro de energía o con el teléfono caliente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void onRemeasure()}
+              className="flex-1 rounded-full border-0 bg-[#007aff] text-[15px] font-semibold text-white hover:bg-[#0a84ff]"
+            >
+              Re-medir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* QA (spec test estándar v1.1) — tarjeta del guión automatizado */}
+      <QaTestCard />
+    </SettingsGroup>
+  );
+}
+
+/** QA (spec diag-test-estandar-qa + v1.3 modo-rapido) — Tarjeta «Test
+ *  estándar QA»: selector de modo (v1.3: «Rápido (1 captura)» DEFAULT /
+ *  «Completo (12 pasos)»), arma el guión (navega a la cámara con el
+ *  auto-shutter en su estado por defecto) y, tras un test, borra sus datos.
+ *  El guión mide lo que un usuario viviría — incluida la demora del shutter
+ *  automático en gama baja. */
+function QaTestCard() {
+  const armed = useQaTestStore((s) => s.armed);
+  const running = useQaTestStore((s) => s.running);
+  const finished = useQaTestStore((s) => s.finished);
+  const aborted = useQaTestStore((s) => s.aborted);
+  const docIds = useQaTestStore((s) => s.docIds);
+  // v1.3 — modo del guión que armará «Preparar test» (rápido = default).
+  const [qaMode, setQaMode] = useState<QaMode>("quick");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const onDelete = () => {
+    setConfirmDelete(false);
+    qaStandardTest.deleteTestData();
+    toast.success("Datos del test eliminados");
+  };
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-[#f2f2f7] px-4 py-3 dark:border-[#38383a]">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[15px] font-semibold text-[#3c3c43] dark:text-white">
+          Test estándar QA
+        </span>
+        {armed && !running && (
+          <span className="rounded-full bg-[#007aff]/12 px-2 py-0.5 text-[11px] font-semibold text-[#007aff]">
+            armado
+          </span>
+        )}
+        {finished && (
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+              aborted
+                ? "bg-[#ff9f0a]/15 text-[#c25000] dark:text-[#ff9f0a]"
+                : "bg-[#34c759]/15 text-[#1d7a34] dark:text-[#30d158]"
+            )}
+          >
+            {aborted ? "abortado · informe parcial" : "completado"}
+          </span>
+        )}
+      </div>
+      <p className="text-[12px] leading-snug text-[#8e8e93]">
+        {qaMode === "quick"
+          ? "Simula un uso real: escanea UNA página y mira cómo quedó (captura → editor). Es el modo por defecto."
+          : "Guión automatizado con captura automática: 3 páginas + editor + filtros + OCR + PDF. ~1 min en gama alta; en gama baja el shutter automático puede tardar — eso también se mide."}
+      </p>
+      {/* v1.3 — selector de modo (rápido DEFAULT). Dos opciones fijas de la
+       * spec; sin modo custom. Deshabilitado mientras el test corre. */}
+      <div
+        role="radiogroup"
+        aria-label="Modo del test QA"
+        className="flex gap-2"
+      >
+        <button
+          type="button"
+          role="radio"
+          aria-checked={qaMode === "quick"}
+          data-qa-mode-quick
+          onClick={() => setQaMode("quick")}
+          disabled={running}
+          className={cn(
+            "flex min-h-[44px] flex-1 items-center justify-center rounded-xl px-3 py-2 text-[13px] font-semibold transition-transform active:scale-[0.98]",
+            qaMode === "quick"
+              ? "bg-[#007aff]/12 text-[#007aff] ring-1 ring-inset ring-[#007aff]/40"
+              : "border border-[#e5e5ea] text-[#3c3c43] dark:border-[#3a3a3c] dark:text-white/85",
+            running && "opacity-60"
+          )}
+        >
+          Rápido (1 captura)
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={qaMode === "full"}
+          data-qa-mode-full
+          onClick={() => setQaMode("full")}
+          disabled={running}
+          className={cn(
+            "flex min-h-[44px] flex-1 items-center justify-center rounded-xl px-3 py-2 text-[13px] font-semibold transition-transform active:scale-[0.98]",
+            qaMode === "full"
+              ? "bg-[#007aff]/12 text-[#007aff] ring-1 ring-inset ring-[#007aff]/40"
+              : "border border-[#e5e5ea] text-[#3c3c43] dark:border-[#3a3a3c] dark:text-white/85",
+            running && "opacity-60"
+          )}
+        >
+          Completo (12 pasos)
+        </button>
+      </div>
+      <div className="flex flex-col gap-2 pt-0.5">
+        <button
+          type="button"
+          aria-label="Preparar test estándar QA"
+          data-qa-prepare
+          onClick={() => qaStandardTest.arm(qaMode)}
+          disabled={running}
+          className={cn(
+            "flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-[#007aff] px-4 py-2.5 text-[15px] font-semibold text-white transition-transform active:scale-[0.98]",
+            running && "opacity-60"
+          )}
+        >
+          <PlayCircle className="h-[18px] w-[18px]" strokeWidth={2.2} aria-hidden="true" />
+          {running ? "Test en curso…" : "Preparar test"}
+        </button>
+        {(docIds.length > 0 || finished) && (
+          <button
+            type="button"
+            aria-label="Borrar datos del test estándar QA"
+            onClick={() => setConfirmDelete(true)}
+            className="flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl border border-[#e5e5ea] px-3 py-2 text-[13.5px] font-medium text-[#3c3c43] transition-transform active:scale-[0.98] dark:border-[#3a3a3c] dark:text-white/85"
+          >
+            <Trash2 className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            Borrar datos del test
+          </button>
+        )}
+      </div>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent className="max-w-[320px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Borrar datos del test?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Elimina los documentos «QA-estandar» creados por el guión y
+              resetea el test. El informe ya compartido no se ve afectado.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2">
+            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={onDelete}
+              className="flex-1 rounded-full border-0 bg-[#ff453a] text-[15px] font-semibold text-white hover:bg-[#ff6961]"
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
