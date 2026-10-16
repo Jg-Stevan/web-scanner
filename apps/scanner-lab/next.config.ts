@@ -46,7 +46,10 @@ const nextConfig: NextConfig = {
   // Sin optimización de imágenes (los <img> del escáner son dataURLs/canvas).
   images: { unoptimized: true },
   typescript: {
-    ignoreBuildErrors: true,
+    // C-06: el typecheck propio del build vuelve a activarse — app:check
+    // (tsc --noEmit) está limpio en el PR gate-calidad-v1, el flag true que
+    // ocultaba errores de tipo en el build ya no tiene razón de ser.
+    ignoreBuildErrors: false,
   },
   reactStrictMode: false,
 };
