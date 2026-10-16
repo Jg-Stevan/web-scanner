@@ -9,8 +9,15 @@
  *    inmutables por diseño (el nombre cambia con el contenido).
  *  · Resto (worker del escáner, manifest, OpenCV): STALE-WHILE-REVALIDATE.
  *
- * Al activar una versión nueva, limpia TODAS las cachés antiguas y llama a
- * clients.claim() — la pestaña abierta salta a la nueva versión al navegar.
+ * E-04 — actualización con consentimiento: una versión nueva QUEDA EN
+ * waiting (nunca skipWaiting incondicional en install). La app detecta el
+ * worker esperando y muestra el banner «Nueva versión lista» (pwa.ts);
+ * solo al pulsar Recargar se envía SKIP_WAITING y el SW nuevo toma el
+ * control. Así la pestaña abierta sigue funcionando con SU versión hasta
+ * que el usuario acepte — fin de los chunk-load-errors en cada deploy.
+ *
+ * Al activar una versión nueva (cuando el usuario la acepta), limpia TODAS
+ * las cachés antiguas y llama a clients.claim().
  */
 const VERSION = "escaner-v7";
 const CORE_CACHE = `${VERSION}-core`;
@@ -37,7 +44,11 @@ self.addEventListener("install", (event) => {
       } catch {
         /* el precache es best-effort: la app funciona sin él */
       }
-      await self.skipWaiting();
+      // E-04 — sin skipWaiting incondicional: el SW nuevo queda waiting y la
+      // pestaña vieja sigue sirviéndose con el SW actual hasta que el usuario
+      // pulse Recargar en el banner (que envía SKIP_WAITING al listener de
+      // abajo). Saltarse la espera rompía las pestañas abiertas en cada deploy
+      // (HTML viejo + chunks nuevos = chunk-load-error).
     })()
   );
 });
@@ -58,8 +69,10 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("message", (event) => {
-  // El cliente puede pedir saltar a la nueva versión explícitamente.
-  if (event.data === "SKIP_WAITING") self.skipWaiting();
+  // El cliente puede pedir saltar a la nueva versión explícitamente (botón
+  // «Recargar» del banner de pwa.ts). Se acepta el string plano y el formato
+  // { type: "SKIP_WAITING" } — el banner usa el objeto.
+  if (event.data === "SKIP_WAITING" || event.data?.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 function isImmutableAsset(url) {
@@ -142,8 +155,13 @@ self.addEventListener("fetch", (event) => {
         const cached = await caches.match(req);
         if (cached) return cached;
         const fresh = await fetch(req);
-        const cache = await caches.open(STATIC_CACHE);
-        cache.put(req, fresh.clone()).catch(() => undefined);
+        // E-04 — solo cachear respuestas VÁLIDAS: cachear un 404/error de un
+        // asset inmutable lo serviría roto PARA SIEMPRE (cache-first, sin
+        // revalidación). Mismo guard que la navegación (A7).
+        if (fresh && fresh.ok) {
+          const cache = await caches.open(STATIC_CACHE);
+          cache.put(req, fresh.clone()).catch(() => undefined);
+        }
         return fresh;
       })()
     );
