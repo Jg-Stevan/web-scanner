@@ -42,7 +42,7 @@ interface StoredDocument extends Omit<ScanDocument, "pages"> {
 
 // ─── utilidades data URL ⇄ Blob ─────────────────────────────────────────────
 
-export function dataUrlToBlob(dataUrl: string): Blob {
+export function dataUrlToBlob(dataUrl: string): Blob | null {
   // Sin fetch() (más portable en workers/contextos fríos): parse manual.
   // Soporta DOS variantes de data URL:
   //  · base64 (image/png, image/jpeg de los escaneos reales)
@@ -51,7 +51,11 @@ export function dataUrlToBlob(dataUrl: string): Blob {
   // tragaba el error en el catch de persistDocument y los cambios sobre
   // documentos demo (renombrar, favorito, etiquetas…) NO persistían.
   const comma = dataUrl.indexOf(",");
-  if (comma < 0) return new Blob();
+  // C-24 (auditoría leaks-recursos): null en vez de Blob vacío — un blob
+  // vacío persistible producía, al hidratar, data URLs no-imagen rotas en
+  // silencio (la carga ya tolera páginas corruptas; la escritura ahora
+  // también, ver persistDocument).
+  if (comma < 0) return null;
   const header = dataUrl.slice(0, comma);
   const mime = /data:([^;]+)/.exec(header)?.[1] ?? "application/octet-stream";
   const payload = dataUrl.slice(comma + 1);
@@ -133,12 +137,29 @@ export async function persistDocument(doc: ScanDocument): Promise<void> {
     if (!db) return;
     const record: StoredDocument = {
       ...doc,
-      pages: doc.pages.map((p) => ({
-        ...p,
-        original: dataUrlToBlob(p.original),
-        processed: dataUrlToBlob(p.processed),
-        thumbnail: dataUrlToBlob(p.thumbnail),
-      })),
+      // C-24 (auditoría leaks-recursos) — tolerancia por PÁGINA (replica la
+      // tolerancia de lectura de loadAllDocuments): una página con data URL
+      // inválida (null) o un atob fallido se OMITE — con warn con su id —
+      // en vez de saltar el doc COMPLETO en el catch de abajo.
+      pages: doc.pages.flatMap((p): StoredPage[] => {
+        try {
+          const original = dataUrlToBlob(p.original);
+          const processed = dataUrlToBlob(p.processed);
+          const thumbnail = dataUrlToBlob(p.thumbnail);
+          if (original === null || processed === null || thumbnail === null) {
+            console.warn(
+              `[page-store] persistDocument: página ${p.id} con data URL inválida — se omite`
+            );
+            return [];
+          }
+          return [{ ...p, original, processed, thumbnail }];
+        } catch {
+          console.warn(
+            `[page-store] persistDocument: página ${p.id} no codificable (atob falló) — se omite`
+          );
+          return [];
+        }
+      }),
     };
     const tx = db.transaction(STORE_DOCS, "readwrite");
     tx.objectStore(STORE_DOCS).put(record);

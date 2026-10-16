@@ -228,19 +228,24 @@ async function convertHeicToJpegBlob(source: Blob): Promise<Blob> {
  *  (HEIC en Android llega aquí y devuelve null → activa el rescate F-HEIC). */
 async function nativeDecodeToCappedDataUrl(blob: Blob): Promise<string | null> {
   if (typeof createImageBitmap === "function") {
-    const attempts: Array<Promise<ImageBitmap>> = [];
+    // B-01 (auditoría leaks-recursos) — fábricas PEREZOSAS: antes las 2
+    // promesas createImageBitmap se creaban en paralelo y en el return
+    // temprano la 2ª resolvía después sin nadie que cerrara su bitmap
+    // (≈48 MB huérfanos al GC). Ahora cada intento se lanza solo cuando
+    // se consume: un return temprano no deja decodes en vuelo.
+    const attemptFactories: Array<() => Promise<ImageBitmap>> = [];
     try {
-      attempts.push(
-        createImageBitmap(blob, { imageOrientation: "from-image" } as ImageBitmapOptions)
+      attemptFactories.push(
+        () => createImageBitmap(blob, { imageOrientation: "from-image" } as ImageBitmapOptions)
       );
     } catch {
       /* opciones no soportadas */
     }
-    attempts.push(createImageBitmap(blob));
-    for (const attempt of attempts) {
+    attemptFactories.push(() => createImageBitmap(blob));
+    for (const attemptFactory of attemptFactories) {
       let bm: ImageBitmap | null = null;
       try {
-        bm = await attempt;
+        bm = await attemptFactory();
         if (bm.width > 0 && bm.height > 0) {
           return await sourceToCappedJpegDataUrl(bm, bm.width, bm.height);
         }
@@ -390,8 +395,9 @@ function bitmapToRotatedCanvas(
 
 /** Miniatura 160px de ancho desde un blob (resultado real del enhance). */
 async function thumbnailFromBlob(blob: Blob): Promise<string> {
+  let bm: ImageBitmap | null = null;
   try {
-    const bm = await createImageBitmap(blob);
+    bm = await createImageBitmap(blob);
     const tW = 160;
     const tH = Math.max(1, Math.round((bm.height / bm.width) * tW));
     const canvas = document.createElement("canvas");
@@ -401,10 +407,18 @@ async function thumbnailFromBlob(blob: Blob): Promise<string> {
     if (!ctx) throw new Error("sin contexto");
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(bm, 0, 0, tW, tH);
-    bm.close();
     return canvas.toDataURL("image/jpeg", 0.8);
   } catch {
     return "";
+  } finally {
+    // B-14 (auditoría leaks-recursos): liberar el bitmap del blob COMPLETO
+    // también en el camino de error (antes el close solo estaba en el
+    // camino feliz y un fallo de drawImage/toDataURL lo dejaba al GC).
+    try {
+      bm?.close();
+    } catch {
+      /* noop */
+    }
   }
 }
 
@@ -962,7 +976,11 @@ async function processImagePrecise(
     let img: HTMLImageElement | null = null;
     if (cap !== undefined && cap < PROCESSED_MAX_LONG_SIDE) {
       try {
+        // B-14/C-24 — dataUrlToBlob ahora devuelve null si el data URL no
+        // tiene payload; un null aquí cae al fallback hermético de abajo
+        // (mismo camino que un header corrupto).
         const blob = dataUrlToBlob(src);
+        if (blob === null) throw new Error("data URL sin payload");
         const dims = await jpegDimensionsFromBlob(blob);
         // Mismo umbral que el camino de hoy: solo si la foto EXCEDE el tope
         // (el parser entrega las mismas dims de display que naturalWidth/

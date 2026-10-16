@@ -17,6 +17,52 @@
 
 **Verificado:** `core:check` + `ui:check` + `app:check` + `lint` (todos exit 0), `build:static` OK, greps del kit (sin `skipWaiting` incondicional, guard `fresh.ok` presente), `git diff --stat origin/main` = whitelist exacta. QA navegable en dev (agent-browser): onboarding → biblioteca → Ajustes (chunk dinámico) → Diagnóstico (import on-demand) → export PDF de biblioteca: **0 errores de página y de consola**. Pendiente (requiere https/dispositivo, honesto): ciclo completo del SW (waiting → banner → recargar) en preview/Pages y QA física iPhone — checklist §4 del kit en el doc de evidencia.
 
+## PR 2 «Leaks y recursos» — rama `fix/leaks-recursos-v1` (15 hallazgos triviales de auditoría)
+
+**Base:** `main` @ `ad4c6fa` · **Origen:** auditoría externa de 113 hallazgos (0 falsos) — este PR cierra los 15 de leaks/liberación de recursos y bugs latentes confirmados TRIVIALES. PR draft hacia `main` (JAMÁS merge desde aquí). Evidencia completa: `apps/scanner-lab/docs/fix-leaks-recursos-v1.md`. Coordinación: comparte `burst-budget.ts` (zona sonda heap ~L230-247; NO toca DEFAULTS) y `page-store.ts` (~L53-58; NO toca hidratación) con los PRs paralelos `fix/gate-calidad-v1` y `fix/pwa-gama-baja-v1` — hunks disjuntos.
+
+**Tabla hallazgo → fix → archivo:**
+
+| Hallazgo | Fix | Archivo |
+|---|---|---|
+| A-01 | Stream huérfano en `retryRealCamera`: guard `isMountedRef` tras el `await getUserMedia` (stop tracks + return si desmontó) | `CameraView.tsx` |
+| A-04 | `bitmap.close()` antes del reply `busy` en los 3 handlers (detect/warp/enhance) — el bitmap ya transferido no queda al GC | `detection-worker.js` |
+| A-05 | Responder `{type:"error"}` cuando `cvApi === null` en los 3 handlers (antes `return` en silencio bloqueaba el pending del cliente para siempre) | `detection-worker.js` |
+| A-08 | `releaseFrame(snapA)` en el `finally` de `runCaptureFlow` (idempotente; snapB intocable por TDZ) | `CameraView.tsx` |
+| A-13 | Watchdog: `isStreamDead()` bajo guard de foreground (`const dead = inForeground && isStreamDead()`) — sin strikes ni `recoverStream()` espurio en background | `CameraView.tsx` |
+| A-15 | Cache-busting del worker `?v=7` → `?v=8` + comentario obligatorio (el SW sirve stale-while-revalidate) | `detector-client.ts` |
+| B-01 | `nativeDecodeToCappedDataUrl`: `attempts` → fábricas perezosas — cero doble decode y cero bitmap huérfano en el return temprano | `image-processor.ts` |
+| B-05 | Preview de error marcado `tier:"raw-fallback"` (union local extendida); OCR manual y auto-OCR lo tratan como «no procesado»: reproceso o aborto con aviso — el OCR jamás corre sobre el original disfrazado | `EditorView.tsx` |
+| B-12 | `loadTesseract`: `tesseractPromise = null` en la rama de rechazo por global ausente — fin del rechazo cacheado (OCR muerto hasta recargar) | `ocr.ts` |
+| B-14 | `thumbnailFromBlob`: `bm.close()` movido a `finally` (el catch devolvía `""` sin liberar el bitmap del blob completo) | `image-processor.ts` |
+| C-11 | `duplicateDocument`: ids de página NUEVOS (`nextId("page")` por página) — unicidad global restaurada | `store.ts` |
+| C-24 | `dataUrlToBlob` devuelve `null` (tipo `Blob \| null`) sin coma; `persistDocument` omite SOLO la página inválida con `console.warn(id)` y tolera `atob` fallido por página (replica la tolerancia de lectura) | `page-store.ts` |
+| D-02 (1) | Error-path de `dispatchAfterCut` sin `cutPipe: true` (alineado con los otros dos error-paths) — no abre intervalo heap huérfano | `CameraView.tsx` |
+| D-02 (2) | Sonda heap: `if (heapSamples.length < 600) push(...)` — tope duro del array si el intervalo queda huérfano. DEFAULTS intocados | `burst-budget.ts` |
+| D-04 | `__crashLog` cap FIFO 50; banner SOLO en modo diag (`?diag=1` o `localStorage["escaner-diag-banner-v1"]==="1"`, no había mecanismo previo); dedup: mismo mensaje <10 s no repite banner ni persistencia (push al log se mantiene) | `crash-reporter.ts` |
+| D-11 | Intervalo del sampler heap (5 s) con id en variable de módulo + guard de idempotencia en `scheduleDiagIdle` + `stopDiagSampler()` exportado | `device-profile.ts` |
+
+**Verificado (salidas reales en el doc de evidencia):** `bun install --frozen-lockfile` OK · `core:check`, `ui:check`, `app:check`, `lint`, `build:static` — TODO exit 0 · greps §3 OK (`cutPipe` solo en las 2 rutas legítimas con corte; `v=8` en L164; ningún consumidor de `tier` roto) · `git diff --stat origin/main` = EXACTAMENTE la whitelist (11 archivos de código). QA física (§4): ejecutada en el entorno disponible — ver checklist honesta en el doc de evidencia (lo no verificable en sandbox está marcado N/A).
+
+**Desviaciones declaradas (2, ambas documentadas):** (1) guard `if (blob === null) throw` en el consumidor `dataUrlToBlob` de `image-processor.ts` (~L973) — consecuencia type-level inevitable del cambio de API de C-24 (sin él no compila; cae al fallback hermético F3-A existente). (2) En B-01 la línea de encadenamiento sobre intentos restantes resulta innecesaria con fábricas perezosas (ningún decode queda en vuelo tras el return temprano) — el objetivo del hallazgo (cero bitmap huérfano, cero decode paralelo) se cumple por construcción.
+
+## PR gate-calidad-v1 — E-01 + D-01 + E-02 (auditoría 113 hallazgos)
+
+**Qué estaba roto (auditado contra `ad4c6fa`, rama `fix/gate-calidad-v1`):**
+
+- **D-01 (crítico):** `burst-budget.ts` tenía el muro del burst en `timeBudgetMs: 2000` mientras su propio comentario, la cabecera §A del archivo («BURST_TIME_BUDGET_MS = 5000») y `CameraView` documentaban 5000 — la corrección v2-A13 Fase C (evidencia del lote 4: actas rescatadas a 960 px por corte prematuro) nunca llegó al DEFAULTS. El muro cortaba a 2 s en gama baja y `wallFireMs` registraba ~2000, rompiendo la comparabilidad 1:1 entre lotes.
+- **E-01 (crítico):** `deploy-pages.yml` construía y desplegaba SIN gate — el `quality.yml` corría en paralelo, no bloqueando: un push a main con tipos rotos se desplegaba igual.
+- **E-02:** ~19 reglas de corrección de ESLint (`exhaustive-deps`, `no-unused-vars`, `prefer-const`…) estaban `off` en un componente de 3.7k líneas con refs y timers. `ignoreBuildErrors: true` ocultaba errores de tipo al construir (C-06).
+
+**Qué cambió (commits `abc4fa3`, `26ca87b`, `fff03d8`):**
+
+- **E-01:** `quality.yml` + `workflow_call:`; `deploy-pages.yml` + job `quality` (reutiliza el gate) y `build: needs: quality`. Cadena: push a main = quality (7 checks) → build → deploy; PR = quality. Desvíos documentados: los triggers `branches: ain]` que citaba la auditoría NO existen en web-scanner (nació corregido en el split `a9b6b83`; la corrupción real está en digielect14) y el deploy por push nunca estuvo muerto; el job `quality` lleva concurrency group propio (`quality-deploy-<ref>`) para que la corrida llamada y la standalone no se cancelen entre sí en push a main.
+- **D-01:** constante exportada `BURST_TIME_BUDGET_MS = 5000` (nombre que la cabecera §A ya usaba) y `DEFAULTS.timeBudgetMs` deriva de ella. `photoGraceMs: 2000` INTACTO (otra decisión, otra evidencia). Verificado por grep: ningún otro sitio asigna `timeBudgetMs`.
+- **E-02:** 18 reglas de corrección `off`→`warn` (criterio del kit: ninguna a `error`). Estilo/opinión siguen `off` (10). `react-compiler/react-compiler` se queda `off`: su plugin no está instalado y añadirlo tocaría `package.json` (prohibido por el kit).
+- **C-06:** `app:check` limpio → `typescript.ignoreBuildErrors: false` — el build vuelve a validar tipos.
+
+**Cómo se verifica:** `bun run core:check && bun run ui:check && bun run app:check` (0 errores) · `bun run lint` exit 0 (0 errores, 175 warnings — la deuda ahora es visible) · `bun run build:static` verde · YAML parseado de ambos workflows OK · `git diff --stat origin/main` = exactamente la whitelist del kit. Detalle y evidencia: `apps/scanner-lab/docs/fix-gate-calidad-v1.md`.
+
 ---
 
 ## 0. FIX v3 — Calidad del editor WYSIWYG + presentación iOS + benchmark fuera (rama `fix/scanner-lab-editor-quality`)

@@ -136,10 +136,13 @@ interface PreviewEntry {
   h: number;
   engine: "worker" | "canvas";
   /** LOTE 2 (F2-E) — tier del entry: "fast" (≤2048, SOLO display del editor,
-   *  pintado del primer render) o "full" (4032, WYSIWYG — el mismo dato que
-   *  el guardado/export). Los consumidores que NO son display (OCR, export,
-   *  rotación que persiste) ignoran los entries fast y reprocesan a 4032. */
-  tier: "fast" | "full";
+   *  pintado del primer render), "full" (4032, WYSIWYG — el mismo dato que
+   *  el guardado/export) o "raw-fallback" (B-05, auditoría leaks-recursos:
+   *  preview de ERROR — es el ORIGINAL sin procesar cuando el pipeline
+   *  falló; el visor sí lo pinta, pero NO es dato procesado: los
+   *  consumidores que no son display — OCR — lo tratan como «no
+   *  procesado» y jamás lo consumen). */
+  tier: "fast" | "full" | "raw-fallback";
 }
 
 function clampN(v: number) {
@@ -742,7 +745,13 @@ export default function EditorView() {
         }
       } catch {
         if (!cancelled)
-          setPreview({ url: page.original, w: 0, h: 0, engine: "canvas", tier: "full" });
+          // B-05 (auditoría leaks-recursos): NO disfrazar el original como
+          // tier "full" — era un mentiroso que el OCR consumía como si
+          // fuera procesado (persistía texto del original sin recortar).
+          // El visor SÍ lo pinta (mejor un original visible que un hueco),
+          // pero marcado como raw-fallback: el OCR lo trata como «no
+          // procesado» (ver runOcrCurrent y el auto-OCR).
+          setPreview({ url: page.original, w: 0, h: 0, engine: "canvas", tier: "raw-fallback" });
       } finally {
         // v4 §2.3 — SIEMPRE libera el contador (jobs pareados), incluso si
         // el efecto se canceló a mitad del reproceso.
@@ -1466,15 +1475,17 @@ export default function EditorView() {
     // original como último recurso. LOTE 2 (F2-E): los entries tier fast
     // (≤2048, solo display) NO valen de entrada de OCR (§2.4 intocable) —
     // se reprocesa a 4032 al vuelo (mismo camino que runOcrAll) y se
-    // siembra la cache con el entry full.
+    // siembra la cache con el entry full. B-05 (auditoría leaks-recursos):
+    // raw-fallback TAMPOCO vale (es el ORIGINAL sin procesar) → solo un
+    // entry "full" sirve como preview de entrada.
     let image =
-      preview && preview.tier !== "fast"
+      preview && preview.tier === "full"
         ? preview.url
         : (page.processed && page.processedKey === cacheKey ? page.processed : undefined);
     // LOTE 2 (F2-E): el flag va ARRIBA para cubrir también el reproceso
     // (single-flight: el QA y los toques repetidos no duplican la pasada).
     setOcrRunning(true);
-    if (!image && preview?.tier === "fast") {
+    if (!image && (preview?.tier === "fast" || preview?.tier === "raw-fallback")) {
       try {
         const res = await processImage(page.original, page.quad, page.filter, page.rotation, {
           manual: page.quadManual === true,
@@ -1491,6 +1502,18 @@ export default function EditorView() {
       } catch {
         /* sin reproceso → cae a las fuentes de siempre (persistida/original) */
       }
+    }
+    // B-05 (auditoría leaks-recursos): si el preview vivo es raw-fallback
+    // (el pipeline falló) y el reproceso también falló, ABORTAR con el
+    // aviso existente — el OCR JAMÁS corre sobre el original del fallback
+    // (persistía texto sin recortar esquivando las guardas §2.4). El visor
+    // sigue pintando el original; el usuario reintenta más tarde.
+    if (!image && preview?.tier === "raw-fallback") {
+      setOcrRunning(false);
+      toast.error("No se pudo reconocer el texto", {
+        description: "La página no se pudo procesar — reintenta en unos segundos.",
+      });
+      return;
     }
     if (!image) image = page.original;
     // DIAG (spec diag §5) — duración del OCR de la página actual (la 1ª de
@@ -1670,8 +1693,11 @@ export default function EditorView() {
     // pasada FULL sigue en vuelo; correr OCR sobre la fast degradaría el
     // reconocimiento (§2.4 intocable) y competiría con el upgrade. Cuando
     // el full aterrice, preview?.url cambia y el efecto re-ejecuta (mismo
-    // disparo que hoy: preview 4032 pintado).
-    if (preview?.tier === "fast") return;
+    // disparo que hoy: preview 4032 pintado). B-05 (auditoría
+    // leaks-recursos): raw-fallback TAMPOCO — es el ORIGINAL sin procesar;
+    // se espera (sin marcar tried) a que un reproceso aterrice un entry
+    // full; el OCR jamás corre sobre el fallback.
+    if (preview?.tier === "fast" || preview?.tier === "raw-fallback") return;
     const image =
       preview?.url ??
       (page.processed && page.processedKey === cacheKey ? page.processed : undefined);
