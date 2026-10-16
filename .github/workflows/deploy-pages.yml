@@ -18,7 +18,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # E-01 — el deploy ya no construye a ciegas: reutiliza el Quality Gate
+  # (workflow_call) y build espera su veredicto. Sin esto, un push a main
+  # con tipos rotos se desplegaba igual (quality corría EN PARALELO, no
+  # bloqueando). El grupo de concurrencia propio evita la colisión con la
+  # corrida standalone de quality.yml en push a main (mismo ref, grupo
+  # quality-<ref> con cancel-in-progress — sin override, una cancela a la
+  # otra al azar y el deploy se salta).
+  quality:
+    uses: ./.github/workflows/quality.yml
+    permissions:
+      contents: read
+    concurrency:
+      group: quality-deploy-${{ github.ref }}
+      cancel-in-progress: false
+
   build:
+    needs: quality
     runs-on: ubuntu-latest
     env:
       BUILD_STATIC: "1"
