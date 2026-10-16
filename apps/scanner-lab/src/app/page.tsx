@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { AnimatePresence, motion } from "framer-motion";
 import { useScannerStore, ONBOARDING_STORAGE_KEY } from "@jg-stevan/scanner-core/store";
 import type { ScannerView } from "@jg-stevan/scanner-core/types";
@@ -22,13 +23,20 @@ import {
 import LibraryView from "@/components/scanner/LibraryView";
 import CameraView from "@/components/scanner/CameraView";
 import EditorView from "@/components/scanner/EditorView";
-import SettingsView from "@/components/scanner/SettingsView";
 import BottomNav from "@/components/scanner/BottomNav";
 import OnboardingView from "@/components/scanner/OnboardingView";
-import QAOverlay from "@/components/scanner/QAOverlay";
 import { installCrashReporter } from "@/lib/crash-reporter";
 import { perfProbe, PERF_PROBE_T0 } from "@/lib/perf-probe";
 import { scheduleDiagIdle } from "@/lib/device-profile";
+
+// D-05 — SettingsView arrastra la instrumentación de diagnóstico (diag-report,
+// ~1.470 líneas) y QAOverlay (guión QA) NO aporta al primer paint: van por
+// next/dynamic (ssr:false — la página es client-side y el export estático lo
+// soporta) para salir del First Load JS de la ruta /, crítica en gama baja.
+// CameraView/EditorView/LibraryView siguen ESTÁTICOS: el cold-open de un
+// escáner no puede esperar un chunk (kit §2.3.1).
+const SettingsView = dynamic(() => import("@/components/scanner/SettingsView"), { ssr: false });
+const QAOverlay = dynamic(() => import("@/components/scanner/QAOverlay"), { ssr: false });
 
 // EXPERIMENTO v11 — crash reporter (SOLO observación): instalar lo más
 // temprano posible, ANTES del primer render, para capturar errores desde
