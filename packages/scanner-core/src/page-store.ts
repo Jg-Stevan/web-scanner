@@ -240,14 +240,22 @@ export async function loadAllDocuments(): Promise<ScanDocument[] | null> {
       const pages: ScanPage[] = [];
       for (const sp of d.pages) {
         try {
+          // C-10 — las 3 conversiones por página van EN PARALELO (antes: 3
+          // `await` en serie → ~3× la latencia por página y una ventana de
+          // carrera de hidratación más grande en documentos de varias páginas).
+          const [original, processed, thumbnail] = await Promise.all([
+            blobToDataUrl(sp.original),
+            blobToDataUrl(sp.processed),
+            blobToDataUrl(sp.thumbnail),
+          ]);
           pages.push({
             ...sp,
             // §8.4 — migración legacy: los usuarios viejos tienen los 8
             // presets persistidos; al hidratar se normaliza al de hoy.
             filter: normalizePageFilter(sp.filter),
-            original: await blobToDataUrl(sp.original),
-            processed: await blobToDataUrl(sp.processed),
-            thumbnail: await blobToDataUrl(sp.thumbnail),
+            original,
+            processed,
+            thumbnail,
           });
         } catch {
           /* página corrupta → se omite */
