@@ -29,7 +29,12 @@ import {
   type PwaInstallState,
 } from "@jg-stevan/scanner-core/pwa";
 import { cn } from "@/lib/utils";
-import { diagTools } from "@/lib/diag-report";
+// D-05 — `diag-report` (~1.470 líneas, el módulo más pesado del lab) NO se
+// importa estáticamente: se carga on-demand con `await import()` dentro de
+// cada handler que lo usa (mismo patrón que ya usa qa-standard-test L651 con
+// "./diag-report"). qa-standard-test y device-profile SÍ quedan estáticos:
+// useQaTestStore es un hook de render de QaTestCard y device-profile ya vive
+// en el first load (page.tsx lo usa al arrancar) — dynamic no ahorraría nada.
 import {
   qaStandardTest,
   useQaTestStore,
@@ -842,6 +847,8 @@ function DiagSection() {
     if (sharing) return;
     setSharing(true);
     try {
+      // D-05 — carga on-demand del informe (kit §2.3.2).
+      const { diagTools } = await import("@/lib/diag-report");
       const r = await diagTools.share();
       if (r === "shared") {
         toast.success("Informe compartido");
@@ -861,6 +868,8 @@ function DiagSection() {
 
   const onDownload = async () => {
     try {
+      // D-05 — carga on-demand del informe (kit §2.3.2).
+      const { diagTools } = await import("@/lib/diag-report");
       await diagTools.download();
       toast.success("Informe JSON descargado");
     } catch {
@@ -869,6 +878,8 @@ function DiagSection() {
   };
 
   const onCopy = async () => {
+    // D-05 — carga on-demand del informe (kit §2.3.2).
+    const { diagTools } = await import("@/lib/diag-report");
     const ok = await diagTools.copy();
     if (ok) toast.success("Informe TXT copiado al portapapeles");
     else toast.error("No se pudo copiar el informe");
@@ -878,6 +889,8 @@ function DiagSection() {
     setConfirmBench(false);
     setRemeasuring(true);
     try {
+      // D-05 — carga on-demand del informe (kit §2.3.2).
+      const { diagTools } = await import("@/lib/diag-report");
       const r = await diagTools.bench(true);
       setBench(r);
       setBenchAgeDays(0);
