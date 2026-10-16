@@ -4,6 +4,37 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## PR 2 «Leaks y recursos» — rama `fix/leaks-recursos-v1` (15 hallazgos triviales de auditoría)
+
+**Base:** `main` @ `ad4c6fa` · **Origen:** auditoría externa de 113 hallazgos (0 falsos) — este PR cierra los 15 de leaks/liberación de recursos y bugs latentes confirmados TRIVIALES. PR draft hacia `main` (JAMÁS merge desde aquí). Evidencia completa: `apps/scanner-lab/docs/fix-leaks-recursos-v1.md`. Coordinación: comparte `burst-budget.ts` (zona sonda heap ~L230-247; NO toca DEFAULTS) y `page-store.ts` (~L53-58; NO toca hidratación) con los PRs paralelos `fix/gate-calidad-v1` y `fix/pwa-gama-baja-v1` — hunks disjuntos.
+
+**Tabla hallazgo → fix → archivo:**
+
+| Hallazgo | Fix | Archivo |
+|---|---|---|
+| A-01 | Stream huérfano en `retryRealCamera`: guard `isMountedRef` tras el `await getUserMedia` (stop tracks + return si desmontó) | `CameraView.tsx` |
+| A-04 | `bitmap.close()` antes del reply `busy` en los 3 handlers (detect/warp/enhance) — el bitmap ya transferido no queda al GC | `detection-worker.js` |
+| A-05 | Responder `{type:"error"}` cuando `cvApi === null` en los 3 handlers (antes `return` en silencio bloqueaba el pending del cliente para siempre) | `detection-worker.js` |
+| A-08 | `releaseFrame(snapA)` en el `finally` de `runCaptureFlow` (idempotente; snapB intocable por TDZ) | `CameraView.tsx` |
+| A-13 | Watchdog: `isStreamDead()` bajo guard de foreground (`const dead = inForeground && isStreamDead()`) — sin strikes ni `recoverStream()` espurio en background | `CameraView.tsx` |
+| A-15 | Cache-busting del worker `?v=7` → `?v=8` + comentario obligatorio (el SW sirve stale-while-revalidate) | `detector-client.ts` |
+| B-01 | `nativeDecodeToCappedDataUrl`: `attempts` → fábricas perezosas — cero doble decode y cero bitmap huérfano en el return temprano | `image-processor.ts` |
+| B-05 | Preview de error marcado `tier:"raw-fallback"` (union local extendida); OCR manual y auto-OCR lo tratan como «no procesado»: reproceso o aborto con aviso — el OCR jamás corre sobre el original disfrazado | `EditorView.tsx` |
+| B-12 | `loadTesseract`: `tesseractPromise = null` en la rama de rechazo por global ausente — fin del rechazo cacheado (OCR muerto hasta recargar) | `ocr.ts` |
+| B-14 | `thumbnailFromBlob`: `bm.close()` movido a `finally` (el catch devolvía `""` sin liberar el bitmap del blob completo) | `image-processor.ts` |
+| C-11 | `duplicateDocument`: ids de página NUEVOS (`nextId("page")` por página) — unicidad global restaurada | `store.ts` |
+| C-24 | `dataUrlToBlob` devuelve `null` (tipo `Blob \| null`) sin coma; `persistDocument` omite SOLO la página inválida con `console.warn(id)` y tolera `atob` fallido por página (replica la tolerancia de lectura) | `page-store.ts` |
+| D-02 (1) | Error-path de `dispatchAfterCut` sin `cutPipe: true` (alineado con los otros dos error-paths) — no abre intervalo heap huérfano | `CameraView.tsx` |
+| D-02 (2) | Sonda heap: `if (heapSamples.length < 600) push(...)` — tope duro del array si el intervalo queda huérfano. DEFAULTS intocados | `burst-budget.ts` |
+| D-04 | `__crashLog` cap FIFO 50; banner SOLO en modo diag (`?diag=1` o `localStorage["escaner-diag-banner-v1"]==="1"`, no había mecanismo previo); dedup: mismo mensaje <10 s no repite banner ni persistencia (push al log se mantiene) | `crash-reporter.ts` |
+| D-11 | Intervalo del sampler heap (5 s) con id en variable de módulo + guard de idempotencia en `scheduleDiagIdle` + `stopDiagSampler()` exportado | `device-profile.ts` |
+
+**Verificado (salidas reales en el doc de evidencia):** `bun install --frozen-lockfile` OK · `core:check`, `ui:check`, `app:check`, `lint`, `build:static` — TODO exit 0 · greps §3 OK (`cutPipe` solo en las 2 rutas legítimas con corte; `v=8` en L164; ningún consumidor de `tier` roto) · `git diff --stat origin/main` = EXACTAMENTE la whitelist (11 archivos de código). QA física (§4): ejecutada en el entorno disponible — ver checklist honesta en el doc de evidencia (lo no verificable en sandbox está marcado N/A).
+
+**Desviaciones declaradas (2, ambas documentadas):** (1) guard `if (blob === null) throw` en el consumidor `dataUrlToBlob` de `image-processor.ts` (~L973) — consecuencia type-level inevitable del cambio de API de C-24 (sin él no compila; cae al fallback hermético F3-A existente). (2) En B-01 la línea de encadenamiento sobre intentos restantes resulta innecesaria con fábricas perezosas (ningún decode queda en vuelo tras el return temprano) — el objetivo del hallazgo (cero bitmap huérfano, cero decode paralelo) se cumple por construcción.
+
+---
+
 ## 0. FIX v3 — Calidad del editor WYSIWYG + presentación iOS + benchmark fuera (rama `fix/scanner-lab-editor-quality`)
 
 **Regla del propietario:** "guardar la captura en lo máximo del lente, sin ajustes por benchmark". Documentación completa del fix (plan, decisiones, evidencia de verificación): `apps/scanner-lab/docs/fix-editor-quality-v3.md`.
