@@ -4,6 +4,25 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## PR gate-calidad-v1 — E-01 + D-01 + E-02 (auditoría 113 hallazgos)
+
+**Qué estaba roto (auditado contra `ad4c6fa`, rama `fix/gate-calidad-v1`):**
+
+- **D-01 (crítico):** `burst-budget.ts` tenía el muro del burst en `timeBudgetMs: 2000` mientras su propio comentario, la cabecera §A del archivo («BURST_TIME_BUDGET_MS = 5000») y `CameraView` documentaban 5000 — la corrección v2-A13 Fase C (evidencia del lote 4: actas rescatadas a 960 px por corte prematuro) nunca llegó al DEFAULTS. El muro cortaba a 2 s en gama baja y `wallFireMs` registraba ~2000, rompiendo la comparabilidad 1:1 entre lotes.
+- **E-01 (crítico):** `deploy-pages.yml` construía y desplegaba SIN gate — el `quality.yml` corría en paralelo, no bloqueando: un push a main con tipos rotos se desplegaba igual.
+- **E-02:** ~19 reglas de corrección de ESLint (`exhaustive-deps`, `no-unused-vars`, `prefer-const`…) estaban `off` en un componente de 3.7k líneas con refs y timers. `ignoreBuildErrors: true` ocultaba errores de tipo al construir (C-06).
+
+**Qué cambió (commits `abc4fa3`, `26ca87b`, `fff03d8`):**
+
+- **E-01:** `quality.yml` + `workflow_call:`; `deploy-pages.yml` + job `quality` (reutiliza el gate) y `build: needs: quality`. Cadena: push a main = quality (7 checks) → build → deploy; PR = quality. Desvíos documentados: los triggers `branches: ain]` que citaba la auditoría NO existen en web-scanner (nació corregido en el split `a9b6b83`; la corrupción real está en digielect14) y el deploy por push nunca estuvo muerto; el job `quality` lleva concurrency group propio (`quality-deploy-<ref>`) para que la corrida llamada y la standalone no se cancelen entre sí en push a main.
+- **D-01:** constante exportada `BURST_TIME_BUDGET_MS = 5000` (nombre que la cabecera §A ya usaba) y `DEFAULTS.timeBudgetMs` deriva de ella. `photoGraceMs: 2000` INTACTO (otra decisión, otra evidencia). Verificado por grep: ningún otro sitio asigna `timeBudgetMs`.
+- **E-02:** 18 reglas de corrección `off`→`warn` (criterio del kit: ninguna a `error`). Estilo/opinión siguen `off` (10). `react-compiler/react-compiler` se queda `off`: su plugin no está instalado y añadirlo tocaría `package.json` (prohibido por el kit).
+- **C-06:** `app:check` limpio → `typescript.ignoreBuildErrors: false` — el build vuelve a validar tipos.
+
+**Cómo se verifica:** `bun run core:check && bun run ui:check && bun run app:check` (0 errores) · `bun run lint` exit 0 (0 errores, 175 warnings — la deuda ahora es visible) · `bun run build:static` verde · YAML parseado de ambos workflows OK · `git diff --stat origin/main` = exactamente la whitelist del kit. Detalle y evidencia: `apps/scanner-lab/docs/fix-gate-calidad-v1.md`.
+
+---
+
 ## 0. FIX v3 — Calidad del editor WYSIWYG + presentación iOS + benchmark fuera (rama `fix/scanner-lab-editor-quality`)
 
 **Regla del propietario:** "guardar la captura en lo máximo del lente, sin ajustes por benchmark". Documentación completa del fix (plan, decisiones, evidencia de verificación): `apps/scanner-lab/docs/fix-editor-quality-v3.md`.
