@@ -400,6 +400,15 @@ export async function buildDocPdf(
   const budgetBytes = Math.min(Math.max(totalPages, 3), 8) * MB;
   const attempts = attemptsFor(quality);
   const allowJpegFast = quality !== "máxima";
+  // B-02 — ¿puede algún intento encoger el PDF? En «máxima»
+  // (allowJpegFast=false) pageForAttempt devuelve el PNG INTACTO en cualquier
+  // intento (ver su doc): si TODAS las páginas son PNG, los intentos 2..n
+  // reconstruirían exactamente el mismo PDF (decode + jsPDF + serialización
+  // x n para nada). Criterio idéntico al isPng de pageForAttempt.
+  const allPagesPng = doc.pages.every(
+    (p) => PNG_FILTERS.has(p.filter) && p.processed.startsWith("data:image/png")
+  );
+  const canShrink = allowJpegFast || !allPagesPng;
   let attemptIdx = 0;
   let bytes = 0;
   let pdf: jsPDF | null = null;
@@ -430,9 +439,16 @@ export async function buildDocPdf(
     if (!pdf) throw new Error("PDF vacío");
     bytes = pdf.output("blob").size;
     if (bytes <= budgetBytes) break;
+    // B-02 — sin vía de encogimiento (máxima + todo PNG), el primer intento
+    // que excede presupuesto ES el resultado final: los demás intentos
+    // producirían byte-a-byte el mismo PDF. Cortar la escalera aquí.
+    if (!canShrink) break;
   }
 
   if (!pdf) throw new Error("PDF vacío");
+  // B-02 — con el corte !canShrink el intento NO cambió la salida (no hubo
+  // ajuste): attemptIdx quedó por debajo de attempts.length → adjusted=false
+  // por la misma fórmula de siempre. Sin marca falsa de ajuste.
   const adjusted = bytes > budgetBytes && attemptIdx >= attempts.length;
   // Metadatos XMP: título + etiquetas del documento como keywords.
   setPdfMetadata(pdf, {
@@ -534,6 +550,13 @@ export async function buildLibraryPdf(
   const budgetBytes = Math.min(Math.max(pageCount, 3), 30) * MB;
   const attempts = attemptsFor(quality);
   const allowJpegFast = quality !== "máxima";
+  // B-02 — mismo criterio que buildDocPdf: en «máxima» con TODAS las páginas
+  // PNG de TODOS los documentos, ningún intento cambia la salida → la
+  // escalera repetiría el PDF completo (portada + índice + páginas) en vano.
+  const allPagesPng = docs.every((d) =>
+    d.pages.every((p) => PNG_FILTERS.has(p.filter) && p.processed.startsWith("data:image/png"))
+  );
+  const canShrink = allowJpegFast || !allPagesPng;
   let attemptIdx = 0;
   let bytes = 0;
   let pdf: jsPDF | null = null;
@@ -582,6 +605,9 @@ export async function buildLibraryPdf(
     if (!pdf) throw new Error("PDF vacío");
     bytes = pdf.output("blob").size;
     if (bytes <= budgetBytes) break;
+    // B-02 — idem buildDocPdf: sin encogimiento posible, parar en el 1.er
+    // intento que exceda presupuesto (mismo PDF garantizado en los demás).
+    if (!canShrink) break;
   }
 
   if (!pdf) throw new Error("PDF vacío");
