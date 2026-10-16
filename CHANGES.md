@@ -4,6 +4,18 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## HOTFIX — deploy de main saltaba: la concurrency del Quality Gate cancelaba la corrida llamada (rama `fix/deploy-concurrency-v1`)
+
+**Base:** `main` @ `5874d5b` · **Disparo:** primer push a main con la cadena del gate (merge de PR #5, `874182c`): `Deploy to GitHub Pages` quedó **cancelled** (run `38974978246` — su job `quality / checks` llamado murió en el segundo del arranque, `build`/`deploy` skipped) y la demo siguió sirviendo `ad4c6fa7`. La standalone `Quality Gate` del mismo push sí corrió (success).
+
+**Causa raíz:** `quality.yml` tenía `concurrency` a nivel workflow (`quality-<ref>`, cancel-in-progress) — ese bloque **también aplica en `workflow_call`** con el contexto del caller → en push a main, la corrida llamada compartió grupo `quality-refs/heads/main` con la standalone (ambas arrancaron 22:18:45Z) y la segunda canceló a la primera. El group propio del caller (`quality-deploy-<ref>`, PR gate-calidad-v1) protegía contra otras llamadas, no contra la standalone: blindaje necesario pero insuficiente.
+
+**Fix:** eliminar el bloque `concurrency` workflow-level de `quality.yml` (única pieza; triggers y jobs intactos). La llamada queda protegida por el group del job caller; la standalone corre sin grupo; **no existe grupo compartido** → la carrera desaparece por construcción. Efecto secundario aceptado: en PR se pierde cancel-in-progress (runs duplicados, ruido no-código). Detalle y evidencia: `apps/scanner-lab/docs/fix-deploy-concurrency-v1.md`.
+
+**Verificado:** YAML parseado OK (js-yaml) · CI del PR (`pull_request`) verde sin concurrency · demostración final pendiente del push a main de este hotfix: `Deploy to GitHub Pages` debe completar `quality → build → deploy` sin cancelaciones, en paralelo con la standalone.
+
+---
+
 ## 0·PR3 — PWA Y GAMA BAJA: SW estable entre deploys + bundle ligero (rama `fix/pwa-gama-baja-v1`)
 
 **Base:** `main` @ `ad4c6fa` · **Kit:** `INSTRUCCIONES-ws-pr3-pwa-gama-baja-v1.md` · 4 hallazgos de la auditoría externa (E-04, B-02, D-05, C-10). Evidencia completa (métrica de bundle, checklist QA, desviaciones): `apps/scanner-lab/docs/fix-pwa-gama-baja-v1.md`. **Se mergea AL FINAL** (coordinación con `fix/gate-calidad-v1` y `fix/leaks-recursos-v1`).

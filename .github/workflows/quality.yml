@@ -9,9 +9,16 @@ on:
     branches: [main]
   workflow_call:
 
-concurrency:
-  group: quality-${{ github.ref }}
-  cancel-in-progress: true
+# SIN concurrency a nivel workflow: en workflow_call este bloque TAMBIÉN
+# aplica (con el contexto del caller) y en push a main la corrida llamada
+# por deploy-pages compartía grupo con la standalone (quality-refs/heads/main,
+# cancel-in-progress) — la segunda en arrancar cancelaba a la primera y el
+# deploy quedaba skipped (run 38974978246, push 874182c). La standalone y
+# la llamada NO deben chocar: la llamada ya está protegida por el group del
+# job `quality` en deploy-pages.yml (quality-deploy-<ref>), y la standalone
+# es la única que corre en push. En PR cada ref de merge es su propio grupo
+# implícito; cancel-in-progress se pierde (ruido menor: runs duplicados),
+# se acepta a cambio de un deploy de main que nunca salta.
 
 jobs:
   checks:
