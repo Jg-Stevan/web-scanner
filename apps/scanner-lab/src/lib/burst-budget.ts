@@ -89,6 +89,10 @@ export interface BurstBudgetConfig {
   stabilityThreshold: number;
 }
 
+/** v2-A13 Fase C — muro de tiempo del burst. Fuente única: DEFAULTS.timeBudgetMs
+ *  deriva de aquí (D-01: el valor estaba en 2000 mientras docs y evidencia decían 5000). */
+export const BURST_TIME_BUDGET_MS = 5000;
+
 const DEFAULTS: BurstBudgetConfig = {
   enabled: true,
   /** v2-A13 Fase C — 5000 (antes 2000). Dato del lote 4 (build 89fb5dc,
@@ -99,7 +103,7 @@ const DEFAULTS: BurstBudgetConfig = {
    *  (4000 px) una ventana honesta; worst case ~5-6 s por captura con
    *  acta a 4000 px, frente a 17 s a 960 px. Dispositivos sanos (foto en
    *  0.22–1 s) jamás lo tocan. */
-  timeBudgetMs: 2000,
+  timeBudgetMs: BURST_TIME_BUDGET_MS,
   /** v3 Fase D — 2000. Experimento de palanca del dueño (A13, build
    *  73d7be2, muros 5 s y 6.5 s): la foto huérfana llega +18-42 ms
    *  después del corte en 6/6 capturas — la gracia que la rescata cuesta
