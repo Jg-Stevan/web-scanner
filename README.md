@@ -23,3 +23,4 @@ Historia/archivo del monorepo original: https://github.com/Jg-Stevan/web-scanner
 
 Versión actual publicada: 0.1.0 (tag `core-v0.1.0`).
 La saga de calidad del encuadre está EN PAUSA — protocolo en `docs/RETOMA-saga-encuadre.md`.
+test: disparar primer Vercel Preview del repo nuevo (se borra tras la prueba).
