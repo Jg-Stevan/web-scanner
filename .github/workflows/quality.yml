@@ -28,6 +28,20 @@ jobs:
       - name: Type check — packages/scanner-core
         run: bun run core:check
 
+      - name: Type check — packages/scanner-ui
+        run: bun run ui:check
+
+      - name: Guard — scanner-ui sin imports del lab ni rutas externas
+        run: |
+          if grep -rEn "from ['\"](@/|apps/|\.\./\.\./)" packages/scanner-ui/src; then
+            echo "::error::scanner-ui solo puede importar react/framer-motion/@jg-stevan/scanner-core y rutas relativas internas (./)"
+            exit 1
+          fi
+          echo "guard OK: sin imports de @/ , apps/ ni ../.."
+
+      - name: Build — packages/scanner-ui (dist js + d.ts)
+        run: bun run ui:build
+
       - name: Type check — apps/scanner-lab
         run: bun run app:check
 

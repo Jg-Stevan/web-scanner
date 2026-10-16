@@ -14,6 +14,7 @@
         "@dnd-kit/utilities": "^3.2.2",
         "@hookform/resolvers": "^5.1.1",
         "@jg-stevan/scanner-core": "workspace:*",
+        "@jg-stevan/scanner-ui": "workspace:*",
         "@mdxeditor/editor": "^3.39.1",
         "@prisma/client": "^6.11.1",
         "@radix-ui/react-accordion": "^1.2.11",
@@ -104,6 +105,21 @@
       },
       "peerDependencies": {
         "zustand": "^5.0.6",
+      },
+    },
+    "packages/scanner-ui": {
+      "name": "@jg-stevan/scanner-ui",
+      "version": "0.1.0",
+      "dependencies": {
+        "@jg-stevan/scanner-core": "^0.1.0",
+      },
+      "devDependencies": {
+        "@types/react": "^19",
+        "typescript": "^5",
+      },
+      "peerDependencies": {
+        "framer-motion": "^12.23.2",
+        "react": "^19.0.0",
       },
     },
   },
@@ -339,6 +355,8 @@
     "@img/sharp-win32-x64": ["@img/sharp-win32-x64@0.34.5", "", { "os": "win32", "cpu": "x64" }, "sha512-+29YMsqY2/9eFEiW93eqWnuLcWcufowXewwSNIT6UwZdUUCrM3oFjMWH/Z6/TMmb4hlFenmfAVbpWeup2jryCw=="],
 
     "@jg-stevan/scanner-core": ["@jg-stevan/scanner-core@workspace:packages/scanner-core"],
+
+    "@jg-stevan/scanner-ui": ["@jg-stevan/scanner-ui@workspace:packages/scanner-ui"],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
