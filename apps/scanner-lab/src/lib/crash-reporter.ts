@@ -42,8 +42,29 @@ type CrashEventRecord = {
 const RING_KEY = "scannerlab_crash_ring";
 const RING_MAX = 10;
 const BANNER_ID = "scannerlab-crash-banner";
+/** D-04 (auditoría leaks-recursos) — tope FIFO del anillo en memoria
+ *  (window.__crashLog): antes crecía sin límite toda la sesión. */
+const MEMORY_LOG_MAX = 50;
+/** D-04 (auditoría leaks-recursos) — el banner SOLO en modo diagnóstico:
+ *  query param `?diag=1` o el opt-in persistido. En producción normal el
+ *  error sigue en consola + anillo, sin banner fijo. */
+const DIAG_BANNER_KEY = "escaner-diag-banner-v1";
+/** D-04 (auditoría leaks-recursos) — ventana de dedup: el mismo mensaje a
+ *  menos de 10 s del último record no repite banner ni persistencia. */
+const DEDUP_WINDOW_MS = 10_000;
 
 let installed = false;
+
+/** D-04 — ¿modo diagnóstico activo? No hay mecanismo previo en el repo
+ *  (verificado con grep): gate por `?diag=1` u opt-in en localStorage. */
+function isDiagBannerEnabled(): boolean {
+  try {
+    if (new URLSearchParams(window.location.search).get("diag") === "1") return true;
+    return localStorage.getItem(DIAG_BANNER_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 function memoryLog(): CrashEventRecord[] {
   const w = window as unknown as { __crashLog?: CrashEventRecord[] };
@@ -144,6 +165,9 @@ function buildRecord(
 }
 
 function showBanner(rec: CrashEventRecord): void {
+  // D-04 (auditoría leaks-recursos): gate de modo diagnóstico — la primera
+  // excepción benigna en producción ya no pinta el banner fijo rojo.
+  if (!isDiagBannerEnabled()) return;
   try {
     if (typeof document === "undefined" || !document.body) return;
 
@@ -225,7 +249,19 @@ function showBanner(rec: CrashEventRecord): void {
 }
 
 function record(rec: CrashEventRecord): void {
-  memoryLog().push(rec);
+  const log = memoryLog();
+  const last = log[log.length - 1];
+  // D-04 (auditoría leaks-recursos) — dedup básico: el mismo mensaje a
+  // menos de 10 s del último record solo hace push al log en memoria
+  // (sin re-persistir el anillo ni repetir el banner).
+  const isDup =
+    last !== undefined &&
+    last.message === rec.message &&
+    Date.now() - Date.parse(last.ts) < DEDUP_WINDOW_MS;
+  log.push(rec);
+  // D-04 — cap FIFO: __crashLog acotado a los últimos 50 eventos.
+  if (log.length > MEMORY_LOG_MAX) log.splice(0, log.length - MEMORY_LOG_MAX);
+  if (isDup) return;
   const ring = readRing();
   ring.push(rec);
   persistRing(ring.slice(-RING_MAX));

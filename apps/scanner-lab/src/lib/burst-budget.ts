@@ -238,7 +238,11 @@ export function recordBurst(
       heapInterval = window.setInterval(() => {
         const currentMB = readUsedHeapMB();
         if (currentMB !== null && heapSamples !== null) {
-          heapSamples.push(currentMB);
+          // D-02 (parte 2, auditoría leaks-recursos) — tope duro de
+          // muestras: si el intervalo queda huérfano (error final sin el
+          // próximo recordBurst), el array no crece sin límite el resto
+          // de la sesión (600 muestras ≈ 2 min a 200 ms).
+          if (heapSamples.length < 600) heapSamples.push(currentMB);
         }
       }, HEAP_PROBE_INTERVAL_MS);
     }

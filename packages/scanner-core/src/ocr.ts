@@ -67,7 +67,12 @@ function loadTesseract(): Promise<TesseractGlobal> {
     el.crossOrigin = "anonymous";
     el.onload = () => {
       if (w.Tesseract) resolve(w.Tesseract);
-      else reject(new Error("El motor OCR no se pudo inicializar"));
+      else {
+        // B-12 (auditoría leaks-recursos): NO cachear el rechazo — sin esto
+        // el OCR quedaba muerto hasta recargar la página.
+        tesseractPromise = null;
+        reject(new Error("El motor OCR no se pudo inicializar"));
+      }
     };
     el.onerror = () => {
       tesseractPromise = null; // permite reintentar con red restablecida

@@ -772,6 +772,17 @@ export default function CameraView() {
    *  (resolución nativa vía getPhotoCapabilities + tope técnico único
    *  4032 px — fix v3: sin tope por gama). null = aún sin sondear. */
   const sensorProfileRef = useRef<SensorProfile | null>(null);
+  /** A-01 (auditoría leaks-recursos) — guard de desmontaje para awaits
+   *  largos (getUserMedia en retryRealCamera): un stream que resuelve sobre
+   *  un componente muerto deja tracks vivos (LED encendido) sin nadie que
+   *  los pare. true en el efecto de montaje, false en su cleanup. */
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   /** F-SENSOR-PROFILER: sondea el sensor del stream REAL una vez por
    *  apertura (getPhotoCapabilities → nativa + tope por gama). Falla en
@@ -2010,8 +2021,12 @@ export default function CameraView() {
         // opaco para pipeToMarkMs (sniff/dataUrl quedan null — no corrieron).
         { ...burstExtra, graceWaitedMs, dispatchSource: "frames", cutPipe: true }
       );
+      // D-02 (parte 1) — sin cutPipe: un error final no abre el tramo
+      // opaco (el intervalo de la sonda heap queda huérfano hasta el
+      // PRÓXIMO recordBurst; tras un error nadie lo cierra). Alineado con
+      // los otros dos error-paths (L2071/L2131) que llaman sin cutPipe.
       if (!(await dispatchBestFrame(cands))) {
-        pendingBurstRef.current = recordBurst("error", 0, performance.now() - burstT0, { ...burstExtra, cutPipe: true });
+        pendingBurstRef.current = recordBurst("error", 0, performance.now() - burstT0, burstExtra);
       }
     };
 
@@ -2144,6 +2159,12 @@ export default function CameraView() {
       // no pueden quedar congelados para siempre (idempotente).
       setAcquisitionActive(false);
       if (flashAppliedByUs) void setTorchState(false);
+      // A-08 (auditoría leaks-recursos) — liberar snapA en TODOS los
+      // caminos: los returns tempranos (bail/wallCap/stream muerto) salían
+      // sin releaseFrame y el snapshot full-res (1-11 MP) quedaba al GC.
+      // Idempotente (doble release inofensivo) y SOLO snapA: snapB se
+      // declara después de esos returns (TDZ si se toca aquí).
+      releaseFrame(snapA);
     }
   }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status, isStreamDead, recoverStream, setTorchState, exitStandby]);
 
@@ -2719,7 +2740,12 @@ export default function CameraView() {
       const inForeground =
         typeof document === "undefined" || document.visibilityState === "visible";
       const stale = inForeground && performance.now() - lastFrameAtRef.current > 4000;
-      strikes = isStreamDead() || stale ? strikes + 1 : 0;
+      // A-13 (auditoría leaks-recursos) — isStreamDead() también bajo guard
+      // de foreground: en background los strikes acumulaban y a los ~4 s
+      // disparaban recoverStream() espurio (toast «Reiniciando cámara…»
+      // al volver).
+      const dead = inForeground && isStreamDead();
+      strikes = dead || stale ? strikes + 1 : 0;
       if (strikes >= 2) {
         strikes = 0;
         recoverStream();
@@ -2744,6 +2770,15 @@ export default function CameraView() {
         },
         audio: false,
       });
+      // A-01 — el prompt de permiso puede sobrevivir al componente: si el
+      // usuario salió de la vista mientras esperaba, el stream resuelve
+      // sobre un montaje muerto → pararlo YA (mismo patrón `cancelled` del
+      // efecto de apertura) para no dejar el LED encendido ni romper el
+      // próximo montaje (NotReadableError / modo simulado).
+      if (!isMountedRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       streamRef.current?.getTracks().forEach((t) => t.stop());
       syntheticRef.current?.stop();
       syntheticRef.current = null;

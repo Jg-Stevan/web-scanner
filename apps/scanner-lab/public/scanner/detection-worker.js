@@ -1692,8 +1692,18 @@
       return;
     }
     if (msg.type !== "detect") return;
-    if (cvApi === null) return;
+    if (cvApi === null) {
+      // A-05 (auditoría leaks-recursos): responder en vez de retornar en
+      // silencio — el cliente tiene el pending registrado y sin reply la
+      // cadena queda bloqueada para siempre.
+      try { msg.bitmap.close(); } catch {}
+      post({ type: "error", message: "worker no inicializado" });
+      return;
+    }
     if (busy) {
+      // A-04 (auditoría leaks-recursos): el bitmap YA fue transferido aquí —
+      // cerrarlo antes de descartar el mensaje (≈48 MB a merced del GC).
+      try { msg.bitmap.close(); } catch {}
       post({ type: "busy", ts: msg.ts });
       return;
     }
@@ -1720,8 +1730,16 @@
     }
   };
   function handleWarp(msg) {
-    if (cvApi === null) return;
+    if (cvApi === null) {
+      // A-05 (auditoría leaks-recursos): reply de error + close del bitmap
+      // ya transferido (ver handleDetect).
+      try { msg.bitmap.close(); } catch {}
+      post({ type: "error", message: "worker no inicializado" });
+      return;
+    }
     if (busy) {
+      // A-04 (auditoría leaks-recursos): close del bitmap transferido.
+      try { msg.bitmap.close(); } catch {}
       post({ type: "busy", ts: msg.ts });
       return;
     }
@@ -1802,8 +1820,16 @@
     }
   }
   async function handleEnhance(msg) {
-    if (cvApi === null) return;
+    if (cvApi === null) {
+      // A-05 (auditoría leaks-recursos): reply de error + close del bitmap
+      // ya transferido (ver handleDetect).
+      try { msg.bitmap.close(); } catch {}
+      post({ type: "error", message: "worker no inicializado" });
+      return;
+    }
     if (busy) {
+      // A-04 (auditoría leaks-recursos): close del bitmap transferido.
+      try { msg.bitmap.close(); } catch {}
       post({ type: "busy", ts: msg.ts });
       return;
     }

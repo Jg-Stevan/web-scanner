@@ -669,7 +669,10 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       favorite: false,
       createdAt: now,
       updatedAt: now,
-      pages: doc.pages.map((p) => ({ ...p })),
+      // C-11 (auditoría leaks-recursos): la copia necesita ids de página
+      // NUEVOS — conservar los originales rompía la unicidad global de ids
+      // (la caché de LibraryView keyea por p.id).
+      pages: doc.pages.map((p) => ({ ...p, id: nextId("page") })),
     };
     set((s) => ({ documents: [copy, ...s.documents] }));
     void persistDocument(copy);

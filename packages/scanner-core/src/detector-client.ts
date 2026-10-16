@@ -159,7 +159,9 @@ interface PendingEntry {
 // el prefijo público del build (vacío en dev/servidor local). OpenCV dentro
 // del worker ya se resuelve con rutas RELATIVAS al script → funciona igual.
 const PUBLIC_BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-const WORKER_URL = `${PUBLIC_BASE}/scanner/detection-worker.js?v=7`;
+// Bump obligatorio cada vez que cambie public/scanner/detection-worker.js
+// (el SW lo cachea stale-while-revalidate — auditoría A-15).
+const WORKER_URL = `${PUBLIC_BASE}/scanner/detection-worker.js?v=8`;
 const READY_TIMEOUT_MS = 25000;
 
 export class ScannerWorkerClient {

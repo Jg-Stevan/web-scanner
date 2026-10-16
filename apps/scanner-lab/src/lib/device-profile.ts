@@ -771,6 +771,13 @@ export function getPeakHeapMB(): number | null {
 /** Cachea el snapshot de dispositivo en memoria (lo usa el informe). */
 let snapshotCache: DiagDeviceSnapshot | null = null;
 
+/** D-11 (auditoría leaks-recursos) — estado del sampler de heap a nivel de
+ *  módulo: el id del intervalo (antes se perdía — intervalo huérfano sin
+ *  nadie que lo limpie) y el guard de idempotencia de scheduleDiagIdle
+ *  (dos llamadas = dos intervalos + dos listeners visibilitychange). */
+let diagSamplerIntervalId: number | null = null;
+let diagIdleScheduled = false;
+
 /** Snapshot cacheado en memoria; lo toma fresco si aún no existe. */
 export async function getDeviceSnapshot(): Promise<DiagDeviceSnapshot> {
   if (snapshotCache) return snapshotCache;
@@ -784,12 +791,20 @@ export async function getDeviceSnapshot(): Promise<DiagDeviceSnapshot> {
  *  que la pestaña vuelva a estar visible. Se llama desde page.tsx. */
 export function scheduleDiagIdle(): void {
   if (typeof window === "undefined") return;
+  // D-11 (auditoría leaks-recursos) — guard de idempotencia: una segunda
+  // llamada NO agenda otro sampler/otro listener (el intervalo anterior
+  // quedaba huérfano: dos intervalos + dos listeners por sesión).
+  if (diagIdleScheduled || diagSamplerIntervalId !== null) return;
+  diagIdleScheduled = true;
   const start = () => {
     // Sampler de heap pico: cada 5 s, solo con la pestaña visible.
+    // D-11: el id se guarda en módulo (stopDiagSampler lo limpia).
     try {
-      window.setInterval(() => {
-        if (document.visibilityState === "visible") sampleHeap();
-      }, 5000);
+      if (diagSamplerIntervalId === null) {
+        diagSamplerIntervalId = window.setInterval(() => {
+          if (document.visibilityState === "visible") sampleHeap();
+        }, 5000);
+      }
     } catch {
       /* — */
     }
@@ -826,4 +841,17 @@ export function scheduleDiagIdle(): void {
   } catch {
     window.setTimeout(whenVisible, 3000);
   }
+}
+
+/** D-11 (auditoría leaks-recursos) — detiene el sampler de heap y limpia
+ *  el flag de idempotencia (permite re-programar scheduleDiagIdle).
+ *  Exportado para que el host pueda liberar el intervalo cuando lo
+ *  necesite (hoy nadie lo llama — igual que installCrashReporter queda
+ *  disponible). */
+export function stopDiagSampler(): void {
+  if (diagSamplerIntervalId !== null) {
+    window.clearInterval(diagSamplerIntervalId);
+    diagSamplerIntervalId = null;
+  }
+  diagIdleScheduled = false;
 }
