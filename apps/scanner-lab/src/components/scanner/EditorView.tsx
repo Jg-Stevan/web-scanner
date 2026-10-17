@@ -76,7 +76,9 @@ import {
 } from "@jg-stevan/scanner-core/types";
 import type { CapturePage, PageFilter, Point, Quad } from "@jg-stevan/scanner-core/types";
 import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
-import { buildDocPdf, downloadBlob, sanitizeFileName } from "@jg-stevan/scanner-core/pdf-export";
+// PERF-2 (lote5) — pdf-export (arrastra jspdf, 342 KB min) SOLO vía import
+// dinámico dentro de los handlers de export/share (mismo patrón que
+// diag-report en SettingsView). Cero import estático de pdf-export en la app.
 import { ocrTextOfPages } from "@jg-stevan/scanner-core/text-export";
 import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
 import { cn } from "@/lib/utils";
@@ -1157,6 +1159,10 @@ export default function EditorView() {
       return;
     }
     setExportingImg(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { downloadBlob, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     // DIAG (spec diag §6 · v1.1) — export de imagen (PNG/JPG) con ms, bytes,
     // páginas (siempre 1) y lado largo de la fuente.
     perfProbe.mark("export_start", { type: "png", pages: 1 });
@@ -1318,6 +1324,10 @@ export default function EditorView() {
     const s = useScannerStore.getState();
     const doc = s.documents.find((d) => d.id === docId);
     if (!doc || doc.pages.length === 0) return;
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     // Lado largo de la fuente del PDF (v1.1): máx entre páginas — precision
     // si existe (docs guardados), si no cabecera SIN decodificar.
     const docPxLong = doc.pages.reduce((mx, p) => {
@@ -1636,6 +1646,10 @@ export default function EditorView() {
     const doc = reviewDoc;
     if (!doc || sharing || doc.pages.length === 0) return;
     setSharing(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, downloadBlob, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     try {
       const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
       const fileName = `${sanitizeFileName(doc.title)}.pdf`;

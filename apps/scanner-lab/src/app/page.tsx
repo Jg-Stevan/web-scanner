@@ -16,9 +16,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useScannerStore, ONBOARDING_STORAGE_KEY } from "@jg-stevan/scanner-core/store";
 import type { ScannerView } from "@jg-stevan/scanner-core/types";
 import {
-  PROCESSED_MAX_LONG_SIDE,
   warmUpScannerWorker,
-  getScannerWorker,
 } from "@jg-stevan/scanner-core/image-processor";
 import LibraryView from "@/components/scanner/LibraryView";
 import CameraView from "@/components/scanner/CameraView";
@@ -101,15 +99,19 @@ export default function Home() {
     } catch {
       /* sin localStorage (privada/SSR): el onboarding vuelve a mostrarse */
     }
-    warmUpScannerWorker();
+    // PERF-1 (lote5) — el warm-up del motor ya NO vive aquí: al montar la
+    // app se SPWNEA el worker y este carga OpenCV EAGER (importScripts en el
+    // eval del script), así que cualquier getScannerWorker() en montaje
+    // obliga a la sesión solo-biblioteca a descargar ~8.4 MB de OpenCV.
+    // Ahora el motor se calienta: (a) al montar CameraView, y (b) en idle
+    // si la sesión no arrancó en cámara (fallback abajo).
     void useScannerStore.getState().hydrateFromStorage();
 
-    // FIX v3 (fix-editor-quality): F-DEVBENCH ELIMINADO — la app procesa y
-    // guarda SIEMPRE al máximo del lente con un único tope técnico fijo
-    // (4032 px, canvas iOS). El tope del warp del worker se fija aquí; su
-    // default ya ES 4032, así que esta llamada solo lo hace explícito.
-    // Cero tests de CPU/canvas en idle: la app arranca sin picos de carga.
-    getScannerWorker()?.setWarpCap(PROCESSED_MAX_LONG_SIDE);
+    // El tope de warp del worker (setWarpCap 4032) se retiró de aquí por lo
+    // mismo: spawnear el worker al montar derrota PERF-1. Sin cambio de
+    // comportamiento: el default del worker ya ES 4032
+    // (detection-worker.js `warpMaxLongSide = 4032`) y esta llamada era
+    // explícita-redundante (ver su comentario FIX v3 eliminado).
 
     // Limpieza one-liner de la key huérfana del benchmark viejo (inofensiva
     // si se deja, pero mejor no acumular basura en localStorage).
@@ -118,6 +120,26 @@ export default function Home() {
     } catch {
       /* privada/SSR: no pasa nada */
     }
+
+    // PERF-1 — fallback deliberado: sesión que NO arranca en cámara
+    // (biblioteca/ajustes/onboarding) calienta el motor en idle (timeout
+    // ≥ 3 s — jamás compite con el primer paint). Si el usuario entra a
+    // cámara antes, CameraView ya calentó el motor y el re-check evita el
+    // segundo warm-up. Guard Safari (sin requestIdleCallback): sin
+    // fallback — CameraView cubre el arranque del motor.
+    if (
+      useScannerStore.getState().view !== "camera" &&
+      typeof requestIdleCallback !== "undefined"
+    ) {
+      const idleHandle = requestIdleCallback(
+        () => {
+          if (useScannerStore.getState().view !== "camera") warmUpScannerWorker();
+        },
+        { timeout: 3000 },
+      );
+      return () => cancelIdleCallback(idleHandle);
+    }
+    return undefined;
   }, []);
 
   // EXPERIMENTO v11 — sincroniza la vista activa en window.__scannerView

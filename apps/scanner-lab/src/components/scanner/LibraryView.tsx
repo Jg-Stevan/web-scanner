@@ -48,7 +48,9 @@ import { useScannerStore } from "@jg-stevan/scanner-core/store";
 import type { ScanDocument } from "@jg-stevan/scanner-core/types";
 import { TRASH_RETENTION_DAYS, isTrashed, trashDaysLeft } from "@jg-stevan/scanner-core/types";
 import { formatBytes, relativeTime } from "@jg-stevan/scanner-core/format";
-import { buildDocPdf, buildLibraryPdf, downloadBlob, sanitizeFileName, toJpeg } from "@jg-stevan/scanner-core/pdf-export";
+// PERF-2 (lote5) — pdf-export (arrastra jspdf, 342 KB min) SOLO vía import
+// dinámico dentro de los handlers de export/share/OCR (mismo patrón que
+// diag-report en SettingsView). Cero import estático de pdf-export en la app.
 import { docHasOcrText, downloadOcrTxt, shareOcrText } from "@jg-stevan/scanner-core/text-export";
 import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
 import { perfProbe } from "@/lib/perf-probe";
@@ -564,6 +566,10 @@ export default function LibraryView() {
     }
     setExportSelOpen(false);
     setExportingSel(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildLibraryPdf } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     const progressId = "export-selection";
     let lastShown = 0;
     try {
@@ -622,6 +628,8 @@ export default function LibraryView() {
       return;
     }
     setOcrRunning(true);
+    // PERF-2 — carga on-demand del módulo pdf-export (toJpeg) en el handler.
+    const { toJpeg } = await import("@jg-stevan/scanner-core/pdf-export");
     const progressId = "batch-ocr";
     let ok = 0;
     try {
@@ -790,6 +798,10 @@ export default function LibraryView() {
     }
     setExportAllOpen(false);
     setExportingAll(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildLibraryPdf, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     const progressId = "export-all";
     let lastShown = 0;
     try {
@@ -2080,6 +2092,10 @@ function DocMenu({
   const exportPdf = async () => {
     if (pdfBusy || doc.pages.length === 0) return;
     setPdfBusy("export");
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     try {
       const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
       pdf.save(`${sanitizeFileName(doc.title)}.pdf`);
@@ -2098,6 +2114,10 @@ function DocMenu({
   const sharePdf = async () => {
     if (pdfBusy || doc.pages.length === 0) return;
     setPdfBusy("share");
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, downloadBlob, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     try {
       const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
       const fileName = `${sanitizeFileName(doc.title)}.pdf`;
