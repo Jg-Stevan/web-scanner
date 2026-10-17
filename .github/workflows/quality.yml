@@ -56,5 +56,12 @@ jobs:
       - name: Lint — apps/scanner-lab
         run: bun run lint
 
+      # LOTE 6 (BLQ-1): red de seguridad — batería bun test nativa (sin deps
+      # nuevas de testing). Orden documentado: tras typechecks y lint (fallan
+      # rápido) y antes del build estático (el paso caro va al final). Los
+      # tests viven SOLO en packages/scanner-core/tests/ — no se cuelan en src/.
+      - name: Tests — packages/scanner-core (bun test nativo)
+        run: bun test
+
       - name: Build estático scanner-lab (sanity)
         run: bun run build:static
