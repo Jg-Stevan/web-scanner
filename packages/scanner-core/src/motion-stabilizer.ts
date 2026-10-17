@@ -2,6 +2,37 @@
  * src/lib/scanner/motion-stabilizer.ts
  * Estabilizador de inercia y compuerta de quietud para web-scanner.
  */
+/** Registro de pestaña (export * desde index.ts): los consumers importan
+ *  { MotionStabilizer, requestMotionPermission }. */
+let motionPermissionAsked = false;
+
+/** COMP-2 (lote8) — permiso iOS 13+ para DeviceMotionEvent: sin
+ *  requestPermission() concedido desde UN GESTO del usuario, los eventos
+ *  nunca llegan y el gate de quietud queda en no-op (lastAcc=0 siempre).
+ *  Un SOLO intento por sesión; el fallo conserva el modo actual (no-op
+ *  permisible, igual que desktop). Llamar desde el handler directo del
+ *  gesto (tap del obturador / CTA) — NUNCA en load sin gesto. */
+export async function requestMotionPermission(): Promise<boolean> {
+  if (motionPermissionAsked) return false;
+  motionPermissionAsked = true;
+  try {
+    const dme =
+      typeof window !== "undefined"
+        ? (window.DeviceMotionEvent as unknown as {
+            requestPermission?: () => Promise<string>;
+          } | undefined)
+        : undefined;
+    if (dme && typeof dme.requestPermission === "function") {
+      const state = await dme.requestPermission();
+      return state === "granted";
+    }
+    return false;
+  } catch {
+    /* permiso denegado / sin gesto: modo actual (no-op permisible) */
+    return false;
+  }
+}
+
 export class MotionStabilizer {
   private lastAcc = 0;
   private lastRot = 0;

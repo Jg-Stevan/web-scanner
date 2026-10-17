@@ -61,6 +61,7 @@ import {
   type FrameLoopTelemetry,
 } from "@jg-stevan/scanner-core/frame-loop";
 import { SHUTTER_SCORE, type ShutterHealth } from "@jg-stevan/scanner-core/quality";
+import { requestMotionPermission } from "@jg-stevan/scanner-core/motion-stabilizer";
 import {
   clampBlobToSafeCap,
   getSensorSafeCap,
@@ -356,6 +357,27 @@ function chooseMainProbe(probes: CameraProbeResult[]): CameraProbeResult | null 
 }
 
 /** Telemetría reducida para el UI (throttle ~100 ms). */
+// PERF-5 helper (lote8) — mapeo object-cover frame→% (puro, sin hooks).
+// Misma matemática que mapPoint (L~3077): vive a nivel módulo para que
+// paintOverlay sea estable y el frame loop pueda capturarlo sin romper
+// react-hooks/immutability ni el orden de declaración del React Compiler.
+function mapPointToPct(
+  p: { x: number; y: number },
+  box: { w: number; h: number },
+  vid: { w: number; h: number },
+): { x: number; y: number } {
+  if (!box.w || !vid.w) return { x: p.x * 100, y: p.y * 100 };
+  const scale = Math.max(box.w / vid.w, box.h / vid.h);
+  const dw = vid.w * scale;
+  const dh = vid.h * scale;
+  const ox = (box.w - dw) / 2;
+  const oy = (box.h - dh) / 2;
+  return {
+    x: ((ox + p.x * dw) / box.w) * 100,
+    y: ((oy + p.y * dh) / box.h) * 100,
+  };
+}
+
 interface LiveUi {
   corners: Quad | null;
   score: number | null;
@@ -677,6 +699,14 @@ export default function CameraView() {
   /** F-FLASH v3: espejo de torchOn legible desde listeners sin re-render. */
   const torchOnRef = useRef(false);
   const lastTelemetryAt = useRef(0);
+  // PERF-5 (lote8) — throttle separado para el ESTADO React del live (2 Hz):
+  // el quad del overlay se pinta por REF DIRECTA a 10 Hz (mismo patrón que
+  // window.__cameraTelemetry) — sin re-render de CameraView (3.7k L) por
+  // frame. liveRef sigue fresco a 10 Hz para el instante del disparo (v5.2).
+  const lastLiveStateAt = useRef(0);
+  const overlayPathMaskRef = useRef<SVGPathElement | null>(null);
+  const overlayPathQuadRef = useRef<SVGPathElement | null>(null);
+  const overlayDotsRef = useRef<(HTMLSpanElement | null)[]>([]);
   // F-ZSL — buffer circular Best-Shot: los últimos 8 fotogramas medidos del
   // <video>. En captura MANUAL el ganador (mayor lapVar) entre 80 y 450 ms
   // ANTES del tap sustituye a la foto del instante del impacto (el tap shock
@@ -843,6 +873,59 @@ export default function CameraView() {
   const pageCount = capturePages.length;
   const hasStream = status === "live" || status === "synthetic";
   const precisionLive = hasStream && precisionReady;
+
+  // PERF-5 (lote8) — pinta el quad del overlay por ref directa (10 Hz, sin
+  // re-render de CameraView). ESTABLE ([]): lee sus inputs de un ref
+  // (asignado en effect — patrón compiler-safe) y se declara ANTES del
+  // frame loop para respetar el orden del React Compiler. El mapeo usa el
+  // helper de módulo mapPointToPct (misma matemática que mapPoint).
+  const paintInputsRef = useRef<{
+    precisionLive: boolean;
+    hasStream: boolean;
+    status: CameraStatus;
+    quad: Quad;
+    boxSize: { w: number; h: number };
+    videoDims: { w: number; h: number };
+  }>({ precisionLive, hasStream, status, quad, boxSize, videoDims });
+  useEffect(() => {
+    paintInputsRef.current = { precisionLive, hasStream, status, quad, boxSize, videoDims };
+  });
+  const paintOverlay = useCallback(
+    (ui: { corners: Quad | null }) => {
+      const inp = paintInputsRef.current;
+      const q = inp.precisionLive
+        ? ui.corners
+        : inp.hasStream || inp.status === "simulated"
+          ? inp.quad
+          : null;
+      if (!q || q.length < 4) return;
+      const pts = q
+        .map((p) => {
+          const m = mapPointToPct(p, inp.boxSize, inp.videoDims);
+          return `${m.x.toFixed(2)} ${m.y.toFixed(2)}`;
+        })
+        .join(" L ");
+      overlayPathMaskRef.current?.setAttribute(
+        "d",
+        `M 0 0 L 100 0 L 100 100 L 0 100 Z M ${pts} Z`,
+      );
+      overlayPathQuadRef.current?.setAttribute("d", `M ${pts} Z`);
+      for (let i = 0; i < 4; i++) {
+        const dot = overlayDotsRef.current[i];
+        const p = q[i];
+        if (!dot || !p) continue;
+        const m = mapPointToPct(p, inp.boxSize, inp.videoDims);
+        dot.style.left = `${m.x}%`;
+        dot.style.top = `${m.y}%`;
+      }
+    },
+    [],
+  );
+  // Primera pintura al montar el overlay (hasta 100 ms después la retoma el
+  // frame loop a 10 Hz).
+  useEffect(() => {
+    paintOverlay(liveRef.current);
+  }, [paintOverlay]);
 
     /* ── Linterna — F-FLASH v3 ───────────────────────────────────── */
 
@@ -2212,6 +2295,10 @@ export default function CameraView() {
    *  · Stream sintético (QA sin hardware) → frames del stream.
    *  · Escena estática → demo. Sin stream → galería. */
   const onShutter = useCallback(() => {
+    // COMP-2 (lote8) — permiso DeviceMotion (iOS): el tap del obturador es
+    // un GESTO directo (requisito de requestPermission). Un intento por
+    // sesión; async fire-and-forget — no añade latencia al disparo.
+    void requestMotionPermission();
     // FIX v4 4.2 — además del guard de captureSmart, corta aquí el click
     // para no encolar nada mientras dura un disparo en curso.
     if (capturingRef.current || processingRef.current) return;
@@ -2902,6 +2989,14 @@ export default function CameraView() {
           searching: t.corners === null,
         };
         liveRef.current = next; // FIX v5 (5.2): fresco para el instante del disparo
+        // PERF-5 (lote8) — overlay por REF DIRECTA a 10 Hz: polygon + 4
+        // esquinas se actualizan con setAttribute/style SIN re-render de
+        // CameraView. paintOverlay es estable ([]) → captura directa segura.
+        paintOverlay(next);
+        // PERF-5 (lote8) — el ESTADO React baja a 2 Hz: solo alimenta
+        // textos/labels/standby (la puerta del disparo lee liveRef a 10 Hz).
+        if (now - lastLiveStateAt.current < 500) return;
+        lastLiveStateAt.current = now;
         setLive(next);
       },
       onTrigger: () => {
@@ -2926,7 +3021,7 @@ export default function CameraView() {
       }
       bestShotRingRef.current = [];
     };
-  }, [precisionLive, feedRingFromVideo]);
+  }, [precisionLive, feedRingFromVideo, paintOverlay]);
 
   /* ── FIX v5 (5.4) — MODO ESPERA (nivel 1) ────────────────────────────
    *  Entrada: sin corners (live.searching) de forma continua durante 30 s
@@ -3075,12 +3170,8 @@ export default function CameraView() {
   );
 
   const overlayQuad = precisionLive ? live.corners : hasStream || status === "simulated" ? quad : null;
-  const quadPoints = overlayQuad
-    ?.map((p) => {
-      const m = mapPoint(p);
-      return `${m.x.toFixed(2)} ${m.y.toFixed(2)}`;
-    })
-    .join(" L ");
+
+
   const overlayStable = precisionLive
     ? (live.score ?? 0) > SHUTTER_SCORE
     : stable;
@@ -3137,7 +3228,7 @@ export default function CameraView() {
           type="button"
           aria-label="Cerrar cámara y volver a la biblioteca"
           onClick={closeToLibrary}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-black/30 backdrop-blur-md transition-transform duration-150 active:scale-90"
+          className="hit-slop flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-black/30 backdrop-blur-md transition-transform duration-150 active:scale-90"
         >
           <X className="h-5 w-5 text-white" strokeWidth={2.2} />
         </button>
@@ -3192,7 +3283,7 @@ export default function CameraView() {
               );
             }}
             className={cn(
-              "relative flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
+              "relative hit-slop flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
               settings.flashMode !== "off"
                 ? "bg-[#ffd60a]/18 ring-1 ring-[#ffd60a]/60"
                 : "bg-black/30"
@@ -3234,7 +3325,7 @@ export default function CameraView() {
               }
             }}
             className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
+              "hit-slop flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
               autoCapture
                 ? "bg-[#ffd60a]/18 ring-1 ring-[#ffd60a]/60"
                 : "bg-black/30"
@@ -3255,7 +3346,7 @@ export default function CameraView() {
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((v) => !v)}
-            className="flex h-9 w-9 items-center justify-center rounded-full transition-transform duration-150 active:scale-90"
+            className="hit-slop flex h-9 w-9 items-center justify-center rounded-full transition-transform duration-150 active:scale-90"
           >
             <MoreVertical className="h-5 w-5 text-white" strokeWidth={2.2} />
           </button>
@@ -3314,8 +3405,11 @@ export default function CameraView() {
           </div>
         )}
 
-        {/* Marco de detección: quad REAL (o fallback) mapeado al visor */}
-        {quadPoints && (
+        {/* Marco de detección: quad REAL (o fallback) mapeado al visor.
+            PERF-5 (lote8) — los paths/esquinas son NO controlados: React
+            solo monta/desmonta el contenedor (gate a 2 Hz); el dibujado a
+            10 Hz vive en paintOverlay (refs directas, sin re-render). */}
+        {overlayQuad && (
           <div
             className={cn("absolute inset-0", overlayStable && "animate-doc-stable")}
             aria-hidden="true"
@@ -3326,12 +3420,14 @@ export default function CameraView() {
               preserveAspectRatio="none"
             >
               <path
-                d={`M 0 0 L 100 0 L 100 100 L 0 100 Z M ${quadPoints} Z`}
+                ref={overlayPathMaskRef}
+                d=""
                 fill="rgba(0,0,0,0.32)"
                 fillRule="evenodd"
               />
               <path
-                d={`M ${quadPoints} Z`}
+                ref={overlayPathQuadRef}
+                d=""
                 fill="none"
                 stroke="#007aff"
                 strokeWidth={2}
@@ -3339,16 +3435,16 @@ export default function CameraView() {
                 vectorEffect="non-scaling-stroke"
               />
             </svg>
-            {overlayQuad?.map((p, i) => {
-              const m = mapPoint(p);
-              return (
-                <span
-                  key={i}
-                  className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(0,122,255,0.9),0_1px_4px_rgba(0,0,0,0.5)]"
-                  style={{ left: `${m.x}%`, top: `${m.y}%` }}
-                />
-              );
-            })}
+            {[0, 1, 2, 3].map((i) => (
+              <span
+                key={i}
+                ref={(el) => {
+                  overlayDotsRef.current[i] = el;
+                }}
+                className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(0,122,255,0.9),0_1px_4px_rgba(0,0,0,0.5)]"
+                style={{ left: "-100%", top: "-100%" }}
+              />
+            ))}
           </div>
         )}
 

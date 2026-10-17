@@ -1107,7 +1107,7 @@ export default function LibraryView() {
           type="button"
           aria-label={viewMode === "grid" ? "Cambiar a vista de lista" : "Cambiar a vista de cuadrícula"}
           onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
-          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#e5e5ea] bg-white text-[#8e8e93] dark:border-[#3a3a3c] dark:bg-[#1c1c1e] dark:text-[#8e8e93] transition-transform active:scale-90"
+          className="ml-auto hit-slop flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#e5e5ea] bg-white text-[#8e8e93] dark:border-[#3a3a3c] dark:bg-[#1c1c1e] dark:text-[#8e8e93] transition-transform active:scale-90"
         >
           {viewMode === "grid" ? (
             <LayoutGrid className="h-[18px] w-[18px]" strokeWidth={2} />
@@ -1829,7 +1829,7 @@ function GridCard({
             toggleFavorite(doc.id);
           }}
           className={cn(
-            "absolute right-1.5 top-1.5 flex h-8 w-8 items-center justify-center rounded-full transition-all duration-150 active:scale-75",
+            "hit-slop absolute right-1.5 top-1.5 flex h-8 w-8 items-center justify-center rounded-full transition-all duration-150 active:scale-75",
             selecting && "pointer-events-none scale-75 opacity-0"
           )}
           tabIndex={selecting ? -1 : 0}
@@ -2057,7 +2057,7 @@ function ListRow({
           toggleFavorite(doc.id);
         }}
         className={cn(
-          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 active:scale-75",
+          "hit-slop flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 active:scale-75",
           selecting && "pointer-events-none opacity-0"
         )}
         tabIndex={selecting ? -1 : 0}
@@ -2247,7 +2247,7 @@ function DocMenu({
           onClick={(e) => e.stopPropagation()}
           className={cn(
             "flex shrink-0 items-center justify-center rounded-full text-[#8e8e93] transition-colors hover:bg-[#f2f2f7] dark:hover:bg-[#2c2c2e] active:bg-[#e5e5ea] dark:active:bg-[#3a3a3c]",
-            compact ? "h-7 w-7" : "h-8 w-8"
+            compact ? "hit-slop h-7 w-7" : "hit-slop h-8 w-8"
           )}
         >
           <MoreHorizontal className="h-[18px] w-[18px]" strokeWidth={2} />

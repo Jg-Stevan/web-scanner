@@ -292,3 +292,21 @@
 .animate-capture-flash {
   animation: capture-flash 500ms ease-out forwards;
 }
+
+/* COMP-5 (lote8) — hit-slop: expande el área táctil a ≥44px SIN cambiar el
+   tamaño visual ni el layout (::before absoluto y fuera del flujo, centrado
+   en el botón). Aplicado a los botones de cabecera/nav/chips de
+   cámara/editor/biblioteca (36/32/28 px visuales). */
+.hit-slop {
+  position: relative;
+}
+.hit-slop::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+}

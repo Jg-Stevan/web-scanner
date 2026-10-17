@@ -90,6 +90,9 @@ interface ResultReply {
   type: "result";
   corners: Float32Array | null;
   qualityInput: RawQualityInput;
+  /** PERF-6 (lote8) — histograma de luma del frame de trabajo (worker);
+   *  ausente en workers viejos → main cae al cálculo local (compat). */
+  hist?: number[];
   ts: number;
 }
 
@@ -130,6 +133,9 @@ export interface DetectOutcome {
   /** Quad en fracciones 0–1 (TL,TR,BR,BL) o null si el frame no tiene quad. */
   corners: Float32Array | null;
   quality: RawQualityInput;
+  /** PERF-6 (lote8) — histograma de exposición calculado en el worker
+   *  (frame de trabajo ~400 px). Ausente con workers viejos. */
+  hist?: number[];
 }
 
 export interface WarpOutcome {
@@ -272,6 +278,7 @@ export class ScannerWorkerClient {
           (entry.resolve as (v: DetectOutcome) => void)({
             corners: msg.corners,
             quality: msg.qualityInput,
+            hist: msg.hist,
           });
         }
         break;
