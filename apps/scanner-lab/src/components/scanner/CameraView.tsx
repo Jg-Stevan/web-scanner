@@ -356,6 +356,27 @@ function chooseMainProbe(probes: CameraProbeResult[]): CameraProbeResult | null 
 }
 
 /** Telemetría reducida para el UI (throttle ~100 ms). */
+// PERF-5 helper (lote8) — mapeo object-cover frame→% (puro, sin hooks).
+// Misma matemática que mapPoint (L~3077): vive a nivel módulo para que
+// paintOverlay sea estable y el frame loop pueda capturarlo sin romper
+// react-hooks/immutability ni el orden de declaración del React Compiler.
+function mapPointToPct(
+  p: { x: number; y: number },
+  box: { w: number; h: number },
+  vid: { w: number; h: number },
+): { x: number; y: number } {
+  if (!box.w || !vid.w) return { x: p.x * 100, y: p.y * 100 };
+  const scale = Math.max(box.w / vid.w, box.h / vid.h);
+  const dw = vid.w * scale;
+  const dh = vid.h * scale;
+  const ox = (box.w - dw) / 2;
+  const oy = (box.h - dh) / 2;
+  return {
+    x: ((ox + p.x * dw) / box.w) * 100,
+    y: ((oy + p.y * dh) / box.h) * 100,
+  };
+}
+
 interface LiveUi {
   corners: Quad | null;
   score: number | null;
@@ -851,6 +872,59 @@ export default function CameraView() {
   const pageCount = capturePages.length;
   const hasStream = status === "live" || status === "synthetic";
   const precisionLive = hasStream && precisionReady;
+
+  // PERF-5 (lote8) — pinta el quad del overlay por ref directa (10 Hz, sin
+  // re-render de CameraView). ESTABLE ([]): lee sus inputs de un ref
+  // (asignado en effect — patrón compiler-safe) y se declara ANTES del
+  // frame loop para respetar el orden del React Compiler. El mapeo usa el
+  // helper de módulo mapPointToPct (misma matemática que mapPoint).
+  const paintInputsRef = useRef<{
+    precisionLive: boolean;
+    hasStream: boolean;
+    status: CameraStatus;
+    quad: Quad;
+    boxSize: { w: number; h: number };
+    videoDims: { w: number; h: number };
+  }>({ precisionLive, hasStream, status, quad, boxSize, videoDims });
+  useEffect(() => {
+    paintInputsRef.current = { precisionLive, hasStream, status, quad, boxSize, videoDims };
+  });
+  const paintOverlay = useCallback(
+    (ui: { corners: Quad | null }) => {
+      const inp = paintInputsRef.current;
+      const q = inp.precisionLive
+        ? ui.corners
+        : inp.hasStream || inp.status === "simulated"
+          ? inp.quad
+          : null;
+      if (!q || q.length < 4) return;
+      const pts = q
+        .map((p) => {
+          const m = mapPointToPct(p, inp.boxSize, inp.videoDims);
+          return `${m.x.toFixed(2)} ${m.y.toFixed(2)}`;
+        })
+        .join(" L ");
+      overlayPathMaskRef.current?.setAttribute(
+        "d",
+        `M 0 0 L 100 0 L 100 100 L 0 100 Z M ${pts} Z`,
+      );
+      overlayPathQuadRef.current?.setAttribute("d", `M ${pts} Z`);
+      for (let i = 0; i < 4; i++) {
+        const dot = overlayDotsRef.current[i];
+        const p = q[i];
+        if (!dot || !p) continue;
+        const m = mapPointToPct(p, inp.boxSize, inp.videoDims);
+        dot.style.left = `${m.x}%`;
+        dot.style.top = `${m.y}%`;
+      }
+    },
+    [],
+  );
+  // Primera pintura al montar el overlay (hasta 100 ms después la retoma el
+  // frame loop a 10 Hz).
+  useEffect(() => {
+    paintOverlay(liveRef.current);
+  }, [paintOverlay]);
 
     /* ── Linterna — F-FLASH v3 ───────────────────────────────────── */
 
@@ -2912,8 +2986,8 @@ export default function CameraView() {
         liveRef.current = next; // FIX v5 (5.2): fresco para el instante del disparo
         // PERF-5 (lote8) — overlay por REF DIRECTA a 10 Hz: polygon + 4
         // esquinas se actualizan con setAttribute/style SIN re-render de
-        // CameraView. mapPoint fresco vía ref (cambia con resize).
-        paintOverlayRef.current?.(next);
+        // CameraView. paintOverlay es estable ([]) → captura directa segura.
+        paintOverlay(next);
         // PERF-5 (lote8) — el ESTADO React baja a 2 Hz: solo alimenta
         // textos/labels/standby (la puerta del disparo lee liveRef a 10 Hz).
         if (now - lastLiveStateAt.current < 500) return;
@@ -2942,7 +3016,7 @@ export default function CameraView() {
       }
       bestShotRingRef.current = [];
     };
-  }, [precisionLive, feedRingFromVideo]);
+  }, [precisionLive, feedRingFromVideo, paintOverlay]);
 
   /* ── FIX v5 (5.4) — MODO ESPERA (nivel 1) ────────────────────────────
    *  Entrada: sin corners (live.searching) de forma continua durante 30 s
@@ -3092,52 +3166,6 @@ export default function CameraView() {
 
   const overlayQuad = precisionLive ? live.corners : hasStream || status === "simulated" ? quad : null;
 
-  // PERF-5 (lote8) — pinta el quad del overlay por ref directa (10 Hz, sin
-  // React). El mapeo object-cover queda AQUÍ (no en el render de CameraView).
-  // Los paths/esquinas del JSX son NO controlados (d/estilo constantes en el
-  // render — solo las refs los actualizan), así React nunca pisa el valor
-  // fresco de 10 Hz.
-  const paintOverlay = useCallback(
-    (ui: { corners: { x: number; y: number }[] | null }) => {
-      const q = precisionLive
-        ? ui.corners
-        : hasStream || status === "simulated"
-          ? quad
-          : null;
-      if (!q || q.length < 4) return;
-      const pts = q
-        .map((p) => {
-          const m = mapPoint(p);
-          return `${m.x.toFixed(2)} ${m.y.toFixed(2)}`;
-        })
-        .join(" L ");
-      overlayPathMaskRef.current?.setAttribute(
-        "d",
-        `M 0 0 L 100 0 L 100 100 L 0 100 Z M ${pts} Z`,
-      );
-      overlayPathQuadRef.current?.setAttribute("d", `M ${pts} Z`);
-      for (let i = 0; i < 4; i++) {
-        const dot = overlayDotsRef.current[i];
-        const p = q[i];
-        if (!dot || !p) continue;
-        const m = mapPoint(p);
-        dot.style.left = `${m.x}%`;
-        dot.style.top = `${m.y}%`;
-      }
-    },
-    [precisionLive, hasStream, status, quad, mapPoint],
-  );
-  const paintOverlayRef = useRef(paintOverlay);
-  useEffect(() => {
-    // PERF-5 — el frame loop (callback fuera de React) siempre pinta con el
-    // mapeo fresco; la asignación en effect cumple la regla de refs.
-    paintOverlayRef.current = paintOverlay;
-  }, [paintOverlay]);
-  // Primera pintura al montar el overlay (hasta 100 ms después la retoma el
-  // frame loop a 10 Hz).
-  useEffect(() => {
-    paintOverlay(liveRef.current);
-  }, [paintOverlay]);
 
   const overlayStable = precisionLive
     ? (live.score ?? 0) > SHUTTER_SCORE
