@@ -4,6 +4,24 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## LOTE 8 — perf fino: motor, worker, wasm, gestos (rama `perf/lote8-fino-v1`)
+
+**Base:** `feat/lote7-ram-hidratacion-v1` @ `42fddbe` (apilado) · **Kit:** `INSTR-ws-lote8-perf-fino-v1` · **6 commits (uno por tarea)** · gates exit 0 · `bun test` 9/9 · smoke headless 0 errores. **COMP-4 EXCLUIDO por el kit** (decisión del dueño pendiente — no implementado).
+
+| Tarea | Resultado (medido) |
+|------|-----------|
+| T1 PERF-4 | integral simple → Uint32 (max 3,11e9 < 2³², enteros exactos; guard para inputs >4096²); **sumSq queda Float64** (7,93e14 no cabe — límite alcanzado). Paridad byte-idéntica probada en test (3/3). Pico bradleyRoth 4032×3024: **108 → 61 MB (−43%)**. D-T1: espejo del worker fuera de whitelist (pendiente) |
+| T2 PERF-5 | quad del overlay por REF DIRECTA a 10 Hz (patrón `__cameraTelemetry`); estado React a **2 Hz**; liveRef/disparo intactos (FIX v5.2). Re-render de CameraView por el quad: 10 Hz → 0. Mapeo object-cover fuera del render (helper módulo, compiler-safe) |
+| T3 PERF-6 | histograma de exposición en el worker sobre el frame de trabajo; `ResultReply.hist?` con **compat bidireccional** (fallback local 96 px para workers viejos) |
+| T4 PERF-1b | glue 8,20 → **0,21 MB** + wasm separado 5,99 MB (`\0asm` valid) en `/scanner/` (donde el glue UMD-hermético lo resuelve) = **−2,00 MB raw** ✓ meta. Precache SW del motor (opción a). Boot probado en vivo: `ready:true` |
+| T5 COMP-2 | `requestMotionPermission()` (1 intento/sesión, guard iOS) desde el tap del obturador (gesto directo) — fallo → modo actual |
+| T6 COMP-5 | helper `.hit-slop` (::before 44×44, cero cambios visuales) — **12 sitios** cámara/editor/biblioteca; PresentationView sin sitios (el citado ya no existe) |
+
+**Hallazgo T4 (para el futuro):** el vendor es opencv-js UMD — `var cv` local ensombrece el global → `Module` hermético NO inyectable y `locateFile` resuelve contra el WORKER (`/scanner/`), no el glue. El wasm vive en `/scanner/`; bootstrap del worker SIN cambios.
+**Smoke:** wasm separado `ready:true` ✓ · export PDF ✓ · **0 errores de consola** ✓. Pendientes device: medición T2/T3, iOS físico T5, MIME del wasm en Pages, espejo Uint32 (D-T1), COMP-4.
+
+---
+
 ## LOTE 7 — RAM: hidratación perezosa + Blob URLs on-demand (rama `feat/lote7-ram-hidratacion-v1`)
 
 **Base:** `fix/lote5-quickwins-v1` @ `ab39e51` (apilado) · **Kit:** `INSTR-ws-lote7-ram-hidratacion-v1` · **Diseño-first:** `docs/lab/fix-lote7-ram-hidratacion-v1.md` (T0 commiteado ANTES del código) · **4 commits** · gates exit 0 · `bun test` 6/6 · smoke headless con **prueba de integridad de datos en vivo**.
