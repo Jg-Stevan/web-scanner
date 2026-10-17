@@ -2250,7 +2250,7 @@ export default function CameraView() {
       // declara después de esos returns (TDZ si se toca aquí).
       releaseFrame(snapA);
     }
-  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, status, isStreamDead, recoverStream, setTorchState, exitStandby]);
+  }, [snapshotVideo, takePhotoBlob, canvasToDataUrl, blobToDataUrl, handleCaptureDataUrl, isStreamDead, recoverStream, setTorchState, exitStandby, applyAutoQuad]);
 
   /** Captura inteligente con el obturador BLOQUEADO durante TODO el
    *  disparo (FIX v4 4.2). Antes solo processingRef protegía — y se activa
@@ -2716,7 +2716,7 @@ export default function CameraView() {
       syntheticRef.current?.stop();
       syntheticRef.current = null;
     };
-  }, [applySavedTorchWithRetry, camRestartNonce, upgradeStreamResolution]);
+  }, [applySavedTorchWithRetry, camRestartNonce, upgradeStreamResolution, profileActiveSensor]);
 
   // DIAG (spec diag §5 · v1.1) — 2ª muestra de FPS de la vista de cámara a
   // los 10 s de sesión (frío vs caliente dentro de una MISMA sesión). Antes
@@ -2905,7 +2905,7 @@ export default function CameraView() {
         duration: 9000,
       });
     }
-  }, [applySavedTorchWithRetry, upgradeStreamResolution]);
+  }, [applySavedTorchWithRetry, upgradeStreamResolution, profileActiveSensor]);
 
   // Dimensiones del video (para el mapeo object-cover del overlay)
   const onVideoMeta = useCallback(() => {

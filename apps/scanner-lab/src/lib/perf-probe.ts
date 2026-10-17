@@ -104,7 +104,15 @@ function makeProbe(): PerfProbeApi {
     marks,
     longTasks,
     longTaskEntries,
-    mark(ev, meta) {
+    // BP-4 (Lote 6): anotación EXPLÍCITA de los parámetros de la
+    // implementación. Con la augmentación de burst-budget.ts (overload de
+    // mark() con BurstHeapProbe en meta), la contextualización tomaba el
+    // ÚLTIMO overload (el ancho) y el spread de meta dejaba de caber en
+    // PerfProbeMark.meta (estrecho) al activar noImplicitAny. Métodos son
+    // bivariantes: la implementación anotada ESTRECHA sigue asignable a los
+    // dos overloads, y los llamadores que pasan BurstHeapProbe siguen
+    // usando el overload ancho. Cero cambio de runtime.
+    mark(ev: string, meta?: Record<string, number | string | boolean | null>) {
       try {
         if (typeof ev !== "string" || ev.length === 0) return;
         marks.push({

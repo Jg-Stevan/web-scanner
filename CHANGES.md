@@ -4,6 +4,23 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## LOTE 6 — red de seguridad: tests + higiene (rama `test/red-seguridad-v1`)
+
+**Base:** `main` @ `1e874d4` · **Kit:** `INSTR-ws-lote6-red-seguridad-v1` · **Agente:** B (calidad/estructura) · PR DRAFT a main (sin merge). Evidencia completa: `docs/lab/fix-lote6-red-seguridad-v1.md`.
+
+| Tarea | Resultado |
+|-------|-----------|
+| **T1 · BLQ-1** | Batería `bun test` nativa (cero deps de testing): **193 tests** (192 pass · 1 skip documentado) en `packages/scanner-core/tests/` — types, tags, format, pdf-export (exports puros), page-store, store (ciclo completo en memoria: merge B4, papelera, duplicado C-11), quality (máquina de disparo FIX v9), text-export, persistSafely |
+| **T6 · DRY-2** | Test de paridad worker↔core: extracción por nombre + recursión transitiva del código espejado del worker → sandbox `new Function`. **CERO DRIFT** (comparación exacta, tolerancia 0) en constantes, 4 funciones puras y `enhanceToRgba` end-to-end (modos raw/text/bw/gray). `unsharpRgba` excluido documentado (worker=OpenCV vs core=JS) |
+| **T2 · BLQ-1** | Step `bun test` en `quality.yml` (tras lint, antes del build; diff = solo el step) |
+| **T5 · BP-4** | `noImplicitAny: true` en los 3 tsconfigs. 1 error real (exacto al estimado): `perf-probe.ts:113` — fijado con anotación explícita (bivarianza de métodos; cero `any`, FORT-1 intacta) |
+| **T4 · BP-3** | `persistSafely`/`notePersistFailure` en el core + puente de toast en la app (evento global, frontera core↔app sin invertir dependencias). 5 catches de escritura instrumentados (persistDocument, removeDocument, clearAllDocuments, saveManualOrder, saveSettings). 3.er fallo → **UN solo aviso por sesión**. ⚠ wiring de 1 línea en `page.tsx` pendiente (fuera de whitelist — zona del Agente A) |
+| **T3 · BP-2** | exhaustive-deps **12 → 2** (ambos justificados): CameraView 3/3 fijados (deps estables, neutro al timing), EditorView 6/8 fijados (incl. `useCallback` de `handleSaveImage`/`handleFilter` para el efecto QA) + **hallazgo**: auto-OCR podía esperar indefinidamente en páginas <2048 px (tier cambia con url idéntica) — fix de dep alinea con la intención documentada. PresentationView:443 fuera de whitelist → pendiente |
+
+**Verificado:** `core:check`/`ui:check`/`app:check`/`lint` exit 0 · `bun test` 192/193 ✅ · `build:static` exit 0 · warnings lint 169→159 (0 errores) · smoke navegador ×2 (biblioteca→editor→filtros→guardado→PDF→presentación, 0 errores de consola; cámara N/A sandbox). Diff = whitelist exacta (11 archivos código+config + 2 docs + 9 tests).
+
+---
+
 ## LOTE 8 — perf fino: motor, worker, wasm, gestos (rama `perf/lote8-fino-v1`)
 
 **Base:** `feat/lote7-ram-hidratacion-v1` @ `42fddbe` (apilado) · **Kit:** `INSTR-ws-lote8-perf-fino-v1` · **6 commits (uno por tarea)** · gates exit 0 · `bun test` 9/9 · smoke headless 0 errores. **COMP-4 EXCLUIDO por el kit** (decisión del dueño pendiente — no implementado).

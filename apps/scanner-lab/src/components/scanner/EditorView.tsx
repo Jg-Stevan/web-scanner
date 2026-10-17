@@ -1164,8 +1164,13 @@ export default function EditorView() {
   };
 
   /** F-IMG — "Imagen": descarga la página actual procesada como imagen
-   *  (PNG sin pérdida, igual que la procesada persistida). */
-  const handleSaveImage = async () => {
+   *  (PNG sin pérdida, igual que la procesada persistida).
+   *  BP-2 (Lote 6): useCallback — antes se re-creaba cada render y forzaba
+   *  re-corridas del efecto QA (deps en la fila del guard) en cada render.
+   *  El guard execKey hacía esas corridas inofensivas; con deps correctas el
+   *  efecto QA sigue ejecutando EXACTAMENTE los mismos pasos (misma
+   *  idempotencia) con menos pasadas vacías. */
+  const handleSaveImage = useCallback(async () => {
     const p = page;
     if (!p || exportingImg) return;
     const entry = currentPreviewEntry(p);
@@ -1226,7 +1231,7 @@ export default function EditorView() {
     } finally {
       setExportingImg(false);
     }
-  };
+  }, [page, exportingImg, currentPreviewEntry, cachePreviewEntry, headerTitle, activeIdx, cacheKey]);
 
   /** Recortar: entra al modo de ajuste manual de bordes. */
   const handleEnterCrop = () => {
@@ -1295,11 +1300,12 @@ export default function EditorView() {
     }
   }, [page, detecting, updateCapturePage, showBadge]);
 
-  const handleFilter = (filter: PageFilter, label: string) => {
+  // BP-2 (Lote 6): useCallback — misma razón que handleSaveImage (efecto QA).
+  const handleFilter = useCallback((filter: PageFilter, label: string) => {
     if (page) updateCapturePage(page.id, { filter });
     toast.success(`Filtro aplicado: ${label}`, { duration: 1500 });
     setFiltersOpen(false);
-  };
+  }, [page, updateCapturePage]);
 
   /** Repetir: elimina la página actual y vuelve a la cámara para retomarla
    *  (igual que "Repetir" de Adobe Scan). En modo documento la página sale
@@ -1449,7 +1455,7 @@ export default function EditorView() {
       // antes el camino de éxito lo dejaba saving=true para siempre.
       if (!savedInfoRef.current) setSaving(false);
     }
-  }, [saving, savedInfo, downloadDocPdf]);
+  }, [saving, savedInfo, downloadDocPdf, setView]);
 
   /** Al cerrarse el overlay de éxito → BIBLIOTECA (flujo Adobe Scan). */
   const finishSave = useCallback(() => {
@@ -1465,7 +1471,7 @@ export default function EditorView() {
     setSavedInfo(null);
     setView("library");
     if (info) void downloadDocPdf(info.docId);
-  }, [downloadDocPdf]);
+  }, [downloadDocPdf, setView]);
 
   /** Modo lote: encadena otro documento sin salir del ciclo de cámara. */
   const scanAnother = useCallback(() => {
@@ -1575,7 +1581,7 @@ export default function EditorView() {
     } finally {
       setOcrRunning(false);
     }
-  }, [page, preview?.url, cacheKey, ocrRunning, previewLoading, updateCapturePage]);
+  }, [page, preview, cacheKey, ocrRunning, previewLoading, updateCapturePage, cachePreviewEntry]);
 
   /** OCR secuencial de TODAS las páginas de la sesión (con progreso). */
   const runOcrAll = useCallback(async () => {
@@ -1641,7 +1647,7 @@ export default function EditorView() {
       setOcrRunning(false);
       setOcrProgress(null);
     }
-  }, [ocrRunning, updateCapturePage]);
+  }, [ocrRunning, updateCapturePage, cachePreviewEntry]);
 
   const copyOcrText = useCallback(async () => {
     const text = page?.ocrText ?? "";
@@ -1767,6 +1773,7 @@ export default function EditorView() {
     previewLoading,
     autoOcrBusy,
     preview?.url,
+    preview?.tier,
     cacheKey,
     updateCapturePage,
   ]);
