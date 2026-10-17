@@ -48,8 +48,9 @@ import { useScannerStore } from "@jg-stevan/scanner-core/store";
 import type { ScanDocument } from "@jg-stevan/scanner-core/types";
 import { TRASH_RETENTION_DAYS, isTrashed, trashDaysLeft } from "@jg-stevan/scanner-core/types";
 import { formatBytes, relativeTime } from "@jg-stevan/scanner-core/format";
-import { buildDocPdf, buildLibraryPdf, downloadBlob, sanitizeFileName, toJpeg } from "@jg-stevan/scanner-core/pdf-export";
-import { docHasOcrText, downloadOcrTxt, shareOcrText } from "@jg-stevan/scanner-core/text-export";
+// PERF-2 (lote5) — pdf-export (arrastra jspdf, 342 KB min) SOLO vía import
+// dinámico dentro de los handlers de export/share/OCR (mismo patrón que
+// diag-report en SettingsView). Cero import estático de pdf-export en la app.
 import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
 import { perfProbe } from "@/lib/perf-probe";
 import { countTagUsage, docTags, normalizeTag, tagColor } from "@jg-stevan/scanner-core/tags";
@@ -82,6 +83,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 type SortMode = "recientes" | "favorites" | "az" | "manual";
+
+// PERF-2 (lote5) — helper local VERBATIM (Fuente: packages/scanner-core/src/
+// text-export.ts L34-36). El import estático de text-export arrastra
+// pdf-export → jspdf (425 KB) al chunk inicial (text-export importa
+// downloadBlob/sanitizeFileName de pdf-export). Copia puente byte-idéntica —
+// se elimina cuando el core separe los helpers de descarga de jspdf
+// (pendiente del dueño, desviación D-2 del doc del lote).
+function docHasOcrText(doc: ScanDocument): boolean {
+  return doc.pages.some((p) => (p.ocrText ?? "").trim().length > 0);
+}
 
 const SORT_CHIPS: { id: SortMode; label: string }[] = [
   { id: "recientes", label: "Recientes" },
@@ -564,6 +575,10 @@ export default function LibraryView() {
     }
     setExportSelOpen(false);
     setExportingSel(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildLibraryPdf } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     const progressId = "export-selection";
     let lastShown = 0;
     try {
@@ -622,6 +637,8 @@ export default function LibraryView() {
       return;
     }
     setOcrRunning(true);
+    // PERF-2 — carga on-demand del módulo pdf-export (toJpeg) en el handler.
+    const { toJpeg } = await import("@jg-stevan/scanner-core/pdf-export");
     const progressId = "batch-ocr";
     let ok = 0;
     try {
@@ -790,6 +807,10 @@ export default function LibraryView() {
     }
     setExportAllOpen(false);
     setExportingAll(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildLibraryPdf, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     const progressId = "export-all";
     let lastShown = 0;
     try {
@@ -2080,6 +2101,10 @@ function DocMenu({
   const exportPdf = async () => {
     if (pdfBusy || doc.pages.length === 0) return;
     setPdfBusy("export");
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     try {
       const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
       pdf.save(`${sanitizeFileName(doc.title)}.pdf`);
@@ -2098,6 +2123,10 @@ function DocMenu({
   const sharePdf = async () => {
     if (pdfBusy || doc.pages.length === 0) return;
     setPdfBusy("share");
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, downloadBlob, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     try {
       const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
       const fileName = `${sanitizeFileName(doc.title)}.pdf`;
@@ -2123,9 +2152,12 @@ function DocMenu({
 
   /** F-TXT: exporta el texto OCR de todas las páginas como .txt (UTF-8 BOM
    *  — se abre bien en Windows). Sin OCR en el documento → ítem deshabilitado. */
-  const exportText = () => {
+  const exportText = async () => {
     if (pdfBusy || !hasOcr) return;
     setPdfBusy("text");
+    // PERF-2 — carga on-demand de text-export en el handler (rompe la
+    // cadena estática hacia pdf-export/jspdf).
+    const { downloadOcrTxt } = await import("@jg-stevan/scanner-core/text-export");
     try {
       const { bytes, words } = downloadOcrTxt(doc);
       toast.success("Texto exportado", {
@@ -2144,6 +2176,10 @@ function DocMenu({
   const shareText = async () => {
     if (pdfBusy || !hasOcr) return;
     setPdfBusy("share-text");
+    // PERF-2 — carga on-demand de text-export en el handler.
+    const { shareOcrText, downloadOcrTxt } = await import(
+      "@jg-stevan/scanner-core/text-export"
+    );
     try {
       const shared = await shareOcrText(doc);
       if (shared) {

@@ -11,7 +11,9 @@ CUALQUIER cosa (lógica **o** UI/diseño) busca si ya existe en el lab:
    bug F-LENS: la cámara abría la lente gran angular — ver D33).
 2. Si NO existe → impleméntalo siguiendo las specs en
    `apps/digitalizador-e14/docs/` y registra la decisión en
-   `apps/digitalizador-e14/docs/DECISIONS.md`.
+   `apps/digitalizador-e14/docs/DECISIONS.md` (histórico del repo origen:
+   esas rutas vivían en el monorepo pre-split; en este repo el equivalente
+   es `docs/` y `docs/DECISIONS.md` de la raíz).
 3. Ante la duda: copiar del lab. Nunca "mejorar" el lab.
 
 Referencias: docs/SPEC-fase-logica.md §12 · docs/DECISIONS.md (D33/D34) ·

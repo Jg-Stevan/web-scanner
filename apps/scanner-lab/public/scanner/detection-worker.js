@@ -1488,7 +1488,10 @@
   }
 
   // src/scanner/workers/protocol.ts
-  var OPENCV_CDN_URL = "https://docs.opencv.org/4.5.5/opencv.js";
+  // BLQ-7b (lote5) — fallback CDN de OpenCV eliminado: solo rutas locales
+  // self-hosted. Si ambas fallan, loadOpenCv() lanza y el flujo cae al
+  // estado de error/self-healing existente (re-spawn del worker + fallback
+  // Sobel canvas). Cero código remoto en el arranque.
   var OPENCV_VENDOR_FILENAME = "opencv-4.5.5.js";
   function opencvCandidateUrls(workerScriptUrl) {
     const out = [];
@@ -1496,7 +1499,6 @@
       const u = new URL(rel, workerScriptUrl);
       if (!out.includes(u.href)) out.push(u.href);
     }
-    out.push(OPENCV_CDN_URL);
     return out;
   }
 

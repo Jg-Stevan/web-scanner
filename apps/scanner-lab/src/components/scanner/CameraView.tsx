@@ -52,6 +52,7 @@ import {
   getScannerWorker,
   loadImage,
   PROCESSED_MAX_LONG_SIDE,
+  warmUpScannerWorker,
 } from "@jg-stevan/scanner-core/image-processor";
 import { generateDemoPage } from "@jg-stevan/scanner-core/demo-page";
 import {
@@ -2300,6 +2301,13 @@ export default function CameraView() {
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof navigator === "undefined") return;
+    // PERF-1 (lote5) — el motor se precalienta al ENTRAR a cámara (ya no al
+    // montar la app): la sesión solo-biblioteca no descarga OpenCV
+    // (~8.4 MB raw). Idempotente — waitReady() cachea su promesa, así que
+    // coexiste sin coste con el arranque del worker que ya hace la primera
+    // detección. Corre en TODAS las rutas (real/sintética) antes del
+    // return temprano de permisos.
+    warmUpScannerWorker();
     // DIAG (spec diag §5) — sesión de cámara: apertura del visor (t0).
     // SOLO instrumentación (el timer de FPS tarde vive en su propio efecto
     // con cleanup, para cubrir también el return temprano de abajo).

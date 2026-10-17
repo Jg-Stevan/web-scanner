@@ -25,7 +25,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "bunx tsc --project tsconfig.build.json",
@@ -40,5 +41,23 @@
   "devDependencies": {
     "@types/react": "^19",
     "typescript": "^5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jg-Stevan/web-scanner.git",
+    "directory": "packages/scanner-ui"
+  },
+  "homepage": "https://jg-stevan.github.io/web-scanner/",
+  "bugs": "https://github.com/Jg-Stevan/web-scanner/issues",
+  "keywords": [
+    "react",
+    "document-scanner",
+    "image-viewer",
+    "zoomable",
+    "touch-gestures",
+    "pan-zoom"
+  ],
+  "engines": {
+    "bun": ">=1.1"
   }
 }

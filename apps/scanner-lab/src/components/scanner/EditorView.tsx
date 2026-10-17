@@ -76,8 +76,9 @@ import {
 } from "@jg-stevan/scanner-core/types";
 import type { CapturePage, PageFilter, Point, Quad } from "@jg-stevan/scanner-core/types";
 import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
-import { buildDocPdf, downloadBlob, sanitizeFileName } from "@jg-stevan/scanner-core/pdf-export";
-import { ocrTextOfPages } from "@jg-stevan/scanner-core/text-export";
+// PERF-2 (lote5) — pdf-export (arrastra jspdf, 342 KB min) SOLO vía import
+// dinámico dentro de los handlers de export/share (mismo patrón que
+// diag-report en SettingsView). Cero import estático de pdf-export en la app.
 import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
 import { cn } from "@/lib/utils";
 import { perfProbe } from "@/lib/perf-probe";
@@ -86,6 +87,22 @@ import { beginBackgroundJob, endBackgroundJob } from "@/lib/burst-budget";
 import { qaStandardTest, useQaTestStore } from "@/lib/qa-standard-test";
 import { SaveSuccessOverlay } from "@/components/scanner/SaveSuccessOverlay";
 import { PresentationView, type PresentationPage } from "@/components/scanner/PresentationView";
+
+// PERF-2 (lote5) — helper local VERBATIM (Fuente: packages/scanner-core/src/
+// text-export.ts L18-26). El import estático de text-export arrastra
+// pdf-export → jspdf (425 KB) al chunk inicial: text-export importa
+// downloadBlob/sanitizeFileName de pdf-export. Copia puente byte-idéntica —
+// se elimina cuando el core separe los helpers de descarga de jspdf
+// (pendiente del dueño, desviación D-2 del doc del lote).
+type OcrPageLike = { ocrText?: string };
+function ocrTextOfPages(pages: readonly OcrPageLike[]): string {
+  const withText = pages
+    .map((p, i) => ({ index: i + 1, text: (p.ocrText ?? "").trim() }))
+    .filter((p) => p.text.length > 0);
+  if (withText.length === 0) return "";
+  if (withText.length === 1) return withText[0]!.text;
+  return withText.map((p) => `── Página ${p.index} ──\n${p.text}`).join("\n\n");
+}
 
 /** LOTE 2 (F2-E) — lado mayor del PRIMER pintado del editor (tier fast).
  *  2048: el warp del worker escala ~cuadrático con el output
@@ -1157,6 +1174,10 @@ export default function EditorView() {
       return;
     }
     setExportingImg(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { downloadBlob, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     // DIAG (spec diag §6 · v1.1) — export de imagen (PNG/JPG) con ms, bytes,
     // páginas (siempre 1) y lado largo de la fuente.
     perfProbe.mark("export_start", { type: "png", pages: 1 });
@@ -1318,6 +1339,10 @@ export default function EditorView() {
     const s = useScannerStore.getState();
     const doc = s.documents.find((d) => d.id === docId);
     if (!doc || doc.pages.length === 0) return;
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     // Lado largo de la fuente del PDF (v1.1): máx entre páginas — precision
     // si existe (docs guardados), si no cabecera SIN decodificar.
     const docPxLong = doc.pages.reduce((mx, p) => {
@@ -1636,6 +1661,10 @@ export default function EditorView() {
     const doc = reviewDoc;
     if (!doc || sharing || doc.pages.length === 0) return;
     setSharing(true);
+    // PERF-2 — carga on-demand del módulo pdf-export en el handler.
+    const { buildDocPdf, downloadBlob, sanitizeFileName } = await import(
+      "@jg-stevan/scanner-core/pdf-export"
+    );
     try {
       const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
       const fileName = `${sanitizeFileName(doc.title)}.pdf`;
