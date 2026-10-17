@@ -79,7 +79,6 @@ export function PresentationView({
   }, [comparing]);
 
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const imgWrapRef = useRef<HTMLDivElement | null>(null);
   // FIX v3 (1.1/1.2): la imagen MISMA — el wrapper pasa a medir el stage
   // completo (h-full w-full), así que el paneo se acota con el tamaño
   // MAQUETADO del <img> (object-contain), no con el del wrapper.
@@ -525,7 +524,6 @@ export function PresentationView({
                 GPU con will-change permanente puede rasterizarse a baja
                 resolución en iOS Safari (borroso al ampliar). */}
             <motion.div
-              ref={imgWrapRef}
               style={{ scale, x, y, willChange: zoomPct > 100 ? "transform" : "auto" }}
               /* FIX v6 (6.3): touch-none también en el WRAPPER del pan — el
                * toque nace aquí cuando el dedo cae en el padding alrededor

@@ -1,6 +1,6 @@
 {
   "name": "@jg-stevan/scanner-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Motor headless de escaneo de documentos: cámara, detección de bordes, procesado, OCR, calidad y exportación. Sin UI. Browser-only (consume vía bundler).",
   "license": "MIT",
   "type": "module",
@@ -22,7 +22,10 @@
     },
     "types": "./dist/index.d.ts"
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "bunx tsc --project tsconfig.build.json",
     "publish:stage": "bun run build && bun make-publish-package.mjs",

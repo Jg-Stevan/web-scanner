@@ -14,7 +14,6 @@
     "core:build": "cd packages/scanner-core && bun run build",
     "ui:check": "cd packages/scanner-ui && bunx tsc --noEmit",
     "ui:build": "cd packages/scanner-ui && bun run build",
-    "app:check": "cd apps/scanner-lab && bunx tsc --noEmit",
-    "db:push": "cd apps/scanner-lab && bun run db:push"
+    "app:check": "cd apps/scanner-lab && bunx tsc --noEmit"
   }
 }

@@ -27,7 +27,7 @@ import {
   getScannerWorker,
   type ScannerWorkerClient,
 } from "./detector-client";
-import { generateDemoPage } from "./image-processor";
+import { generateDemoPage } from "./demo-page";
 import {
   computeEccentricityScore,
   computeExposureScore,

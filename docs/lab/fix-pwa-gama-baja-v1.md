@@ -110,6 +110,6 @@ Verificación de CHunks (marcadores de texto en `out/_next/static/chunks/`):
 | `apps/scanner-lab/src/app/page.tsx` | +10/−2 | D-05 |
 | `apps/scanner-lab/src/components/scanner/SettingsView.tsx` | +13/−2 | D-05 |
 | `CHANGES.md` | +sección al inicio | registro |
-| `apps/scanner-lab/docs/fix-pwa-gama-baja-v1.md` | NUEVO | evidencia |
+| `docs/lab/fix-pwa-gama-baja-v1.md` | NUEVO | evidencia |
 
 Cero toques: `burst-budget.ts`, `CameraView.tsx`, `detection-worker.js`, `detector-client.ts`, `package.json`, `bun.lock`, `next.config.ts`, `persistDocument`, migración one-time, ramas de otros PRs.

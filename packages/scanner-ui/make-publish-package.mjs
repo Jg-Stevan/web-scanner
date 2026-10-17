@@ -20,7 +20,11 @@ const published = {
   types: pkg.publishConfig?.types ?? "./dist/index.d.ts",
 };
 delete published.publishConfig;
-delete published.scripts;
+// E-15 (kit limpieza-v1): preservar prepublishOnly en el paquete publicado —
+// delete published.scripts a secas lo desactivaba en la publicación real.
+const { prepublishOnly } = published.scripts ?? {};
+if (prepublishOnly) published.scripts = { prepublishOnly };
+else delete published.scripts;
 
 writeFileSync(".publish/package.json", JSON.stringify(published, null, 2) + "\n");
 cpSync("dist", ".publish/dist", { recursive: true });

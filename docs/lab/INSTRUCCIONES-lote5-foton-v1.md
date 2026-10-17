@@ -37,7 +37,7 @@ preview OCR-grade en Android, aviso de poca luz y telemetría diag v6.
 ## 2. Whitelist CERRADA de archivos
 
 ```
-apps/scanner-lab/docs/INSTRUCCIONES-lote5-foton-v1.md   (nuevo — este documento)
+docs/lab/INSTRUCCIONES-lote5-foton-v1.md   (nuevo — este documento)
 apps/scanner-lab/src/components/scanner/CameraView.tsx
 apps/scanner-lab/src/lib/diag-report.ts
 apps/scanner-lab/src/components/scanner/SonnerToaster.tsx  (solo si el aviso lo exige)

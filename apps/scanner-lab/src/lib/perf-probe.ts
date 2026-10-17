@@ -180,17 +180,20 @@ function makeProbe(): PerfProbeApi {
       try {
         const byEvent = new Map<
           string,
-          { ev: string; count: number; lastMs: number | null; avgMs: number | null }
+          { ev: string; count: number; lastMs: number | null; emaMs: number | null }
         >();
         for (const m of marks) {
           const row =
             byEvent.get(m.ev) ??
-            { ev: m.ev, count: 0, lastMs: null as number | null, avgMs: null as number | null };
+            { ev: m.ev, count: 0, lastMs: null as number | null, emaMs: null as number | null };
           row.count += 1;
           const ms = typeof m.meta?.ms === "number" ? (m.meta.ms as number) : null;
           if (ms !== null) {
             row.lastMs = ms;
-            row.avgMs = row.avgMs === null ? ms : +((row.avgMs + ms) / 2).toFixed(1);
+            // D-15 (kit limpieza-v1): esto NO es una media — es mezcla
+            // exponencial (EMA) → key renombrado (cero consumidores externos
+            // del key viejo; verificado con grep). Solo diagnóstico.
+            row.emaMs = row.emaMs === null ? ms : +((row.emaMs + ms) / 2).toFixed(1);
           }
           byEvent.set(m.ev, row);
         }

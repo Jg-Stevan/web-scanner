@@ -126,44 +126,6 @@ export async function profileSensor(track: MediaStreamTrack): Promise<SensorProf
   return profile;
 }
 
-/** PASO 2 (capa 1) — photoSettings para takePhoto() que piden al ISP una
- *  foto DENTRO del tope seguro, conservando el aspecto nativo. Devuelve
- *  undefined si no aplica: el llamador dispara takePhoto() a secas
- *  (comportamiento dual-pipeline original, sensor manda). */
-export function buildCappedPhotoSettings(
-  profile: SensorProfile
-): PhotoSettings | undefined {
-  if (!profile.overCap || !profile.photoSettingsAdjustable) return undefined;
-  if (!profile.nativeW || !profile.nativeH) return undefined;
-
-  /** Elige el valor del rango más cercano al objetivo SIN pasarse de él
-   *  (respetando min/max/step de la spec). undefined = mejor no tocar. */
-  const pick = (
-    range: SensorSettingRange | null,
-    native: number,
-    target: number
-  ): number | undefined => {
-    if (!range || native <= 0) return undefined;
-    const { min, max, step } = range;
-    if (max <= min) return undefined;
-    let v = Math.min(target, max);
-    v = Math.max(v, min);
-    if (step > 1) v = Math.round(v / step) * step;
-    v = Math.min(v, max);
-    if (v >= native) return undefined; // no recorta nada → no tocar
-    return v;
-  };
-
-  const w = pick(profile.wRange, profile.nativeW, profile.safeCapPx);
-  const hTarget = Math.round((profile.safeCapPx * profile.nativeH) / profile.nativeW);
-  const h = pick(profile.hRange, profile.nativeH, hTarget);
-  const settings: PhotoSettings = {};
-  if (w) settings.imageWidth = w;
-  if (h) settings.imageHeight = h;
-  if (!settings.imageWidth && !settings.imageHeight) return undefined;
-  return settings;
-}
-
 /** PASO 2 (capa 2) — Red de seguridad POST-decode: si el blob del sensor
  *  excede el tope (photoSettings no soportado o el ISP devolvió el modo
  *  más cercano por encima), re-escala UNA vez a JPEG 0.92. Es una segunda
@@ -212,7 +174,6 @@ if (typeof window !== "undefined") {
   // — el sandbox no tiene cámara física.
   (window as unknown as { __sensorTools?: object }).__sensorTools = {
     profileSensor,
-    buildCappedPhotoSettings,
     clampBlobToSafeCap,
     getSensorSafeCap,
   };
