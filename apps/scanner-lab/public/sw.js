@@ -40,6 +40,10 @@ self.addEventListener("install", (event) => {
           "./icon-192.png",
           "./icon-512.png",
           "./apple-touch-icon.png",
+          // PERF-1b (lote8) — motor OpenCV offline: glue (sin wasm embebido)
+          // + wasm separado. Best-effort igual que el resto del precache.
+          "./vendor/opencv-4.5.5-core.js",
+          "./scanner/opencv-4.5.5-core.wasm",
         ]);
       } catch {
         /* el precache es best-effort: la app funciona sin él */
