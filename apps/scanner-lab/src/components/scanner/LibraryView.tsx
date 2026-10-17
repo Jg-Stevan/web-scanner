@@ -298,6 +298,9 @@ export default function LibraryView() {
   const purgeDocument = useScannerStore((s) => s.purgeDocument);
   const emptyTrash = useScannerStore((s) => s.emptyTrash);
   const toggleFavorite = useScannerStore((s) => s.toggleFavorite);
+  // BLQ-6 (lote7) — materialización on-demand para export/OCR de biblioteca.
+  const materializeDocument = useScannerStore((s) => s.materializeDocument);
+  const reLazyDocument = useScannerStore((s) => s.reLazyDocument);
   const setOcrText = useScannerStore((s) => s.setOcrText);
   const setDocumentsOrder = useScannerStore((s) => s.setDocumentsOrder);
   const exportQuality = useScannerStore((s) => s.settings.exportQuality);
@@ -579,11 +582,17 @@ export default function LibraryView() {
     const { buildLibraryPdf } = await import(
       "@jg-stevan/scanner-core/pdf-export"
     );
+    // BLQ-6 (lote7) — materializa los docs seleccionados (IndexedDB → data
+    // URLs) antes de construir el PDF y restaura la hidratación lazy al
+    // terminar (pdf-export consume data URLs y queda intocado).
+    const materialized = (
+      await Promise.all(docs.map((d) => materializeDocument(d.id)))
+    ).filter((d): d is ScanDocument => d !== null);
     const progressId = "export-selection";
     let lastShown = 0;
     try {
       const { pdf, bytes, adjusted, pageCount, docCount } = await buildLibraryPdf(
-        docs,
+        materialized,
         exportQuality,
         ({ docIndex, docCount: total, title }) => {
           const now = Date.now();
@@ -613,6 +622,8 @@ export default function LibraryView() {
     } catch {
       toast.error("No se pudo exportar la selección", { id: progressId });
     } finally {
+      // BLQ-6 — restaura la residencia lazy de TODOS los docs tocados.
+      for (const d of docs) reLazyDocument(d.id);
       setExportingSel(false);
     }
   };
@@ -622,7 +633,12 @@ export default function LibraryView() {
   const runBatchOcr = async () => {
     if (ocrRunning) return;
     const docs = selectedDocs();
-    const targets = docs.flatMap((d) =>
+    // BLQ-6 (lote7) — materializa antes de leer `processed` (lazy "" rompería
+    // toJpeg); re-lazy en el finally.
+    const materialized = (
+      await Promise.all(docs.map((d) => materializeDocument(d.id)))
+    ).filter((d): d is ScanDocument => d !== null);
+    const targets = materialized.flatMap((d) =>
       d.pages
         .filter((p) => !p.ocrDone)
         .map((p) => ({ docId: d.id, pageId: p.id, processed: p.processed, title: d.title }))
@@ -680,6 +696,8 @@ export default function LibraryView() {
         });
       }
     } finally {
+      // BLQ-6 — restaura la residencia lazy de TODOS los docs tocados.
+      for (const d of docs) reLazyDocument(d.id);
       setOcrRunning(false);
     }
   };
@@ -811,11 +829,17 @@ export default function LibraryView() {
     const { buildLibraryPdf, sanitizeFileName } = await import(
       "@jg-stevan/scanner-core/pdf-export"
     );
+    // BLQ-6 (lote7) — materializa antes de construir el PDF; re-lazy en el
+    // finally. El pico de RAM durante el export es el mismo que antes del
+    // lote (pdf-export materializa internamente todo el scope).
+    const materialized = (
+      await Promise.all(docs.map((d) => materializeDocument(d.id)))
+    ).filter((d): d is ScanDocument => d !== null);
     const progressId = "export-all";
     let lastShown = 0;
     try {
       const { pdf, bytes, adjusted, pageCount, docCount } = await buildLibraryPdf(
-        docs,
+        materialized,
         exportQuality,
         ({ docIndex, docCount: total, title }) => {
           // Toast de progreso reutilizado (throttle simple para no spamear).
@@ -853,6 +877,8 @@ export default function LibraryView() {
     } catch {
       toast.error("No se pudo exportar la biblioteca", { id: progressId });
     } finally {
+      // BLQ-6 — restaura la residencia lazy de TODOS los docs tocados.
+      for (const d of docs) reLazyDocument(d.id);
       setExportingAll(false);
     }
   };
@@ -2092,6 +2118,8 @@ function DocMenu({
   compact?: boolean;
 }) {
   const toggleFavorite = useScannerStore((s) => s.toggleFavorite);
+  const materializeDocument = useScannerStore((s) => s.materializeDocument);
+  const reLazyDocument = useScannerStore((s) => s.reLazyDocument);
   const duplicateDocument = useScannerStore((s) => s.duplicateDocument);
   const exportQuality = useScannerStore((s) => s.settings.exportQuality);
   const [pdfBusy, setPdfBusy] = useState<"export" | "share" | "text" | "share-text" | null>(null);
@@ -2106,7 +2134,11 @@ function DocMenu({
       "@jg-stevan/scanner-core/pdf-export"
     );
     try {
-      const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
+      // BLQ-6 (lote7) — materializa → construye → re-lazy (pdf-export
+      // consume data URLs y queda intocado; la residencia vuelve a lazy).
+      const materialized = await materializeDocument(doc.id);
+      if (!materialized) throw new Error("sin datos");
+      const { pdf, bytes } = await buildDocPdf(materialized, exportQuality);
       pdf.save(`${sanitizeFileName(doc.title)}.pdf`);
       toast.success(
         `PDF exportado · ${doc.pages.length} ${doc.pages.length === 1 ? "página" : "páginas"} · ${formatBytes(bytes)}`
@@ -2114,6 +2146,8 @@ function DocMenu({
     } catch {
       toast.error("No se pudo exportar el PDF");
     } finally {
+      // BLQ-6 — restaura la residencia lazy.
+      reLazyDocument(doc.id);
       setPdfBusy(null);
     }
   };
@@ -2128,7 +2162,10 @@ function DocMenu({
       "@jg-stevan/scanner-core/pdf-export"
     );
     try {
-      const { pdf, bytes } = await buildDocPdf(doc, exportQuality);
+      // BLQ-6 (lote7) — materializa → construye → re-lazy en finally.
+      const materialized = await materializeDocument(doc.id);
+      if (!materialized) throw new Error("sin datos");
+      const { pdf, bytes } = await buildDocPdf(materialized, exportQuality);
       const fileName = `${sanitizeFileName(doc.title)}.pdf`;
       const blob = pdf.output("blob");
       const file = new File([blob], fileName, { type: "application/pdf" });
@@ -2146,6 +2183,8 @@ function DocMenu({
       if ((err as Error)?.name === "AbortError") return; // el usuario canceló
       toast.error("No se pudo compartir el documento");
     } finally {
+      // BLQ-6 — restaura la residencia lazy.
+      reLazyDocument(doc.id);
       setPdfBusy(null);
     }
   };
