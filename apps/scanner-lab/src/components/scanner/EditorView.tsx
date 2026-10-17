@@ -513,7 +513,21 @@ export default function EditorView() {
 
   // ── Título del header (estilo Adobe Scan: "Digitalización N · fecha") ────
   const headerTitle = reviewDoc ? reviewDoc.title : `Digitalización ${documentsCount + 1}`;
-  const headerDate = prettyDate(reviewDoc ? reviewDoc.updatedAt : Date.now());
+  // BP-11 (Lote 9) — la fecha de la sesión ya NO se lee con Date.now() en
+  // render (impuro + congelado tras medianoche): nace en el montaje (lazy
+  // state) y se refresca SOLO si cambió el día local (el header no muestra
+  // hora — un intervalo de 60 s con comparación de día es el mínimo).
+  // Comportamiento visible idéntico (fechas correctas), sin impureza.
+  const [sessionNowMs, setSessionNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setSessionNowMs((prev) =>
+        new Date(prev).toDateString() === new Date().toDateString() ? prev : Date.now()
+      );
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const headerDate = prettyDate(reviewDoc ? reviewDoc.updatedAt : sessionNowMs);
 
   // ── Badge "Bordes detectados" (persistente 4s y se desvanece) ────────────
   const showBadge = useCallback(() => {

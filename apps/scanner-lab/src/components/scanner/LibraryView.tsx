@@ -163,7 +163,8 @@ function letterSectionLabel(title: string): string {
 function buildListSections(
   docs: ScanDocument[],
   sort: SortMode,
-  hasActiveFilter: boolean
+  hasActiveFilter: boolean,
+  now: number
 ): ListSection[] {
   if (hasActiveFilter || sort === "manual" || docs.length === 0) {
     return docs.length === 0 ? [] : [{ key: "all", label: "", docs }];
@@ -179,7 +180,10 @@ function buildListSections(
     return out;
   }
   for (const d of docs) {
-    const key = timeSectionKey(d.updatedAt, Date.now());
+    // BP-11 (Lote 9): `now` llega por parámetro (puro de nuevo) — antes leía
+    // Date.now() en cada llamada de render y las secciones quedaban
+    // obsoletas tras medianoche hasta el próximo cambio de datos.
+    const key = timeSectionKey(d.updatedAt, now);
     const last = out[out.length - 1];
     if (last && last.key === key) last.docs.push(d);
     else out.push({ key, label: TIME_SECTION_LABELS[key] ?? "", docs: [d] });
@@ -476,11 +480,24 @@ export default function LibraryView() {
   );
 
   /** Secciones de la vista de lista (A-Z → inicial, Recientes/Favoritos →
-   *  tramos temporales; sin agrupar si hay búsqueda/etiqueta activa). */
+   *  tramos temporales; sin agrupar si hay búsqueda/etiqueta activa).
+   *  BP-11 (Lote 9): `sectionNowMs` llega como estado del componente (nace en
+   *  el montaje y se refresca solo si cambió el día local — intervalo de 60 s
+   *  con comparación de día): las secciones ya no quedan obsoletas tras
+   *  medianoche y la función vuelve a ser pura/testeable. */
+  const [sectionNowMs, setSectionNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setSectionNowMs((prev) =>
+        new Date(prev).toDateString() === new Date().toDateString() ? prev : Date.now()
+      );
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
   const listSections = useMemo(
     () =>
-      buildListSections(visible, sort, Boolean(query.trim()) || tagFilter !== null),
-    [visible, sort, query, tagFilter]
+      buildListSections(visible, sort, Boolean(query.trim()) || tagFilter !== null, sectionNowMs),
+    [visible, sort, query, tagFilter, sectionNowMs]
   );
 
   /** Índice global de una fila (para la animación escalonada continua
