@@ -2013,7 +2013,7 @@ export default function EditorView() {
               aria-label="Compartir documento"
               onClick={() => void shareDocPdf()}
               disabled={sharing || totalPages === 0}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/85 transition-all active:scale-90 active:bg-white/10 disabled:opacity-30"
+              className="hit-slop flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/85 transition-all active:scale-90 active:bg-white/10 disabled:opacity-30"
             >
               {sharing ? (
                 <Loader2 className="h-[19px] w-[19px] animate-spin" />
@@ -2028,7 +2028,7 @@ export default function EditorView() {
             aria-label="Ver presentación a pantalla completa"
             onClick={openPresentation}
             disabled={totalPages === 0}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/85 transition-all active:scale-90 active:bg-white/10 disabled:opacity-30"
+            className="hit-slop flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/85 transition-all active:scale-90 active:bg-white/10 disabled:opacity-30"
           >
             <Maximize2 className="h-[19px] w-[19px]" strokeWidth={2.2} />
           </button>
@@ -2140,7 +2140,7 @@ export default function EditorView() {
                 aria-label="Página anterior"
                 disabled={activeIdx <= 0}
                 onClick={() => goToPage(activeIdx - 1)}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition-all active:scale-90 disabled:opacity-25"
+                className="hit-slop flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition-all active:scale-90 disabled:opacity-25"
               >
                 <ChevronLeft className="size-4" strokeWidth={2.6} />
               </button>
@@ -2152,7 +2152,7 @@ export default function EditorView() {
                 aria-label="Página siguiente"
                 disabled={activeIdx >= totalPages - 1}
                 onClick={() => goToPage(activeIdx + 1)}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition-all active:scale-90 disabled:opacity-25"
+                className="hit-slop flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition-all active:scale-90 disabled:opacity-25"
               >
                 <ChevronRight className="size-4" strokeWidth={2.6} />
               </button>

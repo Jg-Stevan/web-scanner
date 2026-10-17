@@ -61,6 +61,7 @@ import {
   type FrameLoopTelemetry,
 } from "@jg-stevan/scanner-core/frame-loop";
 import { SHUTTER_SCORE, type ShutterHealth } from "@jg-stevan/scanner-core/quality";
+import { requestMotionPermission } from "@jg-stevan/scanner-core/motion-stabilizer";
 import {
   clampBlobToSafeCap,
   getSensorSafeCap,
@@ -2294,6 +2295,10 @@ export default function CameraView() {
    *  · Stream sintético (QA sin hardware) → frames del stream.
    *  · Escena estática → demo. Sin stream → galería. */
   const onShutter = useCallback(() => {
+    // COMP-2 (lote8) — permiso DeviceMotion (iOS): el tap del obturador es
+    // un GESTO directo (requisito de requestPermission). Un intento por
+    // sesión; async fire-and-forget — no añade latencia al disparo.
+    void requestMotionPermission();
     // FIX v4 4.2 — además del guard de captureSmart, corta aquí el click
     // para no encolar nada mientras dura un disparo en curso.
     if (capturingRef.current || processingRef.current) return;
@@ -3223,7 +3228,7 @@ export default function CameraView() {
           type="button"
           aria-label="Cerrar cámara y volver a la biblioteca"
           onClick={closeToLibrary}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-black/30 backdrop-blur-md transition-transform duration-150 active:scale-90"
+          className="hit-slop flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-black/30 backdrop-blur-md transition-transform duration-150 active:scale-90"
         >
           <X className="h-5 w-5 text-white" strokeWidth={2.2} />
         </button>
@@ -3278,7 +3283,7 @@ export default function CameraView() {
               );
             }}
             className={cn(
-              "relative flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
+              "relative hit-slop flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
               settings.flashMode !== "off"
                 ? "bg-[#ffd60a]/18 ring-1 ring-[#ffd60a]/60"
                 : "bg-black/30"
@@ -3320,7 +3325,7 @@ export default function CameraView() {
               }
             }}
             className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
+              "hit-slop flex h-9 w-9 items-center justify-center rounded-full backdrop-blur-md transition-all duration-150 active:scale-90",
               autoCapture
                 ? "bg-[#ffd60a]/18 ring-1 ring-[#ffd60a]/60"
                 : "bg-black/30"
@@ -3341,7 +3346,7 @@ export default function CameraView() {
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((v) => !v)}
-            className="flex h-9 w-9 items-center justify-center rounded-full transition-transform duration-150 active:scale-90"
+            className="hit-slop flex h-9 w-9 items-center justify-center rounded-full transition-transform duration-150 active:scale-90"
           >
             <MoreVertical className="h-5 w-5 text-white" strokeWidth={2.2} />
           </button>
