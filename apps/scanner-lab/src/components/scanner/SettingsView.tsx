@@ -337,6 +337,33 @@ export default function SettingsView() {
               </SelectContent>
             </Select>
           </SettingsRow>
+          {/* Lote D (D-1, COMP-4) — nitidez del VISOR: solo cambia qué se
+              pinta en el editor. El guardado/export sigue a 4032 (invariante
+              WYSIWYG — image-processor intocable). Mismo patrón Select que
+              «Calidad de foto». */}
+          <SettingsRow
+            title="Nitidez del visor"
+            subtitle="Auto: se adapta a tu equipo · Exacta: lo que ves es exactamente lo que se guarda · Ligera: ahorra memoria (la foto guardada siempre es de máxima calidad)"
+          >
+            <Select
+              value={settings.previewQuality ?? "auto"}
+              onValueChange={(v) =>
+                updateSettings({ previewQuality: v as ScannerSettings["previewQuality"] })
+              }
+            >
+              <SelectTrigger
+                aria-label="Nitidez del visor"
+                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] px-3.5 text-[14px] font-medium text-[#3c3c43] dark:text-white shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="exacta">Exacta</SelectItem>
+                <SelectItem value="ligera">Ligera</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
           <SettingsRow
             title="Motor de precisión"
             subtitle="OpenCV · contornos + RANSAC + homografía"
@@ -493,6 +520,7 @@ export default function SettingsView() {
         {/* DIAG (spec diag §7) — informe del dispositivo: resumen real +
             compartir/descargar/copiar + re-medir benchmarks. */}
         <DiagSection />
+
 
       </div>
 

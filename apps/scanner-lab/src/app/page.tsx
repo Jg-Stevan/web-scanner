@@ -58,7 +58,6 @@ export default function Home() {
   const view = useScannerStore((s) => s.view);
   const hydrated = useScannerStore((s) => s.hydrated);
   const onboardingDone = useScannerStore((s) => s.onboardingDone);
-
   // Onboarding de primera ejecución: el store arranca SIEMPRE con false
   // (server + primer render del cliente — sin mismatch de hidratación);
   // tras montar se lee la marca persistida y, una vez hidratado el store,
