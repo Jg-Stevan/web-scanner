@@ -116,6 +116,26 @@
 
 ---
 
+## LOTE 9 — salud estructural: DRY + deuda (rama `refactor/lote9-estructural-v1`, APILADO)
+
+**Base técnica:** `test/red-seguridad-v1` (Lote 6 — la red de tests; PR apilado hasta que #9 se mergeé) · **Kit:** `INSTR-ws-lote9-estructural-v1` · PR DRAFT a main. Evidencia: `docs/lab/fix-lote9-estructural-v1.md`.
+
+**Ejecución PARCIAL** (precondiciones del kit): ✅ Fase B completa (LEG-2, LEG-6, BP-11) · ✅ Fase A parcial (DRY-4, DRY-6) · ✅ Fase E parcial (BP-9, BP-10) · ❌ DRY-3 (requiere L5 mergeado, PR #8) · ❌ Fases C/D (requieren Lote 8, inexistente) · ❌ BP-5/BP-6 (smoke sin cámara / warnings 159>60). El kit contempla A+B en PR propio antes que C+D.
+
+| Tarea | Resultado |
+|-------|-----------|
+| **LEG-2** | `CHANGES.md` 221 KB/58 entradas → raíz con 4 recientes + puntero; **54 entradas verbatim** a `docs/history/CHANGES-2026.md` |
+| **LEG-6** | Regla de oro #0 redefinida (AGENTS.md): «EXTRAE, NO COPIES» — lo compartido va al paquete (bump minor); la copia puente pasa a excepción temporal documentada. Redacción propuesta en el doc ANTES de editar |
+| **BP-11** | `Date.now()` fuera de render: secciones de biblioteca y `headerDate` del editor → estado + refresco por cambio de día (intervalo 60 s); `buildListSections` vuelve a ser PURA (now por parámetro) |
+| **DRY-4** | `codec.ts` ÚNICO blob⇄dataURL (bump **0.3.0**); adopción ×6 (image-processor, pdf-export FileReader→codec, EditorView fetch-version fuera, CameraView downscale). Re-export de page-store preserva la API (test de identidad de binding). `CameraView:1265` con deadline NO migrada (superset del hot path) |
+| **DRY-6** | `ScanEngine` único en types.ts; `hapticConfirm()` en lib (EditorView ×2 + Onboarding ×2); `pwa.ts`→`update-banner.ts`; 3 AlertDialog → **ConfirmDialog** local (mismos textos/estilos, tone danger/primary) |
+| **BP-9** | 8 reescrituras triviales con guard (Editor ×7, Library ×1); las 63 restantes documentadas (lib no-whitelisted + CameraView hot path) |
+| **BP-10** | 2 comentarios justificativos de `key={i}` (split estático de texto; tupla fija de 4 esquinas) |
+
+**Verificado:** checks ×3 + lint exit 0 (warnings 159→151) · `bun test` 197 pass/2 skip (+6 codec) · `build:static` exit 0 · smoke navegador completo (biblioteca→editor→filtros→guardado→PDF→presentación→ajustes→diag) con 0 errores de consola.
+
+---
+
 ## Histórico (pre-PR3) — `docs/history/CHANGES-2026.md`
 
 Las entradas anteriores (PR3 PWA/gama baja, PR2 leaks-recursos, gate-calidad, FIX v3-v10, auditoría 113 hallazgos y todo lo previo) viven en **[`docs/history/CHANGES-2026.md`](docs/history/CHANGES-2026.md)** — movidas íntegras por LEG-2 (Lote 9) para mantener la raíz legible. Regla vigente: la raíz conserva las entradas recientes (3-4) + este puntero; el histórico es append-only hacia abajo.
