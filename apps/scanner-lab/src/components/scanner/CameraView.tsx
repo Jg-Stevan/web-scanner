@@ -49,11 +49,11 @@ import {
   detectDocumentEdges,
   evaluateQuality,
   fileToCaptureDataUrl,
-  generateDemoPage,
   getScannerWorker,
   loadImage,
   PROCESSED_MAX_LONG_SIDE,
 } from "@jg-stevan/scanner-core/image-processor";
+import { generateDemoPage } from "@jg-stevan/scanner-core/demo-page";
 import {
   CameraFrameLoop,
   SyntheticCamera,
