@@ -78,6 +78,139 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+// ─── materialización on-demand (BLQ-6, lote7) ──────────────────────────────────
+
+/** Imágenes materializadas de una página como Blob URLs (NO data URLs:
+ *  cero base64 en RAM — el bitmap vive en el blob store del navegador y el
+ *  string es una referencia de ~60 bytes). Volátil: NUNCA persistir. */
+export interface PageImageData {
+  originalUrl: string;
+  processedUrl: string;
+}
+
+/** LRU pura e inyectable (testeable sin DOM): los valores se crean con
+ *  `create` (async) y se liberan con `dispose` al expulsar o en `release`.
+ *  El acceso refresca la posición (LRU clásica por inserción). */
+export class PageImageCache<V> {
+  private map = new Map<string, Promise<V>>();
+  constructor(
+    private max: number,
+    private create: (key: string) => Promise<V>,
+    private dispose: (value: V) => void,
+  ) {}
+
+  /** Resuelve el valor de la clave (creándolo si hace falta) y lo marca
+   *  como más-recientemente-usado. Llamadas concurrentes comparten promesa.
+   *  Una creación fallida NO se cachea (la entrada se limpia → retry). */
+  get(key: string): Promise<V> {
+    const pending = this.map.get(key);
+    if (pending) {
+      this.map.delete(key);
+      this.map.set(key, pending);
+      return pending;
+    }
+    const p = this.create(key);
+    void p.catch(() => {
+      if (this.map.get(key) === p) this.map.delete(key);
+    });
+    this.map.set(key, p);
+    this.evict();
+    return p;
+  }
+
+  peek(key: string): Promise<V> | undefined {
+    return this.map.get(key);
+  }
+
+  /** Libera explícitamente (cierre de vista): expulsa y dispone. */
+  release(key: string): void {
+    const p = this.map.get(key);
+    if (!p) return;
+    this.map.delete(key);
+    void p.then(this.dispose).catch(() => {
+      /* dispose best-effort */
+    });
+  }
+
+  private evict(): void {
+    while (this.map.size > this.max) {
+      const oldestKey = this.map.keys().next().value as string;
+      const oldest = this.map.get(oldestKey);
+      this.map.delete(oldestKey);
+      if (oldest) void oldest.then(this.dispose).catch(() => {
+        /* dispose best-effort */
+      });
+    }
+  }
+}
+
+/** Lee los Blobs original/processed de UNA página directamente de IndexedDB
+ *  (una lectura; los blobs nunca se retienen en RAM más allá del uso). */
+export async function loadPageBlobs(
+  docId: string,
+  pageId: string,
+): Promise<{ original: Blob; processed: Blob } | null> {
+  try {
+    const db = await openDb();
+    if (!db) return null;
+    const rec = await new Promise<StoredDocument | undefined>((resolve) => {
+      const tx = db.transaction(STORE_DOCS, "readonly");
+      const req = tx.objectStore(STORE_DOCS).get(docId);
+      req.onsuccess = () => resolve(req.result as StoredDocument | undefined);
+      req.onerror = () => resolve(undefined);
+    });
+    db.close();
+    const sp = rec?.pages.find((p) => p.id === pageId);
+    if (!sp || !(sp.original instanceof Blob) || !(sp.processed instanceof Blob)) return null;
+    return { original: sp.original, processed: sp.processed };
+  } catch {
+    return null;
+  }
+}
+
+const PAGE_IMAGE_CACHE_MAX = 8;
+const imageCache = new PageImageCache<PageImageData>(
+  PAGE_IMAGE_CACHE_MAX,
+  async (key) => {
+    const sep = key.indexOf("|");
+    const blobs = await loadPageBlobs(key.slice(0, sep), key.slice(sep + 1));
+    if (!blobs) throw new Error(`page-store: página no encontrada en IndexedDB: ${key}`);
+    return {
+      originalUrl: URL.createObjectURL(blobs.original),
+      processedUrl: URL.createObjectURL(blobs.processed),
+    };
+  },
+  (v) => {
+    try {
+      URL.revokeObjectURL(v.originalUrl);
+    } catch {
+      /* ya revocada */
+    }
+    try {
+      URL.revokeObjectURL(v.processedUrl);
+    } catch {
+      /* ya revocada */
+    }
+  },
+);
+
+/** Materializa original+processed de una página como Blob URLs on-demand
+ *  (LRU de 8 entradas + revoke determinista). null = sin datos en disco o
+ *  sin API de object URLs (SSR). */
+export async function getPageImageData(docId: string, pageId: string): Promise<PageImageData | null> {
+  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
+  try {
+    return await imageCache.get(`${docId}|${pageId}`);
+  } catch {
+    return null;
+  }
+}
+
+/** Libera (revoke) las Blob URLs de una página — cierre determinista. */
+export function releasePageImageData(docId: string, pageId: string): void {
+  imageCache.release(`${docId}|${pageId}`);
+}
+
 // ─── IndexedDB (documentos) ─────────────────────────────────────────────────
 
 function openDb(): Promise<IDBDatabase | null> {
@@ -130,11 +263,24 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-/** Guarda (o reemplaza) un documento completo con imágenes como Blob. */
+/** Guarda (o reemplaza) un documento completo con imágenes como Blob.
+ *  BLQ-6 (lote7) — GUARD anti-pérdida: con hidratación perezosa, las páginas
+ *  NO materializadas llegan con original/processed = "" (o blob: no
+ *  convertible). Los Blobs ya están en IndexedDB: se reutilizan por page.id
+ *  del registro previo, byte-idénticos. Solo si tampoco existe registro previo
+ *  se omite la página (comportamiento histórico). Hace imposible perder datos
+ *  de páginas nunca materializadas (rename/favorito/tag/trash con lazy). */
 export async function persistDocument(doc: ScanDocument): Promise<void> {
   try {
     const db = await openDb();
     if (!db) return;
+    const prev = await new Promise<StoredDocument | undefined>((resolve) => {
+      const tx = db.transaction(STORE_DOCS, "readonly");
+      const req = tx.objectStore(STORE_DOCS).get(doc.id);
+      req.onsuccess = () => resolve(req.result as StoredDocument | undefined);
+      req.onerror = () => resolve(undefined);
+    });
+    const prevByPage = new Map((prev?.pages ?? []).map((p) => [p.id, p] as const));
     const record: StoredDocument = {
       ...doc,
       // C-24 (auditoría leaks-recursos) — tolerancia por PÁGINA (replica la
@@ -143,9 +289,10 @@ export async function persistDocument(doc: ScanDocument): Promise<void> {
       // en vez de saltar el doc COMPLETO en el catch de abajo.
       pages: doc.pages.flatMap((p): StoredPage[] => {
         try {
-          const original = dataUrlToBlob(p.original);
-          const processed = dataUrlToBlob(p.processed);
-          const thumbnail = dataUrlToBlob(p.thumbnail);
+          const pb = prevByPage.get(p.id);
+          const original = dataUrlToBlob(p.original) ?? pb?.original ?? null;
+          const processed = dataUrlToBlob(p.processed) ?? pb?.processed ?? null;
+          const thumbnail = dataUrlToBlob(p.thumbnail) ?? pb?.thumbnail ?? null;
           if (original === null || processed === null || thumbnail === null) {
             console.warn(
               `[page-store] persistDocument: página ${p.id} con data URL inválida — se omite`
@@ -237,10 +384,12 @@ export async function loadManualOrder(): Promise<string[]> {
   }
 }
 
-/** Carga todos los documentos (Blobs → data URLs para la UI).
- *  null = instalación nueva (sin persistir) → la app conserva los mocks.
- *  []   = biblioteca real vacía (p. ej. tras borrar todo). */
-export async function loadAllDocuments(): Promise<ScanDocument[] | null> {
+/** Lectura común de loadAllDocuments/loadAllDocumentsLazy: open+initialized+
+ *  getAll + conversión por página + orden (manual gana, luego fecha).
+ *  `lazy: false` convierte los 3 Blobs (comportamiento histórico);
+ *  `lazy: true` SOLO thumbnail — original/processed llegan como "" y se
+ *  materializan on-demand (BLQ-6, lote7). */
+async function readAllDocuments(lazy: boolean): Promise<ScanDocument[] | null> {
   try {
     const db = await openDb();
     if (!db) return null;
@@ -261,12 +410,15 @@ export async function loadAllDocuments(): Promise<ScanDocument[] | null> {
       const pages: ScanPage[] = [];
       for (const sp of d.pages) {
         try {
-          // C-10 — las 3 conversiones por página van EN PARALELO (antes: 3
+          // C-10 — las conversiones por página van EN PARALELO (antes: 3
           // `await` en serie → ~3× la latencia por página y una ventana de
           // carrera de hidratación más grande en documentos de varias páginas).
+          // BLQ-6 (lote7) — en lazy SOLO se convierte el thumbnail (~10 KB);
+          // original/processed quedan "" y se materializan on-demand vía
+          // getPageImageData/loadPageBlobs (el bitmap vive en IndexedDB).
           const [original, processed, thumbnail] = await Promise.all([
-            blobToDataUrl(sp.original),
-            blobToDataUrl(sp.processed),
+            lazy ? Promise.resolve("") : blobToDataUrl(sp.original),
+            lazy ? Promise.resolve("") : blobToDataUrl(sp.processed),
             blobToDataUrl(sp.thumbnail),
           ]);
           pages.push({
@@ -304,6 +456,21 @@ export async function loadAllDocuments(): Promise<ScanDocument[] | null> {
   } catch {
     return null;
   }
+}
+
+/** Carga todos los documentos (Blobs → data URLs para la UI).
+ *  null = instalación nueva (sin persistir) → la app conserva los mocks.
+ *  []   = biblioteca real vacía (p. ej. tras borrar todo). */
+export async function loadAllDocuments(): Promise<ScanDocument[] | null> {
+  return readAllDocuments(false);
+}
+
+/** BLQ-6 (lote7) — hidratación perezosa: SOLO thumbnail+metadatos (la
+ *  biblioteca renderiza covers con ~10 KB/página); original/processed
+ *  llegan "" y se materializan on-demand (getPageImageData/loadPageBlobs,
+ *  guard de persistDocument). Meta: RAM residente −80/90%. */
+export async function loadAllDocumentsLazy(): Promise<ScanDocument[] | null> {
+  return readAllDocuments(true);
 }
 
 // ─── localStorage (ajustes) ──────────────────────────────────────────────────
