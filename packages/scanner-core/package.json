@@ -1,6 +1,6 @@
 {
   "name": "@jg-stevan/scanner-core",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Motor headless de escaneo de documentos: cámara, detección de bordes, procesado, OCR, calidad y exportación. Sin UI. Browser-only (consume vía bundler).",
   "license": "MIT",
   "type": "module",

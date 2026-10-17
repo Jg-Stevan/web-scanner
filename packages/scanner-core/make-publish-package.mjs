@@ -2,6 +2,12 @@
 // Motivo: ni bun publish ni npm publish aplican publishConfig.exports
 // (comportamiento pnpm-specific) -> el mapa de exports hacia dist/ se
 // aplica AQUI, manualmente y de forma verificable.
+//
+// PITFALL REAL (0.4.0, publicado roto el 2026-10-17): si corres
+// `npm publish` DESDE ESTA CARPETA (packages/scanner-core/), npm usa el
+// package.json de workspace (exports -> ./src/*.ts) y el tarball queda
+// SIN consumir (metadata apunta a archivos que no viajan). El publish
+// SIEMPRE es: `bun run publish:stage` y luego `cd .publish && npm publish`.
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 rmSync(".publish", { recursive: true, force: true });
