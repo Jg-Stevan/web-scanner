@@ -4,6 +4,27 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## PR-LIMPIEZA — deps muertas, configs, mock fuera del pipeline (rama `fix/limpieza-v1`)
+
+**Base:** `main` @ `bc38bf8` · **Kit:** `INSTR-ws-pr4-limpieza-v1` · PR de limpieza: **solo eliminación, movimiento e higiene de tipos/config — CERO cambios de comportamiento** en los paths de runtime del scanner (cámara, detección, burst, editor, persistencia, SW). PR DRAFT a main; evidencia completa fase a fase en `docs/lab/fix-limpieza-v1.md`.
+
+| Fase | Hallazgos | Qué se eliminó/movió |
+|------|-----------|----------------------|
+| A | E-14, D-14, C-16 | **26 deps muertas** de `apps/scanner-lab` (17 Clase-1 + 7 pares dep+ui + `bun-types` + 2 prisma) y **8 componentes ui muertos** (7 pares whitelisted + `sonner.tsx`); 7 ui con prueba individual de cero importers. Radix: cierre transitivo → 7 vivos KEEP, 20 muertos **NO tocados** (fuera de whitelist §6 — desviación D-1 reportada) |
+| B | C-04, E-06 | Capa Prisma heredada: `prisma/`, `src/lib/db.ts`, 5 scripts `db:*` (lab+root), deps `prisma`+`@prisma/client` |
+| C | D-06 | Doble sistema de toasts: `ui/toaster.tsx`, `ui/toast.tsx`, `hooks/use-toast.ts`, `ui/sonner.tsx`, import+JSX en `layout.tsx`, dep `@radix-ui/react-toast`. `SonnerToaster` (sonner) **intacto** |
+| D | B-20 | `generateDemoPage` (103 líneas) **movida** de `image-processor.ts` a `packages/scanner-core/src/demo-page.ts` (mismo contenido/semilla); importers (`frame-loop`, `CameraView` solo línea de import) y `index.ts` ajustados; API pública del paquete preservada |
+| E | A-16, C-26 | `buildCappedPhotoSettings` fuera de `sensor-profiler.ts` (+`__sensorTools`) con **bump 0.1.0→0.2.0** (export eliminado del paquete publicado); `imgWrapRef` muerto fuera de `PresentationView` |
+| F | E-12, E-13, E-15, E-09, E-05, E-18 | `tailwind.config.ts` fuera (tokens verificados 1:1 contra `@theme` v4) + `tailwindcss-animate`; `.gitignore` dedup+anclaje (`/test`, `/prompt`, `dev.log`, `tool-results`); `make-publish-package.mjs` ×2 preserva `prepublishOnly`; línea muerta `rm -rf …/api` fuera de `deploy-pages.yml` (L56); dep fantasma de core en scanner-ui fuera (solo comentarios); exports `"./*.tsx"` añadidos |
+| G | E-11, E-10 | `apps/scanner-lab/docs` → `docs/lab` (14 ficheros, 2.7 MB fuera del producto) + 4 archivos con rutas actualizadas; `GEMINI.md`/`QWEN.md` → punteros (copia canónica única `REGLAS-AGENTE.md`, md5 verificado) |
+| H | D-13, D-15, D-16, D-09 | `DIAG_REPORT_VERSION=6` única (TXT decía v5, JSON 6); `avgMs`→`emaMs` (es EMA, cero consumidores externos); guard quad vacío (`bboxW/H: null` en vez de `-Infinity`); augmentation de `perf-probe` con el tipo correcto `Record<string, primitivos \| BurstHeapProbe>` (antes colaba cualquier objeto) |
+
+**Verificado:** `core:check`/`ui:check`/`app:check`/`lint` = exit 0 · `build:static` exit 0 · humo de las 28 deps = vacío · smoke navegador (dev :3111, 0 errores de consola): cámara simulated genera la página demo end-to-end, toasts sonner vivos, diag TXT «v6» + JSON `version: 6` coherentes, biblioteca→editor→guardado OK · `node_modules` 1330→1260 MB · deps lab 70→42.
+
+**Excluidos deliberadamente:** 20 deps Radix muertas + 31 `ui/*.tsx` muertos (fuera de la whitelist §6 — desviación D-1 con lista completa en el doc); E-21, B-09 y E-16 (OPCIONALES del kit, «ante duda NO»); todos los hallazgos COMPLEJO/RIESGOSO y bug fixes conductuales del §1.5; `public/sw.js`, workflows (salvo la línea E-09), DEFAULTS y vendor/opencv — intocados.
+
+---
+
 ## HOTFIX — deploy de main saltaba: la concurrency del Quality Gate cancelaba la corrida llamada (rama `fix/deploy-concurrency-v1`)
 
 **Base:** `main` @ `5874d5b` · **Disparo:** primer push a main con la cadena del gate (merge de PR #5, `874182c`): `Deploy to GitHub Pages` quedó **cancelled** (run `38974978246` — su job `quality / checks` llamado murió en el segundo del arranque, `build`/`deploy` skipped) y la demo siguió sirviendo `ad4c6fa7`. La standalone `Quality Gate` del mismo push sí corrió (success).
