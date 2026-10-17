@@ -10,7 +10,7 @@
 
 **Causa raíz:** `quality.yml` tenía `concurrency` a nivel workflow (`quality-<ref>`, cancel-in-progress) — ese bloque **también aplica en `workflow_call`** con el contexto del caller → en push a main, la corrida llamada compartió grupo `quality-refs/heads/main` con la standalone (ambas arrancaron 22:18:45Z) y la segunda canceló a la primera. El group propio del caller (`quality-deploy-<ref>`, PR gate-calidad-v1) protegía contra otras llamadas, no contra la standalone: blindaje necesario pero insuficiente.
 
-**Fix:** eliminar el bloque `concurrency` workflow-level de `quality.yml` (única pieza; triggers y jobs intactos). La llamada queda protegida por el group del job caller; la standalone corre sin grupo; **no existe grupo compartido** → la carrera desaparece por construcción. Efecto secundario aceptado: en PR se pierde cancel-in-progress (runs duplicados, ruido no-código). Detalle y evidencia: `apps/scanner-lab/docs/fix-deploy-concurrency-v1.md`.
+**Fix:** eliminar el bloque `concurrency` workflow-level de `quality.yml` (única pieza; triggers y jobs intactos). La llamada queda protegida por el group del job caller; la standalone corre sin grupo; **no existe grupo compartido** → la carrera desaparece por construcción. Efecto secundario aceptado: en PR se pierde cancel-in-progress (runs duplicados, ruido no-código). Detalle y evidencia: `docs/lab/fix-deploy-concurrency-v1.md`.
 
 **Verificado:** YAML parseado OK (js-yaml) · CI del PR (`pull_request`) verde sin concurrency · demostración final pendiente del push a main de este hotfix: `Deploy to GitHub Pages` debe completar `quality → build → deploy` sin cancelaciones, en paralelo con la standalone.
 
@@ -18,7 +18,7 @@
 
 ## 0·PR3 — PWA Y GAMA BAJA: SW estable entre deploys + bundle ligero (rama `fix/pwa-gama-baja-v1`)
 
-**Base:** `main` @ `ad4c6fa` · **Kit:** `INSTRUCCIONES-ws-pr3-pwa-gama-baja-v1.md` · 4 hallazgos de la auditoría externa (E-04, B-02, D-05, C-10). Evidencia completa (métrica de bundle, checklist QA, desviaciones): `apps/scanner-lab/docs/fix-pwa-gama-baja-v1.md`. **Se mergea AL FINAL** (coordinación con `fix/gate-calidad-v1` y `fix/leaks-recursos-v1`).
+**Base:** `main` @ `ad4c6fa` · **Kit:** `INSTRUCCIONES-ws-pr3-pwa-gama-baja-v1.md` · 4 hallazgos de la auditoría externa (E-04, B-02, D-05, C-10). Evidencia completa (métrica de bundle, checklist QA, desviaciones): `docs/lab/fix-pwa-gama-baja-v1.md`. **Se mergea AL FINAL** (coordinación con `fix/gate-calidad-v1` y `fix/leaks-recursos-v1`).
 
 **Cambios:**
 
@@ -31,7 +31,7 @@
 
 ## PR 2 «Leaks y recursos» — rama `fix/leaks-recursos-v1` (15 hallazgos triviales de auditoría)
 
-**Base:** `main` @ `ad4c6fa` · **Origen:** auditoría externa de 113 hallazgos (0 falsos) — este PR cierra los 15 de leaks/liberación de recursos y bugs latentes confirmados TRIVIALES. PR draft hacia `main` (JAMÁS merge desde aquí). Evidencia completa: `apps/scanner-lab/docs/fix-leaks-recursos-v1.md`. Coordinación: comparte `burst-budget.ts` (zona sonda heap ~L230-247; NO toca DEFAULTS) y `page-store.ts` (~L53-58; NO toca hidratación) con los PRs paralelos `fix/gate-calidad-v1` y `fix/pwa-gama-baja-v1` — hunks disjuntos.
+**Base:** `main` @ `ad4c6fa` · **Origen:** auditoría externa de 113 hallazgos (0 falsos) — este PR cierra los 15 de leaks/liberación de recursos y bugs latentes confirmados TRIVIALES. PR draft hacia `main` (JAMÁS merge desde aquí). Evidencia completa: `docs/lab/fix-leaks-recursos-v1.md`. Coordinación: comparte `burst-budget.ts` (zona sonda heap ~L230-247; NO toca DEFAULTS) y `page-store.ts` (~L53-58; NO toca hidratación) con los PRs paralelos `fix/gate-calidad-v1` y `fix/pwa-gama-baja-v1` — hunks disjuntos.
 
 **Tabla hallazgo → fix → archivo:**
 
@@ -73,13 +73,13 @@
 - **E-02:** 18 reglas de corrección `off`→`warn` (criterio del kit: ninguna a `error`). Estilo/opinión siguen `off` (10). `react-compiler/react-compiler` se queda `off`: su plugin no está instalado y añadirlo tocaría `package.json` (prohibido por el kit).
 - **C-06:** `app:check` limpio → `typescript.ignoreBuildErrors: false` — el build vuelve a validar tipos.
 
-**Cómo se verifica:** `bun run core:check && bun run ui:check && bun run app:check` (0 errores) · `bun run lint` exit 0 (0 errores, 175 warnings — la deuda ahora es visible) · `bun run build:static` verde · YAML parseado de ambos workflows OK · `git diff --stat origin/main` = exactamente la whitelist del kit. Detalle y evidencia: `apps/scanner-lab/docs/fix-gate-calidad-v1.md`.
+**Cómo se verifica:** `bun run core:check && bun run ui:check && bun run app:check` (0 errores) · `bun run lint` exit 0 (0 errores, 175 warnings — la deuda ahora es visible) · `bun run build:static` verde · YAML parseado de ambos workflows OK · `git diff --stat origin/main` = exactamente la whitelist del kit. Detalle y evidencia: `docs/lab/fix-gate-calidad-v1.md`.
 
 ---
 
 ## 0. FIX v3 — Calidad del editor WYSIWYG + presentación iOS + benchmark fuera (rama `fix/scanner-lab-editor-quality`)
 
-**Regla del propietario:** "guardar la captura en lo máximo del lente, sin ajustes por benchmark". Documentación completa del fix (plan, decisiones, evidencia de verificación): `apps/scanner-lab/docs/fix-editor-quality-v3.md`.
+**Regla del propietario:** "guardar la captura en lo máximo del lente, sin ajustes por benchmark". Documentación completa del fix (plan, decisiones, evidencia de verificación): `docs/lab/fix-editor-quality-v3.md`.
 
 **Cambios:**
 
@@ -94,13 +94,13 @@
 
 **Verificado:** `tsc` core + app, `eslint`, y E2E en navegador (Ajustes sin benchmark, chip WYSIWYG con dimensiones exactas, rotación que conserva resolución, clamp de paneo pixel-perfect, merge al salir, captura → guardar). Pendiente: QA en iPhone Safari físico (bug 1.1 solo visible ahí).
 
-> **🔀 Mergeado:** PR #10 → `main` en `6aa7c14` (solo scanner-lab + scanner-core; e14 completamente intocado — corrección de alcance v3.1). CI verde: Deploy to GitHub Pages `success` — `/lab/` y raíz respondiendo 200 con el build nuevo. Registro completo de la ejecución: `apps/scanner-lab/docs/fix-editor-quality-v3.md`.
+> **🔀 Mergeado:** PR #10 → `main` en `6aa7c14` (solo scanner-lab + scanner-core; e14 completamente intocado — corrección de alcance v3.1). CI verde: Deploy to GitHub Pages `success` — `/lab/` y raíz respondiendo 200 con el build nuevo. Registro completo de la ejecución: `docs/lab/fix-editor-quality-v3.md`.
 
 ---
 
 ## 0-bis. FIX v4 — Recuperación de cámara negra tras «Cámara lenta» (rama `fix/camera-black-recovery-v4`)
 
-**Síntoma del propietario:** al capturar aparece el toast «Cámara lenta: baja resolución esta vez» y después la captura nunca se muestra y la cámara queda **negra para siempre**. Causa raíz: 5 defectos encadenados. Documentación completa (plan, decisiones, evidencia): `apps/scanner-lab/docs/fix-camera-black-v4.md`.
+**Síntoma del propietario:** al capturar aparece el toast «Cámara lenta: baja resolución esta vez» y después la captura nunca se muestra y la cámara queda **negra para siempre**. Causa raíz: 5 defectos encadenados. Documentación completa (plan, decisiones, evidencia): `docs/lab/fix-camera-black-v4.md`.
 
 **Cambios (todos en `CameraView.tsx`):**
 
@@ -117,7 +117,7 @@
 
 ## 0-ter. FIX v5 — Calidad de importación, recorte doble, cámara y UX (rama `fix/ux-editor-camera-v5`)
 
-**Base:** `fix/camera-black-recovery-v4` (v4 aún abierto en el PR #12 al ramificar, como exigen las instrucciones). Documentación completa (plan, decisiones, evidencia E2E): `apps/scanner-lab/docs/fix-ux-v5.md`. 8 puntos, un commit por punto.
+**Base:** `fix/camera-black-recovery-v4` (v4 aún abierto en el PR #12 al ramificar, como exigen las instrucciones). Documentación completa (plan, decisiones, evidencia E2E): `docs/lab/fix-ux-v5.md`. 8 puntos, un commit por punto.
 
 **Cambios:**
 
@@ -136,7 +136,7 @@
 
 ## 0-quater. FIX v6 — iPhone real: cámara, pantalla negra y paneo táctil (rama `fix/ios-safari-v6`)
 
-**Base:** `main` en `cef735c` (v4+v5 fusionados, PR #12 y #14). Documentación completa (plan, decisiones, evidencia E2E): `apps/scanner-lab/docs/fix-ios-safari-v6.md`. 4 puntos, un commit por punto. Reportado en iPhone 17 Pro (iOS 26).
+**Base:** `main` en `cef735c` (v4+v5 fusionados, PR #12 y #14). Documentación completa (plan, decisiones, evidencia E2E): `docs/lab/fix-ios-safari-v6.md`. 4 puntos, un commit por punto. Reportado en iPhone 17 Pro (iOS 26).
 
 **Cambios:**
 
@@ -166,7 +166,7 @@
 
 ## 0-quinquies. FIX v7 — Auto-captura iOS: cero mensajes + máxima calidad del stream (rama `fix/ios-auto-quality-v7`)
 
-**Base:** `main` en `d20737e` (v6 fusionado vía PR #15). Documentación completa (plan, decisiones, evidencia E2E): `apps/scanner-lab/docs/fix-auto-quality-v7.md`. 3 puntos, un commit por punto. Reporte: iPhone 17 Pro + usuarios con Chrome en iPhone (mismo motor WebKit — la detección positiva de Android de v6 ya los clasifica en el régimen iOS; cero browser-sniffing nuevo).
+**Base:** `main` en `d20737e` (v6 fusionado vía PR #15). Documentación completa (plan, decisiones, evidencia E2E): `docs/lab/fix-auto-quality-v7.md`. 3 puntos, un commit por punto. Reporte: iPhone 17 Pro + usuarios con Chrome en iPhone (mismo motor WebKit — la detección positiva de Android de v6 ya los clasifica en el régimen iOS; cero browser-sniffing nuevo).
 
 **Cambios (todos en `CameraView.tsx`):**
 
@@ -216,7 +216,7 @@
 
 ## 0-octavo. FIX v8 — Pan con zoom en el EDITOR: el iPhone no puede desplazarse (rama `fix/editor-pan-v8`)
 
-**Base:** `main` en `6a99ddf` (PR #19 v7-b fusionado y verificado). Documentación completa (diagnóstico, cambios, evidencia E2E): `apps/scanner-lab/docs/fix-editor-pan-v8.md`. Reporte: en el EDITOR el doble-toque amplía bien pero el pan con zoom es «muy difícil» en iPhone físico; la PresentationView (botón Maximize2) funciona bien. La lógica pointer del editor era correcta (verificado en Chromium táctil: pan 1:1, clamp exacto) — lo que fallaba era la capa de gestos de WebKit, el mismo patrón del 6.3.
+**Base:** `main` en `6a99ddf` (PR #19 v7-b fusionado y verificado). Documentación completa (diagnóstico, cambios, evidencia E2E): `docs/lab/fix-editor-pan-v8.md`. Reporte: en el EDITOR el doble-toque amplía bien pero el pan con zoom es «muy difícil» en iPhone físico; la PresentationView (botón Maximize2) funciona bien. La lógica pointer del editor era correcta (verificado en Chromium táctil: pan 1:1, clamp exacto) — lo que fallaba era la capa de gestos de WebKit, el mismo patrón del 6.3.
 
 **Cambios (ambos en `EditorView.tsx`):**
 
@@ -281,7 +281,7 @@
 
 ## 0-undecimo. EXPERIMENTO v11 — Crash-test fuente única, SIN red de seguridad (rama `fix/crash-test-fuente-unica-v11`)
 
-**Base:** `fix/editor-display-quality-v10` en `4f285f1` (PR #25 v10, apilado). Documentación completa: `apps/scanner-lab/docs/fix-crash-test-v11.md`. **Pregunta del experimento:** ¿un dispositivo gama baja crashea si TODO (editor, presentación, zoom) consume el dato completo (PNG ≤4032) sin ninguna copia de pantalla, sin degradación por tier y sin red de seguridad? Decisión del dueño: mientras dure el experimento, **todos los dispositivos ven el mismo dato** (el de 4032). Si no crashea → permanente (más simple, mejor calidad percibida) y las fases de degradación del plan v8 se archivan; si crashea → protección SOLO en el punto exacto. La «red de seguridad» era la copia de pantalla `displayUrl` (JPEG re-encodeado, v5 5.1) — la única protección de datos activa. Beneficio inmediato: editor y presentación consumen exactamente la misma fuente → imposible que se vean distintas (la queja «el editor se ve peor que pantalla completa» desaparece por construcción). SUSTITUYE a v10-C (HIFI condicional por tier): fuente única incondicional, sin `deviceMemory`.
+**Base:** `fix/editor-display-quality-v10` en `4f285f1` (PR #25 v10, apilado). Documentación completa: `docs/lab/fix-crash-test-v11.md`. **Pregunta del experimento:** ¿un dispositivo gama baja crashea si TODO (editor, presentación, zoom) consume el dato completo (PNG ≤4032) sin ninguna copia de pantalla, sin degradación por tier y sin red de seguridad? Decisión del dueño: mientras dure el experimento, **todos los dispositivos ven el mismo dato** (el de 4032). Si no crashea → permanente (más simple, mejor calidad percibida) y las fases de degradación del plan v8 se archivan; si crashea → protección SOLO en el punto exacto. La «red de seguridad» era la copia de pantalla `displayUrl` (JPEG re-encodeado, v5 5.1) — la única protección de datos activa. Beneficio inmediato: editor y presentación consumen exactamente la misma fuente → imposible que se vean distintas (la queja «el editor se ve peor que pantalla completa» desaparece por construcción). SUSTITUYE a v10-C (HIFI condicional por tier): fuente única incondicional, sin `deviceMemory`.
 
 **Cambios:**
 
@@ -749,7 +749,7 @@ bun run dev        # abrir en móvil (HTTPS requerido para cámara/DeviceMotion)
 
 ## 0-vigesimo-septimo. PERF — LOTE 2: Preview escalonado del editor fast-first + escalera PDF + diag de tier (rama `perf/lote2-preview`)
 
-**Base:** INSTRUCCIONES-lote2-preview-escalonado-v1 (`apps/scanner-lab/docs/`), rama nueva desde `perf/post-capture-f2` (`1c508b0`, PR #43 aún abierto). Baseline SM-A135M diag 1241 (`879ff20 f2-lote1`): `editor_first_render` = 38 398 ms con congestión (12 072 ms en 0951 sin congestión) — el editor nace con solo `original`+`quad` en el store y el primer pintado exige el warp de 12 MP con INTER_CUBIC + filtro + encode PNG a 4032. El photo grace (~17.5 s) es piso del navegador e IRREDUCIBLE; lo único optimizable es el render DENTRO del editor. Principio de diseño: VER el acta rápido; la resolución completa (WYSIWYG del guardado) no se toca.
+**Base:** INSTRUCCIONES-lote2-preview-escalonado-v1 (`docs/lab/`), rama nueva desde `perf/post-capture-f2` (`1c508b0`, PR #43 aún abierto). Baseline SM-A135M diag 1241 (`879ff20 f2-lote1`): `editor_first_render` = 38 398 ms con congestión (12 072 ms en 0951 sin congestión) — el editor nace con solo `original`+`quad` en el store y el primer pintado exige el warp de 12 MP con INTER_CUBIC + filtro + encode PNG a 4032. El photo grace (~17.5 s) es piso del navegador e IRREDUCIBLE; lo único optimizable es el render DENTRO del editor. Principio de diseño: VER el acta rápido; la resolución completa (WYSIWYG del guardado) no se toca.
 
 **Cambios:**
 - **F2-E — Preview escalonado fast-first (`image-processor.ts` + `EditorView.tsx`):** constante nueva `PREVIEW_FAST_LONG_SIDE = 2048` (tier fast del PRIMER pintado; el tier full 4032 llega después en background). En `processImagePrecise`, cuando `opts?.maxLongSide` es ESTRICTAMENTE menor que `PROCESSED_MAX_LONG_SIDE` (4032) y menor que el lado mayor de la entrada, la ENTRADA del warp se reduce a ese tope con `createImageBitmap(img, {resizeWidth, resizeHeight, resizeQuality: "high"})` (fuera del hilo principal; el warp escala ~cuadrático con el output — (2048/4032)² ≈ 0.26× — y el output queda ≤ maxLongSide por construcción; el quad es FRACCIONES 0-1 y no se altera; fallo → foto completa como hoy). ⚠️ INVARIANTE WYSIWYG hermético: con `maxLongSide === 4032` o indefinido la entrada NO se toca — byte a byte el comportamiento de hoy (guardado `store.ts` L303/462/587/713 a 4032 intacto, `setWarpCap(4032)` intacto). En `EditorView.tsx` el efecto del preview corre DOS pasadas secuenciales: PASADA FAST (`maxLongSide: 2048`) → `cachePreviewEntry` + `setPreview` con entry `tier: "fast"` + mark `editor_first_render` con los mismos campos de hoy **+ `previewTier: "fast"`**; PASADA FULL (background, `maxLongSide: 4032`) → al resolver reemplaza el cache entry con `tier: "full"` y hace `setPreview` SOLO si la página/filtro/rotación siguen siendo los mismos (cacheKey intacto) + mark NUEVO aditivo `editor_preview_upgraded { ms, filterId }`. Cache-hit con tier fast (§2.3.3): pintado instantáneo + RE-AGENDAR la pasada FULL (mismo mecanismo). Cancelación (§2.3.2): desmontaje / cambio de cacheKey / vuelta a cámara — el cleanup extiende `cancelled` a la pasada FULL y LIBERA EL PAR `beginBackgroundJob`/`endBackgroundJob` INMEDIATAMENTE al cancelarse → `bgJobsAtShot` se mantiene en 0 cuando la cámara dispara (§2.3.4). `PreviewEntry` gana el campo `tier: "fast" | "full"`: entries de otros caminos a 4032 (seed de procesada persistida, `runOcrAll`, `handleSaveImage`, `runOcrCurrent`, fallback) quedan `tier: "full"`; la rotada rápida HEREDA el tier de su base (rotar un fast re-agenda la FULL del nuevo key — converge a 4032 igual que hoy, con el guard `atFullQuality` intacto). Consumidores NO-display blindados (§2.4): OCR (`runOcrCurrent`, auto-OCR, `runOcrAll`) IGNORA entries fast y consume/reprocesa a 4032 igual que hoy (el auto-OCR espera al entry full — mismo disparo que hoy: preview 4032 pintado; `runOcrCurrent` reprocesa al vuelo bajo single-flight de `ocrRunning`); el export de imagen (`handleSaveImage`) reprocesa a 4032 si el entry vivo es fast y siembra la cache con el full. La presentación sigue consumiendo la cache tal cual (display, misma fuente que el editor).
@@ -780,7 +780,7 @@ bun run dev        # abrir en móvil (HTTPS requerido para cámara/DeviceMotion)
 =======
 ## 0-vigesimo-octavo. PERF — LOTE 3: «Blob-first decode» del preview fast + diag decodeMs (rama `perf/lote3-blob-first`)
 
-**Base:** INSTRUCCIONES-lote3-blob-first-v1 (copia del dueño en `/upload` del sandbox; el archivo canónico `apps/scanner-lab/docs/INSTRUCCIONES-lote3-blob-first-v1.md` AÚN NO está en `main` — el dueño lo subirá por GitHub web según su protocolo; NO se commiteó para respetar la whitelist cerrada de 4 archivos §0.1), rama nueva desde `main` (`98df78c`, PR #48 mergeado). Evidencia G1 (§1): firstRender del editor = **20 972 ms** (tier fast, diag SM-A135M 1602, congestado; baseline 38 398 → −45 % con LOTE 2). Causa raíz: el decode completo de los 12 MP ocurre ANTES del downscale (`loadImage(dataURL)` materializa ≈48 MB y recién después `createImageBitmap` reduce a 2048) + cola del DetectionWorker + congestión. NO es el warp (ya corre a (2048/4032)² ≈ 0.26×).
+**Base:** INSTRUCCIONES-lote3-blob-first-v1 (copia del dueño en `/upload` del sandbox; el archivo canónico `docs/lab/INSTRUCCIONES-lote3-blob-first-v1.md` AÚN NO está en `main` — el dueño lo subirá por GitHub web según su protocolo; NO se commiteó para respetar la whitelist cerrada de 4 archivos §0.1), rama nueva desde `main` (`98df78c`, PR #48 mergeado). Evidencia G1 (§1): firstRender del editor = **20 972 ms** (tier fast, diag SM-A135M 1602, congestado; baseline 38 398 → −45 % con LOTE 2). Causa raíz: el decode completo de los 12 MP ocurre ANTES del downscale (`loadImage(dataURL)` materializa ≈48 MB y recién después `createImageBitmap` reduce a 2048) + cola del DetectionWorker + congestión. NO es el warp (ya corre a (2048/4032)² ≈ 0.26×).
 
 **Cambios:**
 - **F3-A — Decodificación blob-first del tier fast (`image-processor.ts`):** en `processImagePrecise`, cuando hay tope de salida ESTRICTAMENTE menor que full-res (`cap < PROCESSED_MAX_LONG_SIDE`), la fuente del warp se obtiene decodificando DIRECTO desde el Blob al tamaño de salida: `createImageBitmap(blob, { resizeWidth, resizeHeight, resizeQuality: "high", imageOrientation: "from-image" })` — el decodificador nativo escala DURANTE el decode (JPEG DCT ≈ 1/2 para 4032→2048) sin materializar los 12 MP. Dims de DISPLAY sin decodificar con el parser privado `jpegDimensionsFromBlob` (SOF w/h + EXIF orientation APP1/IFD0 tag 0x0112 con swap 5-8; offset IFD0 u32 con endianness según nota (*) de la spec; `>>> 0` anti-signo; guard de segmento APP1 truncado → null; sin dependencias). `dataUrlToBlob` importado de `./page-store` (sync, L45; sin ciclo — page-store NO importa image-processor, verificado). Mismo umbral que hoy: solo si la foto EXCEDE el tope (`cap < Math.max(dims.w, dims.h)` ≡ `cap < longIn` pero sin decode). **HERMÉTICO:** cualquier paso que falle (no-JPEG, header corrupto, plataforma sin resize/orientación — detectado además por sanity de dims EXACTAS `rw×rh` post-decode con `close()` del bitmap) → fallback al camino de hoy byte a byte (`loadImage` + resize LOTE 2): el comportamiento nunca degrada, solo acelera cuando el camino rápido está disponible. `resizeWidth/Height = round(dim · cap/maxDim)`, mín 1 px, sobre dims de display. **⚠️ INVARIANTE WYSIWYG intacto:** con `cap === PROCESSED_MAX_LONG_SIDE` (4032) o `undefined` el bloque blob-first NO corre — la ruta full sigue llamando `loadImage` igual que hoy (guardado/export/PDF/OCR reprocesos a 4032 intocables; el quad sigue siendo fracciones 0-1); el `close()` existente (`if (warpSource !== img)`) aplica igual a la ruta nueva sin duplicarse.
@@ -835,11 +835,11 @@ bun run dev        # abrir en móvil (HTTPS requerido para cámara/DeviceMotion)
 
 ## 0-trigesimo-primero. PERF — LOTE 5 «fotón»: F5-A escalera takePhoto + F5-B preview 1920×1440 Android + F5-C aviso poca luz + F5-D diag v6 (rama `perf/lote5-foton`)
 
-**Base:** `INSTRUCCIONES-lote5-foton-v1` (copia del dueño en `/upload` del sandbox, subida CANÓNICA a `apps/scanner-lab/docs/INSTRUCCIONES-lote5-foton-v1.md` según §1 de la spec), rama nueva desde `perf/lote4-gracia-enhance` @ `73099c4` (lote 4 aprobado pero aún SIN merge a `main` — este lote se apila sobre él, §1 de la spec). Evidencia cam-lab `scannerlab-camlab-SM-A135M-2026-10-14T19-04-29.json` + diag v5 build `perf/lote4-gracia-enhance @ 20054b2`.
+**Base:** `INSTRUCCIONES-lote5-foton-v1` (copia del dueño en `/upload` del sandbox, subida CANÓNICA a `docs/lab/INSTRUCCIONES-lote5-foton-v1.md` según §1 de la spec), rama nueva desde `perf/lote4-gracia-enhance` @ `73099c4` (lote 4 aprobado pero aún SIN merge a `main` — este lote se apila sobre él, §1 de la spec). Evidencia cam-lab `scannerlab-camlab-SM-A135M-2026-10-14T19-04-29.json` + diag v5 build `perf/lote4-gracia-enhance @ 20054b2`.
 
 **Contexto (causa raíz del tramo opaco ~15 s en SM-A135M):** el lote 4 mató la cola del worker (F4-A gracia + F4-B enhance sin copia), pero quedó un tramo opaco de **~15 s** en el A13 que NO era la cola: era el propio `takePhoto()`. La cadena: `CAN_TAKEPHOTO = true` → preview Android intencional 960×540 → `profileSensor()` mide sensor nativo ~2576×1932 → `overCap = false` → `buildCappedPhotoSettings()` devuelve `undefined` → `takePhotoBlob()` dispara `takePhoto()` DESNUDO (sin `photoSettings`) → el ISP de Samsung hace su proceso de foto completa full-res → **~15 s**. El muro del burst (2.8 s) cortaba → gracia (lote 4) → no llegaba → se guardaban **frames de preview a 540p (0.5 MP)** y la foto huérfana reemplazaba ~15 s después. La evidencia cam-lab probó: takePhoto 2048×1536 → **~1.0 s** (devuelve 1920×1920, ~993 KB); takePhoto desnudo → ~15 s; stream 1920×1440 → 26.7 fps con nitidez OCR-grade (Laplaciano crop ≈ 457, umbral OCR = 100); 29 fps con luz → 10 fps en oscura (caída por exposición, hardware — no hay código que arreglar).
 
-**Cambios (whitelist cerrada de 5 archivos: `CameraView.tsx`, `diag-report.ts`, `INSTRUCCIONES-lote5-foton-v1.md` nuevo en `apps/scanner-lab/docs/`, `CHANGES.md`, `SonnerToaster.tsx` no tocado — sonner ya montado y `toast` importado en `CameraView`):**
+**Cambios (whitelist cerrada de 5 archivos: `CameraView.tsx`, `diag-report.ts`, `INSTRUCCIONES-lote5-foton-v1.md` nuevo en `docs/lab/`, `CHANGES.md`, `SonnerToaster.tsx` no tocado — sonner ya montado y `toast` importado en `CameraView`):**
 - **F5-A — Escalera rápida de photoSettings en Android (`CameraView.tsx` `takePhotoBlob`):** nueva constante módulo `FOTO_LADDER = [{2048,1536}, {1280,960}]` (junto a `CAN_TAKEPHOTO`). En `takePhotoBlob`, cuando `buildCappedPhotoSettings(profile)` devuelve `undefined` (overCap=false) Y `CAN_TAKEPHOTO`, NO se dispara desnudo: se arranca por `FOTO_LADDER[0]`. El reintento único pre-lote5 se reemplaza por avance de escalera con la MISMA guarda (fallo RÁPIDO = `!res.blob && !res.timedOut && res.err && presupuesto restante > 50 ms`), pero el siguiente intento es el SIGUIENTE peldaño; el desnudo (`attempt(undefined)`) SOLO si la escalera se agotó. `res.timedOut` corta la escalera (sensor colgado → lista negra `takePhotoBrokenRef`, comportamiento pre-lote5 intacto). Camino del profiler (overCap=true): cola de reintento `[undefined]` — 1 reintento al desnudo, EXACTO como antes (comportamiento pre-lote5). iOS intacto: todo vive tras el guard `CAN_TAKEPHOTO` existente. PROHIBIDO respetado: carrera de 5 s, `burstDeadline`, lista negra, observador de foto huérfana y gracia NO tocados.
 - **F5-B — Preview OCR-grade en Android (`CameraView.tsx` constantes `IDEAL_PREVIEW_*`):** `IDEAL_PREVIEW_WIDTH = 1920` (antes `CAN_TAKEPHOTO ? 960 : 1920`) e `IDEAL_PREVIEW_HEIGHT = 1440` (antes `540 : 1440`) — ambas plataformas piden 1920×1440 ideal. La captura de respaldo (ring ZSL/snapshot) deja de nacer a 0.5 MP y pasa a OCR-grade (igual que el régimen que iOS ya corría). `IDEAL_PREVIEW_FPS` (30), `AUTO_CAPTURE_IDEAL_*` (solo no-Android), constraints de `getUserMedia` NO tocados. «ideal» nunca rechaza (regla E3 intacta); el loop de detección sigue remuestreando a 400 px y el ring ya escala copias a ≤1280 px (FIX v4 4.5) → sin cambios aguas abajo.
 - **F5-C — Aviso «poca luz» (`CameraView.tsx` `onFrame`):** constantes módulo `LOW_LIGHT_FPS_THRESHOLD = 12`, `LOW_LIGHT_RECOVERY_FPS = 20`, `LOW_LIGHT_ACCUM_MS = 4000`, `LOW_LIGHT_RECOVERY_MS = 2000`, `LOW_LIGHT_MAX_WARNS = 2`. Refs de estado por sesión de cámara: `lowLightAccumMsRef`, `lowLightRecoveryMsRef`, `lowLightWarnCountRef`, `lowLightWarnedThisCycleRef`, `lowLightLastAtRef`. Lógica en `onFrame` ANTES del throttle de UI (cada frame procesado, para precisión del acumulador): si `t.fps < 12` acumula dt; si acumula ≥4 s Y no avisado en este ciclo Y <2 avisos en la sesión → `toast.message("Poca luz: la cámara va lenta", { description: "Acércate a una luz o enciende el flash.", id: "poca-luz" })`. Recuperación: `t.fps ≥ 20` sostenidos ≥2 s resetea acumulador + ciclo (permite re-avisar). Histéresis: fps entre 12 y 20 ni acumula ni recupera. Reset al abrir cámara (useEffect del loop). Sin timers nuevos, sin suscripciones nuevas.

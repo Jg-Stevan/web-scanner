@@ -1,8 +1,8 @@
 # INSTRUCCIONES — LOTE 2: Preview escalonado del editor (v1)
 
-> **Archivo canónico de esta spec:** `apps/scanner-lab/docs/INSTRUCCIONES-lote2-preview-escalonado-v1.md`
+> **Archivo canónico de esta spec:** `docs/lab/INSTRUCCIONES-lote2-preview-escalonado-v1.md`
 > — lo commitea el DUEÑO en `main` ANTES de lanzar al agente (GitHub web → Add file → esa ruta). **La raíz del repo NUNCA recibe specs.**
-> Política de ubicación: cada lote vive en `apps/<app>/docs/` (lab → `apps/scanner-lab/docs/`, donde ya viven los `fix-*.md`; e14 → `apps/digitalizador-e14/docs/`). La raíz solo aloja `AGENTS.md`/`README`/`CHANGES`/`DEPLOY`.
+> Política de ubicación: cada lote vive en `apps/<app>/docs/` (lab → `docs/lab/`, donde ya viven los `fix-*.md`; e14 → `apps/digitalizador-e14/docs/`). La raíz solo aloja `AGENTS.md`/`README`/`CHANGES`/`DEPLOY`.
 >
 > **Rama:** `perf/lote2-preview` — créala DESDE `perf/post-capture-f2` (tip `1c508b0`).
 > Si `perf/post-capture-f2` ya fue mergeada a `main`, créala desde `main`.
@@ -17,7 +17,7 @@
 3. `apps/scanner-lab/src/lib/diag-report.ts`
 4. `CHANGES.md`
 
-(El archivo de esta spec ya vive en `main` en `apps/scanner-lab/docs/` — NO forma parte del diff del agente: `git diff --stat` debe mostrar SOLO los 4 archivos de arriba.)
+(El archivo de esta spec ya vive en `main` en `docs/lab/` — NO forma parte del diff del agente: `git diff --stat` debe mostrar SOLO los 4 archivos de arriba.)
 
 **INMUTABLES — CERO toques:** `apps/digitalizador-e14/` completo, `packages/scanner-core/src/ocr.ts`, `packages/scanner-core/src/pdf-export.ts`, `packages/scanner-core/src/detector-client.ts`, `apps/scanner-lab/public/sw.js`, `package.json`, `bun.lock`, cualquier otro archivo de `packages/`. Sin dependencias nuevas.
 
@@ -126,7 +126,7 @@ En el efecto del preview (anclas: L567 `cacheKey`, L604 cache-hit check, L633 `b
 ## 8. PROMPT LISTO PARA PEGAR (Jules o Codespace)
 
 ```text
-Lee apps/scanner-lab/docs/INSTRUCCIONES-lote2-preview-escalonado-v1.md (en main) y ejecútalo COMPLETO y AL PIE DE LA LETRA.
+Lee docs/lab/INSTRUCCIONES-lote2-preview-escalonado-v1.md (en main) y ejecútalo COMPLETO y AL PIE DE LA LETRA.
 
 Reglas duras:
 - Rama nueva: perf/lote2-preview, basada en perf/post-capture-f2 (o main si ya fue mergeado).
