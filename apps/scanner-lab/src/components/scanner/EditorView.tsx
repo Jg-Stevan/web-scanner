@@ -408,6 +408,11 @@ export default function EditorView() {
   const saveSessionAsDocument = useScannerStore((s) => s.saveSessionAsDocument);
   const startBatchDocument = useScannerStore((s) => s.startBatchDocument);
   const batchSavedCount = useScannerStore((s) => s.batchSavedCount);
+  // Lote D (D-1, COMP-4) — nitidez del visor: select FINO (FORT-6) — cambiar
+  // el ajuste NO re-renderiza la biblioteca; solo este componente y el
+  // efecto de display (que lo tiene en deps: al cambiar se re-pinta desde
+  // cache — instantáneo — y re-evalúa el gate de la pasada full).
+  const previewQuality = useScannerStore((s) => s.settings.previewQuality ?? "auto");
   /** F-NOVIEW — modo revisión de documento: el editor trabaja sobre las
    *  páginas de un documento guardado (cargadas como sesión con sus ids). */
   const reviewDocId = useScannerStore((s) => s.reviewDocId);
@@ -694,7 +699,11 @@ export default function EditorView() {
       // LOTE 2 (F2-E) §2.3.3 — cache-hit con tier fast: pintado instantáneo
       // (arriba) + RE-AGENDAR la pasada FULL en background (mismo mecanismo
       // del cache-miss). Tier full → comportamiento actual (nada extra).
-      if (cached.tier === "fast") scheduleFullPass();
+      // Lote D (D-1): "ligera" NO agenda la pasada full para display (se
+      // queda en tier fast; lo guardado sigue siendo 4032). "auto" y
+      // "exacta" mantienen el mecanismo actual (hoy no existe gate por
+      // equipo que "exacta" deba forzar — ver docs/lab/fix-loteD-decisiones-v1.md).
+      if (cached.tier === "fast" && previewQuality !== "ligera") scheduleFullPass();
       return () => {
         cancelled = true;
         // LOTE 4 (F4-A) — gracia pendiente: cancelar el timer. Si la pasada no
@@ -790,8 +799,12 @@ export default function EditorView() {
       // LOTE 2 (F2-E) §2.3.1 — PASADA FULL inmediatamente después de la
       // fast (background, NO bloquea): SOLO si la fast aterrizó como entry
       // fast de este key (si falló, el fallback original queda en pie como
-      // hoy — sin reproceso extra).
-      if (!cancelled && previewCache.current.get(cacheKey)?.tier === "fast") {
+      // hoy — sin reproceso extra). Lote D (D-1): "ligera" la salta.
+      if (
+        !cancelled &&
+        previewQuality !== "ligera" &&
+        previewCache.current.get(cacheKey)?.tier === "fast"
+      ) {
         scheduleFullPass();
       }
     })();
@@ -807,7 +820,7 @@ export default function EditorView() {
       }
       releaseFullJob();
     };
-  }, [mode, cacheKey, page?.original, cachePreviewEntry]);
+  }, [mode, cacheKey, page?.original, cachePreviewEntry, previewQuality]);
 
   // EXPERIMENTO v11 — telemetría QA: fuente única en el editor. El <img>
   // del preview consume preview.url (el DATO completo) — sin copia de

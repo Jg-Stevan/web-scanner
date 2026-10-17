@@ -225,6 +225,20 @@ export interface ScannerSettings {
    *  del sensor, «como antes"), "rapida" = escalera 2048 + upgrade
    *  silencioso (lotes 5.3/5.4, intacto). */
   photoMode: "auto" | "calidad" | "rapida";
+  /** Lote D (D-1, COMP-4) — nitidez del VISOR (SOLO display del editor,
+   *  el guardado/export permanece a 4032 — invariante WYSIWYG intacto):
+   *  "auto" = hoy exacto (fast 2048 + pasada full agendada según el
+   *  mecanismo actual); "exacta" = el editor SIEMPRE termina en pasada
+   *  full (lo que ves ES lo que se guarda; hoy no hay gate por equipo que
+   *  forzar — ver docs/lab/fix-loteD-decisiones-v1.md: auto y exacta
+   *  coinciden de momento);
+   *  "ligera" = el display se queda en tier fast (no se agenda la pasada
+   *  full para display) — ahorra RAM/batería. */
+  previewQuality: "auto" | "exacta" | "ligera";
+  /** Lote D (D-3, BP-7) — gate del panel QA: el overlay del guión de
+   *  pruebas SOLO se monta si esto está activo (Ajustes › Modo
+   *  desarrollador). El usuario normal no ve nada de QA. */
+  devMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: ScannerSettings = {
@@ -241,6 +255,10 @@ export const DEFAULT_SETTINGS: ScannerSettings = {
    *  decisión del usuario (ahorro de batería + reflejos especulares). */
   flashMode: "off",
   photoMode: "auto",
+  // Lote D: defaults de los campos nuevos (D-1/D-3) — "auto" = cero cambio
+  // para quien no toque el ajuste; devMode off = 0 rastros de QA.
+  previewQuality: "auto",
+  devMode: false,
 };
 
 export function defaultQuad(): Quad {

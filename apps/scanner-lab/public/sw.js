@@ -93,10 +93,26 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(req.url);
 
-  // F2-C — precache offline del OCR (Tesseract / traineddata en jsdelivr)
+  // F2-C — precache offline del OCR (Tesseract / traineddata).
+  // Lote D (D-4, F-OCR-LOCAL): el motor es SELF-HOST — el match principal
+  // ahora es la ruta local /vendor/ocr/ (mismo origen). El match jsdelivr
+  // se conserva como DEFENSA (0 peticiones esperadas tras F-OCR-LOCAL;
+  // si algún día regresa una URL remota, el cache ya la cubre).
+  // ESTRATEGIA (elegida, justificada): cache-first en runtime (cache en el
+  // PRIMER uso, NO precache en install) — idéntica al bloque original:
+  // precachear ~12,9 MB de vendor OCR en install retrasaría el arranque
+  // offline de TODA la app para usuarios que nunca abren «Texto». Con
+  // cache-on-first-use, el primer OCR online llena OCR_CACHE (respeta
+  // OCR_CACHE_MAX) y a partir de ahí el OCR funciona offline (D-4.5).
   if (
-    url.hostname === "cdn.jsdelivr.net" &&
-    (url.pathname.includes("tesseract.js") || url.pathname.includes("tesseract.js-data"))
+    // Lote D (D-4): includes() y NO startsWith("/vendor/ocr/") — el deploy
+    // de Pages vive bajo basePath (/web-scanner/lab), el pathname real es
+    // /web-scanner/lab/vendor/ocr/**. El literal de directorio sigue siendo
+    // específico del vendor OCR (colisión improbable) y sobrevive a
+    // cualquier basePath (dev="", Pages=/web-scanner/lab).
+    url.pathname.includes("/vendor/ocr/") ||
+    (url.hostname === "cdn.jsdelivr.net" &&
+      (url.pathname.includes("tesseract.js") || url.pathname.includes("tesseract.js-data")))
   ) {
     event.respondWith(
       (async () => {

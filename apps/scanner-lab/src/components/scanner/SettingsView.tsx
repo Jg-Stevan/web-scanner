@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, Copy, Download, FileText, Gauge, Layers, Loader2, Monitor, Moon, PlayCircle, PlusSquare, ScanText, Share2, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
+import { Check, ChevronDown, Copy, Download, FileText, Gauge, Layers, Loader2, Monitor, Moon, PlayCircle, PlusSquare, ScanText, Share2, Star, Sun, Tags, Trash2, Type, HardDrive } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 
@@ -337,6 +337,33 @@ export default function SettingsView() {
               </SelectContent>
             </Select>
           </SettingsRow>
+          {/* Lote D (D-1, COMP-4) — nitidez del VISOR: solo cambia qué se
+              pinta en el editor. El guardado/export sigue a 4032 (invariante
+              WYSIWYG — image-processor intocable). Mismo patrón Select que
+              «Calidad de foto». */}
+          <SettingsRow
+            title="Nitidez del visor"
+            subtitle="Auto: se adapta a tu equipo · Exacta: lo que ves es exactamente lo que se guarda · Ligera: ahorra memoria (la foto guardada siempre es de máxima calidad)"
+          >
+            <Select
+              value={settings.previewQuality ?? "auto"}
+              onValueChange={(v) =>
+                updateSettings({ previewQuality: v as ScannerSettings["previewQuality"] })
+              }
+            >
+              <SelectTrigger
+                aria-label="Nitidez del visor"
+                className="h-9 rounded-lg border-[#e5e5ea] bg-[#f2f2f7] dark:border-[#3a3a3c] dark:bg-[#2c2c2e] px-3.5 text-[14px] font-medium text-[#3c3c43] dark:text-white shadow-none focus-visible:ring-[3px] focus-visible:ring-[#007aff]/25 focus-visible:border-[#007aff]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="exacta">Exacta</SelectItem>
+                <SelectItem value="ligera">Ligera</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
           <SettingsRow
             title="Motor de precisión"
             subtitle="OpenCV · contornos + RANSAC + homografía"
@@ -493,6 +520,40 @@ export default function SettingsView() {
         {/* DIAG (spec diag §7) — informe del dispositivo: resumen real +
             compartir/descargar/copiar + re-medir benchmarks. */}
         <DiagSection />
+
+        {/* Lote D (D-3, BP-7) — Modo desarrollador: sección PLEGABLE nativa
+            (<details> colapsado por defecto — regla de oro §1.4: SIN
+            reintroducir ui/collapsible). El toggle activa el panel de QA:
+            el overlay SOLO se monta con devMode (gate en page.tsx). El
+            usuario normal no ve nada de QA. */}
+        <details
+          className="group mx-4 mt-4 overflow-hidden rounded-xl bg-white dark:bg-[#1c1c1e] shadow-[0_2px_8px_rgba(0,0,0,0.08)]"
+        >
+          <summary className="flex min-h-[44px] cursor-pointer select-none list-none items-center justify-between gap-3 px-4 py-3 text-[15px] text-[#1c1c1e] dark:text-white [&::-webkit-details-marker]:hidden">
+            Modo desarrollador
+            <ChevronDown
+              className="h-[18px] w-[18px] shrink-0 text-[#8e8e93] transition-transform duration-200 group-open:rotate-180"
+              strokeWidth={2}
+              aria-hidden="true"
+            />
+          </summary>
+          <div className="border-t border-[#f2f2f7] dark:border-[#38383a]">
+            <div className="flex min-h-[44px] items-center justify-between gap-3 px-4 py-3">
+              <p className="text-[15px] text-[#1c1c1e] dark:text-white">
+                Panel de QA
+                <span className="mt-0.5 block text-[12px] leading-snug text-[#8e8e93]">
+                  Activa las herramientas de revisión (guión de pruebas y telemetría). Solo para desarrollo.
+                </span>
+              </p>
+              <Switch
+                checked={settings.devMode ?? false}
+                onCheckedChange={(v) => updateSettings({ devMode: v })}
+                aria-label="Panel de QA"
+                className={SWITCH_IOS}
+              />
+            </div>
+          </div>
+        </details>
 
       </div>
 

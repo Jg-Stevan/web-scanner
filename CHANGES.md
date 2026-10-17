@@ -4,6 +4,23 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## LOTE D — decisiones del dueño: nitidez, pinch-zoom, modo dev, OCR local (rama `feat/loteD-decisiones-v1`)
+
+**Base:** `main` @ `0e9f924` · **Kit:** `INSTR-ws-loteD-decisiones-v1` · **Agente:** B · 5 commits (uno por tarea + docs) · gates exit 0 · `bun test` 206/0/2 · PR **DRAFT** (sin merge). Evidencia completa: `docs/lab/fix-loteD-decisiones-v1.md`.
+
+| Decisión | Implementación | Evidencia |
+|----------|----------------|-----------|
+| **D-1 COMP-4** — nitidez del visor como ajuste | `previewQuality: auto/exacta/ligera` (default `auto` = hoy exacto). Display only: `ligera` no agenda la pasada full del editor; guardado/export SIEMPRE 4032 (invariante WYSIWYG intacto, verificado por grep). Fila nueva en Ajustes › Procesamiento (patrón «Calidad de foto»), select fino FORT-6. `exacta`≡`auto` de momento (no existe gate por equipo que forzar — reportado) | persistencia verificada en vivo («Ligera» sobrevive reload) · captura `settings-nitidez-row.png` |
+| **D-2 COMP-1** — pinch-zoom permitido | `maximumScale:1` + `userScalable:false` fuera del viewport (WCAG 1.4.4); `viewportFit:cover` intacto. **Hallazgo:** el touch-action de FORT 6.3 solo existe en PresentationView — el pinch en cámara/editor hará zoom de página (fix propuesto, fuera de whitelist) | meta renderizada verificada · doble-tap táctil pendiente de iOS físico |
+| **D-3 BP-7** — Modo desarrollador | Sección plegable `<details>` (sin ui/collapsible) al final de Ajustes + toggle «Panel de QA» (`devMode`, default off). Gate del mount: `{!showOnboarding && devMode && <QAOverlay />}` (único path de montaje). Default = 0 rastros del overlay; 2 taps para activar; persiste al recargar. **Hallazgo:** la tarjeta «Test estándar QA» de Diagnóstico sigue visible sin devMode (fuera de whitelist — decisión del dueño) | captura `settings-modo-desarrollador.png` · humo 3 estados en vivo |
+| **D-4 F-OCR-LOCAL** — Tesseract 100% self-host | 6 archivos vendorizados en `public/vendor/ocr/` (13 MB, lazy), **verificados byte-exacto por sha256** contra `tesseract.js@5.1.1` / `tesseract.js-core@5.1.1` / `@tesseract.js-data/{spa,eng}@1.0.0` (4.0.0_best_int, oem=1). `ocr.ts` carga local con prefijo `PUBLIC_BASE` (patrón detector-client — **desviación justificada**: basePath `/web-scanner/lab` de Pages rompía las rutas absolutas del kit). `sw.js` F2-C: match local `includes("/vendor/ocr/")` + cache-first en OCR_CACHE (runtime, justificado vs precache 13 MB) | OCR real con **0 peticiones a jsdelivr** · SW capturó 5/5 entradas bajo basePath · **offline y offline+reload ok** en build estático con basePath de Pages |
+
+**Gates:** `core:check`/`ui:check`/`app:check` exit 0 (×2 rondas) · lint **0 errores** (143 warnings baseline) · `bun test` **206 pass / 0 fail / 2 skip** · `build:static` exit 0 (×2, la 2ª con `NEXT_PUBLIC_BASE_PATH`).
+**Simulación instalación vieja:** settings sin campos nuevos → arranque con defaults sin error (merge defensivo `loadSettings`).
+**Pendiente dispositivo:** pinch/doble-tap real, nitidez fast→full por opción, PDF idéntico entre modos.
+
+---
+
 ## PILA DE MERGES — lotes 5→7→8 y luego 6→9 a main (orden explícito del dueño)
 
 **Fecha:** 2026-10-17 · Orden ejecutado EXACTO del dueño: L5 → L7 → L8 (pila; GitHub muestra solo el delta de cada uno) y después L6 → L9 (pila entre sí). CI 2/2 (checks + Vercel Preview Comments) verde en cada head ANTES de cada merge; un-draft vía GraphQL (`markPullRequestReadyForReview`); método = merge commit (convención del repo).

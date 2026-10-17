@@ -21,11 +21,19 @@ const MAX_OCR_PAYLOAD = 10 * 1024 * 1024;
  * endpoint /api/ocr NO existe ahí y el OCR nunca pudo funcionar. Ahora:
  *  1) se intenta el servidor (vision-model, mejor calidad — dev/otros),
  *  2) si no hay servidor (404) o falla la red, corre Tesseract.js LOCAL
- *     (spa+eng) cargado desde CDN: funciona 100% en hosting estático. */
+ *     (spa+eng) — funciona 100% en hosting estático.
+ * Lote D (D-4, F-OCR-LOCAL): el motor es SELF-HOST en /vendor/ocr/ —
+ * cero peticiones a CDNs (auditoría externa #2). Los 6 archivos
+ * vendorizados están verificados byte-exacto (sha256) contra las fuentes
+ * oficiales — detalle y hashes en docs/lab/fix-loteD-decisiones-v1.md. */
 
-/** UMD de tesseract.js v5 (API estable createWorker/recognize/terminate). */
-const TESSERACT_CDN =
-  "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+/** UMD de tesseract.js v5.1.1 self-host (API estable
+ *  createWorker/recognize/terminate). Lote D (D-4): prefijo PUBLIC_BASE
+ *  (mismo patrón que detector-client.ts WORKER_URL — el deploy de Pages
+ *  vive bajo basePath /web-scanner/lab; en dev/servidor local queda
+ *  vacío). */
+const PUBLIC_BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const TESSERACT_SRC = `${PUBLIC_BASE}/vendor/ocr/tesseract.min.js`;
 
 /** Lado máximo de la imagen que va al OCR local (rendimiento en móvil). */
 const OCR_LOCAL_MAX_SIDE = 1600;
@@ -46,7 +54,17 @@ interface TesseractGlobal {
   createWorker(
     langs: string,
     oem?: number,
-    options?: { logger?: (m: TesseractLoggerArg) => void }
+    options?: {
+      logger?: (m: TesseractLoggerArg) => void;
+      /* Lote D (D-4): rutas self-host — worker/core/lang resuelven contra
+       * /vendor/ocr/** (mismo origen). corePath = DIRECTORIO: el worker
+       * v5.1.1 añade la variante según SIMD+OEM (aquí oem=1 → LSTM →
+       * tesseract-core[-simd]-lstm.wasm.js — ambos vendorizados). langPath
+       * espera {langPath}/{lang}.traineddata.gz — spa/eng en /lang/. */
+      workerPath?: string;
+      corePath?: string;
+      langPath?: string;
+    }
   ): Promise<TesseractWorker>;
 }
 
@@ -62,9 +80,8 @@ function loadTesseract(): Promise<TesseractGlobal> {
       return;
     }
     const el = document.createElement("script");
-    el.src = TESSERACT_CDN;
+    el.src = TESSERACT_SRC;
     el.async = true;
-    el.crossOrigin = "anonymous";
     el.onload = () => {
       if (w.Tesseract) resolve(w.Tesseract);
       else {
@@ -120,6 +137,15 @@ function getOcrWorker(): Promise<TesseractWorker> {
   ocrWorkerPromise = (async () => {
     const Tesseract = await loadTesseract();
     return await Tesseract.createWorker("spa+eng", 1, {
+      // Lote D (D-4, F-OCR-LOCAL): motor self-host — sin CDN. Rutas
+      // mismas-origen CON prefijo PUBLIC_BASE (basePath de Pages — ver
+      // comentario de TESSERACT_SRC). corePath = DIRECTORIO: el worker
+      // v5.1.1 añade la variante según SIMD+OEM (aquí oem=1 → LSTM →
+      // tesseract-core[-simd]-lstm.wasm.js — ambos vendorizados). langPath
+      // espera {langPath}/{lang}.traineddata.gz — spa/eng en /lang/.
+      workerPath: `${PUBLIC_BASE}/vendor/ocr/worker.min.js`,
+      corePath: `${PUBLIC_BASE}/vendor/ocr`,
+      langPath: `${PUBLIC_BASE}/vendor/ocr/lang`,
       logger: (m) => {
         if (ocrProgressHandler && m?.status === "recognizing text" && typeof m.progress === "number") {
           ocrProgressHandler(m.progress);
