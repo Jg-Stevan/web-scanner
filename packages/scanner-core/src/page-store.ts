@@ -40,6 +40,72 @@ interface StoredDocument extends Omit<ScanDocument, "pages"> {
   pages: StoredPage[];
 }
 
+// ─── BP-3 (Lote 6) — persistSafely: fallos de persistencia con aviso único ──
+//
+// Los catches de ESCRITURA de este módulo eran 100 % silenciosos: si
+// IndexedDB/localStorage fallaba (cuota llena, modo privado, Safari viejo),
+// el usuario no se enteraba y podía cerrar la app perdiendo su trabajo.
+// persistSafely envuelve esas operaciones: cuenta los fallos en memoria y,
+// al TERCERO, dispara UNA sola vez por sesión el evento global
+// PERSIST_FAILURE_EVENT — la app (apps/scanner-lab/src/lib/persist-safely.ts)
+// lo escucha y muestra el ÚNICO toast de sonner («tus cambios están en
+// memoria»). FORT-8: esto es observación, no telemetría — sin red, sin
+// reintentos, sin más avisos (nunca alert/confirm, jamás >1 toast/sesión).
+//
+// El motor vive en el CORE (aquí están los catches) y el puente del toast en
+// la app (donde vive sonner): el core no puede importar UI (regla del
+// paquete). Evento global = frontera limpia sin invertir dependencias.
+
+/** Nº de fallos de escritura acumulados antes del aviso único (kit T4). */
+const PERSIST_FAIL_ALERT_AFTER = 3;
+
+/** Evento global one-shot al alcanzar el umbral (constante pública para que
+ *  la app y las pruebas escuchen EL MISMO nombre sin strings mágicos). */
+export const PERSIST_FAILURE_EVENT = "escaner-persist-fallo";
+
+let persistFailCount = 0;
+let persistFailNotified = false;
+
+/** Registra un fallo de persistencia (llamar SOLO desde catches de
+ *  escritura). Contador acumulativo de sesión; al 3.er fallo emite el evento
+ *  una única vez. Nunca lanza. */
+export function notePersistFailure(site: string): void {
+  try {
+    persistFailCount += 1;
+    // Observacional mínimo (FORT-8): la consola sigue mostrando el problema;
+    // el detalle (sitio) ayuda a diagnosticar cuota vs modo privado.
+    console.warn(
+      `[page-store] persistencia falló en ${site} (fallo nº ${persistFailCount}) — la app sigue en memoria`
+    );
+    if (persistFailCount >= PERSIST_FAIL_ALERT_AFTER && !persistFailNotified) {
+      persistFailNotified = true; // UNA sola vez por sesión (kit BP-3)
+      if (typeof globalThis.dispatchEvent === "function") {
+        globalThis.dispatchEvent(
+          new CustomEvent(PERSIST_FAILURE_EVENT, {
+            detail: { site, count: persistFailCount },
+          })
+        );
+      }
+    }
+  } catch {
+    /* el aviso NUNCA rompe la app */
+  }
+}
+
+/** Envuelve una operación de persistencia crítica: la ejecuta y, si lanza,
+ *  registra el fallo (notePersistFailure) en vez de tragarlo en silencio.
+ *  El resto de la API sigue degradando sin lanzar — contrato intacto. */
+export async function persistSafely(
+  site: string,
+  op: () => Promise<void> | void
+): Promise<void> {
+  try {
+    await op();
+  } catch {
+    notePersistFailure(site);
+  }
+}
+
 // ─── utilidades data URL ⇄ Blob ─────────────────────────────────────────────
 
 export function dataUrlToBlob(dataUrl: string): Blob | null {
@@ -269,9 +335,11 @@ function txDone(tx: IDBTransaction): Promise<void> {
  *  convertible). Los Blobs ya están en IndexedDB: se reutilizan por page.id
  *  del registro previo, byte-idénticos. Solo si tampoco existe registro previo
  *  se omite la página (comportamiento histórico). Hace imposible perder datos
- *  de páginas nunca materializadas (rename/favorito/tag/trash con lazy). */
+ *  de páginas nunca materializadas (rename/favorito/tag/trash con lazy).
+ *  BP-3 (Lote 6): el catch silencioso pasa a persistSafely — mismo silencio
+ *  contractual (nunca lanza) + contador de fallos y aviso único al 3.er uno. */
 export async function persistDocument(doc: ScanDocument): Promise<void> {
-  try {
+  await persistSafely("persistDocument", async () => {
     const db = await openDb();
     if (!db) return;
     const prev = await new Promise<StoredDocument | undefined>((resolve) => {
@@ -313,29 +381,26 @@ export async function persistDocument(doc: ScanDocument): Promise<void> {
     await txDone(tx);
     await markInitialized(db);
     db.close();
-  } catch {
-    /* persistencia best-effort: la app sigue en memoria */
-  }
+  });
 }
 
-/** Elimina un documento por id. */
+/** Elimina un documento por id. BP-3: fallos ya no son 100 % silenciosos. */
 export async function removeDocument(id: string): Promise<void> {
-  try {
+  await persistSafely(`removeDocument(${id})`, async () => {
     const db = await openDb();
     if (!db) return;
     const tx = db.transaction(STORE_DOCS, "readwrite");
     tx.objectStore(STORE_DOCS).delete(id);
     await txDone(tx);
     db.close();
-  } catch {
-    /* noop */
-  }
+  });
 }
 
 /** Vacía todos los documentos persistedos y deja la instalación marcada
- *  (tras “Borrar todos” el refresh muestra biblioteca vacía, no los mocks). */
+ *  (tras “Borrar todos” el refresh muestra biblioteca vacía, no los mocks).
+ *  BP-3: fallos ya no son 100 % silenciosos (purga = pérdida potencial). */
 export async function clearAllDocuments(): Promise<void> {
-  try {
+  await persistSafely("clearAllDocuments", async () => {
     const db = await openDb();
     if (!db) return;
     const tx = db.transaction(STORE_DOCS, "readwrite");
@@ -346,23 +411,20 @@ export async function clearAllDocuments(): Promise<void> {
     await txDone(mtx);
     await markInitialized(db);
     db.close();
-  } catch {
-    /* noop */
-  }
+  });
 }
 
-/** Guarda el orden manual de la biblioteca (lista completa de ids). */
+/** Guarda el orden manual de la biblioteca (lista completa de ids).
+ *  BP-3: fallos ya no son 100 % silenciosos. */
 export async function saveManualOrder(ids: string[]): Promise<void> {
-  try {
+  await persistSafely("saveManualOrder", async () => {
     const db = await openDb();
     if (!db) return;
     const tx = db.transaction(STORE_META, "readwrite");
     tx.objectStore(STORE_META).put(ids, META_KEY_ORDER);
     await txDone(tx);
     db.close();
-  } catch {
-    /* noop */
-  }
+  });
 }
 
 /** Lee el orden manual guardado ([] si nunca se reordenó). */
@@ -480,7 +542,9 @@ export function saveSettings(settings: ScannerSettings): void {
     if (typeof localStorage === "undefined") return;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch {
-    /* noop */
+    // BP-3 (Lote 6): sitio de ESCRITURA — el fallo (cuota/modo privado) se
+    // cuenta para el aviso único (sigue sin lanzar: contrato intacto).
+    notePersistFailure("saveSettings");
   }
 }
 
