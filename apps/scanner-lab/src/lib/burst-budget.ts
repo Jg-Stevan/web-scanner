@@ -755,8 +755,17 @@ if (typeof window !== "undefined") {
   };
 }
 
+
+// D-09 (kit limpieza-v1) — el meta de mark() es de primitivos + UN objeto
+// legítimo: la sonda de heap del tramo opaco (BurstHeapProbe, meta del
+// capture en CameraView). El tipo correcto NO es Record<string, unknown>
+// (colaba CUALQUIER objeto en un meta tipado para primitivos) — es la unión
+// acotada de abajo. Cambio 100% de tipos; CERO comportamiento.
 declare module "@/lib/perf-probe" {
   interface PerfProbeApi {
-    mark(ev: string, meta?: Record<string, unknown>): void;
+    mark(
+      ev: string,
+      meta?: Record<string, number | string | boolean | null | BurstHeapProbe>
+    ): void;
   }
 }

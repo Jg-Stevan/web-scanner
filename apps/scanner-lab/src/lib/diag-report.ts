@@ -14,6 +14,11 @@
  */
 
 import { perfProbe, PERF_PROBE_T0, PERF_PROBE_T0_AT, type PerfProbeMark } from "./perf-probe";
+
+/** D-13 (kit limpieza-v1) — versión ÚNICA del informe: JSON (render) y TXT
+ * (cabecera «Formato») deben coincidir. Antes: JSON emitía 6 y el TXT
+ * decía «v5» hardcodeado. Solo diagnóstico — cero comportamiento. */
+const DIAG_REPORT_VERSION = 6;
 import {
   getOrphanPhotoStats,
   getVideoTrackSize,
@@ -78,7 +83,7 @@ export interface DiagReport {
    *  photoSettingsReq/photoOutLongSide/takePhotoMs): SOLO campos
    *  adicionales — todo campo v1 conserva nombre y significado (informes
    *  de los lotes 1-5 comparables 1:1). */
-  version: 6;
+  version: typeof DIAG_REPORT_VERSION;
   generatedAt: string;
   app: { build: string };
   device: DiagDeviceSnapshot;
@@ -137,8 +142,8 @@ export interface DiagReport {
         manual: boolean;
         pending: boolean;
         quad: number[];
-        bboxW: number;
-        bboxH: number;
+        bboxW: number | null;
+        bboxH: number | null;
         origW: number | null;
         origH: number | null;
       }>;
@@ -803,6 +808,21 @@ export async function buildDiagReport(): Promise<DiagReport> {
     origH: number | null,
   ) => {
     const r3 = (v: number) => Math.round(v * 1000) / 1000;
+    // D-16 (kit limpieza-v1): quad vacío → Math.max/min de spread vacío
+    // producía bboxW/bboxH = -Infinity. Guard temprano: null honesto
+    // (sin bbox medible) en lugar de un número imposible. Solo diag.
+    if (quad.length === 0) {
+      return {
+        src,
+        manual,
+        pending,
+        quad: [],
+        bboxW: null,
+        bboxH: null,
+        origW,
+        origH,
+      };
+    }
     const xs = quad.map((c) => c.x);
     const ys = quad.map((c) => c.y);
     return {
@@ -927,7 +947,7 @@ export async function buildDiagReport(): Promise<DiagReport> {
 
   return {
     format: "scannerlab-diag-report",
-    version: 6,
+    version: DIAG_REPORT_VERSION,
     generatedAt: new Date().toISOString(),
     app: { build: DIAG_BUILD },
     device,
@@ -1038,7 +1058,7 @@ export function buildDiagTxt(r: DiagReport): string {
   push("==============================================");
   push(`Generado : ${new Date(r.generatedAt).toLocaleString()}`);
   push(`Build    : ${r.app.build}`);
-  push("Formato  : diag-report v5");
+  push(`Formato  : diag-report v${DIAG_REPORT_VERSION}`);
   if (r.qa) {
     push();
     // v1.3 — cabecera mode-aware (rápido 1 captura / completo 12 pasos).
@@ -1289,7 +1309,7 @@ export function buildDiagTxt(r: DiagReport): string {
     );
     s.pages.framing.forEach((f, i) => {
       push(
-        `  #${i + 1} src=${f.src.padEnd(9)}manual=${f.manual ? "sí" : "no"}  pending=${f.pending ? "sí" : "no"}  bbox ${f.bboxW}%×${f.bboxH}%  (${f.origW ?? DASH}×${f.origH ?? DASH})`
+        `  #${i + 1} src=${f.src.padEnd(9)}manual=${f.manual ? "sí" : "no"}  pending=${f.pending ? "sí" : "no"}  bbox ${f.bboxW ?? DASH}%×${f.bboxH ?? DASH}%  (${f.origW ?? DASH}×${f.origH ?? DASH})`
       );
     });
     push();
