@@ -4,6 +4,24 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## LOTE 5 — quick wins perf + limpieza-v2 (rama `fix/lote5-quickwins-v1`)
+
+**Base:** `main` @ `1e874d4` · **Kit:** `INSTR-ws-lote5-quickwins-v1` · **6 commits** · gates `core:check`/`ui:check`/`app:check`/`lint`/`build:static` exit 0 · smoke headless 0 errores de consola. NOTA: las referencias históricas de este fichero a `apps/digitalizador-e14/` apuntan al repo origen (pre-split) — ver AGENTS.md L12-17.
+
+| Tarea | Hallazgos | Resultado |
+|------|-----------|-----------|
+| T1 PERF-1 | el worker carga OpenCV EAGER al spawn; `getScannerWorker()` en montaje de `page.tsx` (warm-up L104 + `setWarpCap` L112) obligaba a la sesión solo-biblioteca a bajar ~8,4 MB | warm-up SOLO al montar CameraView + fallback `requestIdleCallback` (timeout 3 s, guard Safari) si la sesión no arranca en cámara; `setWarpCap` fuera — redundante por default del worker `warpMaxLongSide = 4032` (sin cambio de comportamiento). Smoke: 0 spawns en boot de biblioteca, 1 total con fallback, dedupe al entrar a cámara |
+| T2 PERF-2 | `pdf-export` estático en EditorView/LibraryView arrastraba jspdf (342 KB min); cadena interna extra: `text-export.ts:12 → pdf-export → jspdf` mantenía jspdf en el chunk inicial vía `docHasOcrText`/`ocrTextOfPages` (render-path) | 8 handlers → import dinámico + helpers locales VERBATIM puente (fuente anotada); **First Load JS 1.633.634 → 1.207.897 B (−26%, meta ≤1.300 KB cumplida)**; chunk jsPDF lazy on-demand (verificado en smoke: se pide al exportar) |
+| T3 D-1 | 31 ui muertos + `use-mobile` + 20 radix (verificados 2× antes) | borrados con prueba de 0 importers por componente (4 tandas con gates verdes); deps 42→22; KEEP de 7 ui + 6 radix intacto; −3.167 líneas |
+| T4 BLQ-7a | metadata npm incompleta | `repository`/`homepage`/`bugs`/`keywords`/`engines` + `files`+LICENSE ×2; **`sideEffects` NO declarado** (3 módulos con globals al import: detector-client/store/sensor-profiler — opción «repórtalo» del kit); `publish:stage` verificado ×2. **D-1:** `make-publish-package.mjs` ×2 no copia LICENSE al `.publish/` (1 línea por script — fuera de whitelist, pendiente dueño) |
+| T5 BLQ-7b | `OPENCV_CDN_URL` (docs.opencv.org) como fallback remoto en el arranque del worker | rama remota eliminada (2 líneas) — fallo local → error/self-healing existente; `grep https://` = 0 en el worker. Pendiente dueño: tesseract CDN (ocr.ts:28) |
+| T6 LEG-1 | refs rotas a `apps/digitalizador-e14/` en AGENTS.md | nota «(histórico del repo origen)» + equivalente raíz; CHANGES histórico intocado |
+
+**Desviaciones:** D-1 (LICENSE en publish script — pendiente) · D-2 (cadena text-export→jspdf: puente en app con helpers verbatim, fix canónico = separar helpers de `pdf-export.ts` en el core — pendiente dueño).
+**Smoke headless (build estático):** biblioteca sin OpenCV en boot ✓ · cámara 1 worker (dedupe) ✓ · export PDF = chunk lazy + «PDF exportado · 1 página · 39.9 KB» ✓ · abrir doc/volver ✓ · **0 errores de consola** ✓. Evidencia completa: `docs/lab/fix-lote5-quickwins-v1.md`.
+
+---
+
 ## HOTFIX — step huérfano sin `run` invalidaba `deploy-pages.yml` en el próximo push a main (commit `e7ad9b7`)
 
 **Base:** rama `fix/limpieza-v1` @ `30a9c83` · **Disparo:** al retirar la línea muerta E-09 (`run: rm -rf apps/scanner-lab/src/app/api`) quedó el step `- name: Remove server-only API routes` sin `run` ni `uses` — GitHub Actions rechaza el workflow completo en el próximo push a main («every step must have a run or uses») y mata el deploy. El CI del PR no lo detecta porque este workflow no corre en PRs — mismo modo de fallo que el hotfix de concurrency de abajo. **Fix:** commit `e7ad9b7` — 1 archivo, −4 líneas (2 comentarios del step + la línea `- name:` + línea en blanco). **Verificado:** pyyaml (YAML válido, trigger `[main]` intacto, todos los steps con `run`/`uses`); `apps/scanner-lab/src/app/api` inexistente en `bc38bf8` y `30a9c83` (el step sobraba); CI del head 2/2 (Vercel Preview Comments + checks). **Merge:** PR #7 (`limpieza-v1`, 8 commits, 59 archivos +412/−3046) mergeado → main `6af48d1`; el push disparó `Deploy to GitHub Pages` #10 y `Quality Gate` #19 — **ambos success**.
