@@ -52,10 +52,15 @@ export const viewport: Viewport = {
   themeColor: "#007aff",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-  // F-MOBILE: sin viewport-fit=cover iOS no expone env(safe-area-*) y las
-  // barras de la PWA instalada cubren contenido.
+  // Lote D (D-2, COMP-1): pinch-zoom permitido (WCAG 1.4.4). maximumScale:1
+  // y userScalable:false eliminados — el zoom de página vuelve a estar
+  // disponible en toda la app (biblioteca/ajustes incluidos). HALLAZGO D-2
+  // (verificado con grep, docs/lab/fix-loteD-decisiones-v1.md): el
+  // touch-action de FORT 6.3 vive SOLO en PresentationView; el stage de
+  // cámara/editor gestiona sus gestos con pointer events (captura +
+  // preventDefault en las asas del quad) pero NO bloquea el pinch de
+  // página — si molesta en cámara, el fix (touch-action en el stage) queda
+  // propuesto y FUERA de la whitelist de este lote (kit §1.1).
   viewportFit: "cover",
 };
 
