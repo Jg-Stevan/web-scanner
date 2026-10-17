@@ -4,9 +4,28 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## PILA DE MERGES — lotes 5→7→8 y luego 6→9 a main (orden explícito del dueño)
+
+**Fecha:** 2026-10-17 · Orden ejecutado EXACTO del dueño: L5 → L7 → L8 (pila; GitHub muestra solo el delta de cada uno) y después L6 → L9 (pila entre sí). CI 2/2 (checks + Vercel Preview Comments) verde en cada head ANTES de cada merge; un-draft vía GraphQL (`markPullRequestReadyForReview`); método = merge commit (convención del repo).
+
+| # | PR | Lote | Rama | Merge commit | Notas |
+|---|----|------|------|--------------|-------|
+| 1 | #8 | L5 quick wins | `fix/lote5-quickwins-v1` | `ed4b0db` | pila 1/3 |
+| 2 | #10 | L7 RAM/hidratación | `feat/lote7-ram-hidratacion-v1` | `cb13342` | pila 2/3 — delta real 6 archivos (+543/−29) ✓ solo lote7 |
+| 3 | #12 | L8 perf fino | `perf/lote8-fino-v1` | `232e885` | pila 3/3 — delta real 15 archivos (+486/−38) ✓ solo lote8 |
+| 4 | #9 | L6 red de seguridad | `test/red-seguridad-v1` | `095d7ae` | **rebase (agente B)** sobre main post-pila: conflicto `page-store.ts` resuelto combinando docs BLQ-6 (lote7) + BP-3 (lote6); `CHANGES.md` reordenado (L6 arriba); + commit `8c34233` adaptando la batería a las APIs async de L7 |
+| 5 | #11 | L9 estructural | `refactor/lote9-estructural-v1` | `f38efe4` | **rebase (agente B)** `--onto main` saltando el L6 viejo: `AGENTS.md` con LEG-1 (lote5) + LEG-6 (lote9) combinados; `CameraView.tsx` conservando la implementación T2 de L8 con la justificación BP-10 de L9 como comentario |
+
+**Gates post-rebase L6:** tsc ×3 exit 0 · lint 0 errores · `bun test` **201 pass / 0 fail / 1 skip** (6 fallos iniciales corregidos: `duplicateDocument`/`beginReviewDocument` son async desde Lote 7) · `build:static` exit 0.
+**Gates post-rebase L9:** tsc ×3 exit 0 · lint 0 errores (143 warnings) · `bun test` **206 pass / 0 fail / 2 skip** · `build:static` exit 0.
+**Post-merge en main:** Quality Gate #28/#30/#32 success (uno por push) · Deploy to GitHub Pages #14/#15/#16 **success** (incl. head final `f38efe4`). Rama `fix/deploy-concurrency-v1` ignorada por orden del dueño — confirmado con `merge-base` que ya está contenida en main.
+**Pendiente del plan:** Lote D (decisiones del dueño: nitidez, pinch-zoom, modo dev, OCR local) → PR draft; runbook historia-resumida solo al FINAL (requiere cero PRs abiertos).
+
+---
+
 ## LOTE 6 — red de seguridad: tests + higiene (rama `test/red-seguridad-v1`)
 
-**Base:** `main` @ `1e874d4` · **Kit:** `INSTR-ws-lote6-red-seguridad-v1` · **Agente:** B (calidad/estructura) · PR DRAFT a main (sin merge). Evidencia completa: `docs/lab/fix-lote6-red-seguridad-v1.md`.
+**Base:** `main` @ `1e874d4` · **Kit:** `INSTR-ws-lote6-red-seguridad-v1` · **Agente:** B (calidad/estructura) · MERGEADO a main (PR #9 → `095d7ae`, rebased sobre la pila 5/7/8). Evidencia completa: `docs/lab/fix-lote6-red-seguridad-v1.md`.
 
 | Tarea | Resultado |
 |-------|-----------|
@@ -114,11 +133,9 @@
 
 ---
 
----
+## LOTE 9 — salud estructural: DRY + deuda (rama `refactor/lote9-estructural-v1`, MERGEADO)
 
-## LOTE 9 — salud estructural: DRY + deuda (rama `refactor/lote9-estructural-v1`, APILADO)
-
-**Base técnica:** `test/red-seguridad-v1` (Lote 6 — la red de tests; PR apilado hasta que #9 se mergeé) · **Kit:** `INSTR-ws-lote9-estructural-v1` · PR DRAFT a main. Evidencia: `docs/lab/fix-lote9-estructural-v1.md`.
+**Base técnica:** `test/red-seguridad-v1` (Lote 6 — la red de tests; PR #9 ya mergeado) · **Kit:** `INSTR-ws-lote9-estructural-v1` · MERGEADO a main (PR #11 → `f38efe4`, rebased tras el rebase de L6). Evidencia: `docs/lab/fix-lote9-estructural-v1.md`.
 
 **Ejecución PARCIAL** (precondiciones del kit): ✅ Fase B completa (LEG-2, LEG-6, BP-11) · ✅ Fase A parcial (DRY-4, DRY-6) · ✅ Fase E parcial (BP-9, BP-10) · ❌ DRY-3 (requiere L5 mergeado, PR #8) · ❌ Fases C/D (requieren Lote 8, inexistente) · ❌ BP-5/BP-6 (smoke sin cámara / warnings 159>60). El kit contempla A+B en PR propio antes que C+D.
 
