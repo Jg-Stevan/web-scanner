@@ -556,15 +556,55 @@ async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
 // ─── Detección de bordes ────────────────────────────────────────────────────
 
 /**
+ * P2 (0.4.0, kit e14-quad-sobel-v1 §3-B): umbral de candidatos de pico para el
+ * bottom del Sobel (fracción de max(E)). Punto de partida calibrado en el lab
+ * con mesa-001/mesa-002/control; UNA sola definición (el lab la importa —
+ * NUNCA hardcodeada en dos sitios).
+ */
+export const UMBRAL_PICO = 0.4;
+/** Span lateral vivo (fracción de la altura restante) a partir del cual la
+ * banda queda clara como interna (los bordes left/right siguen vivos debajo).
+ */
+const SPAN_INTERNA = 0.15;
+/** Fracción del pico de la columna lateral que cuenta como "borde vivo". */
+const LATERAL_VIVO = 0.35;
+
+/** P1 (0.4.0, kit e14-quad-sobel-v1): origen del quad — quién lo fabricó. */
+export type OrigenQuad = "worker" | "sobel";
+
+/** P1 (0.4.0): resultado detallado de la detección de bordes. */
+export interface DetalleBordes {
+  quad: Quad;
+  origen: OrigenQuad;
+}
+
+/**
  * Detección de bordes del documento — PIPELINE REAL del usuario
  * (contornos OpenCV + selección por score). Fallback: Sobel local.
+ * VIEJA (0.4.0): delega en detectDocumentEdgesDetail — cero breaking para
+ * scanner-ui o terceros.
  */
 export async function detectDocumentEdges(src: ImageSource): Promise<Quad> {
+  return (await detectDocumentEdgesDetail(src)).quad;
+}
+
+/**
+ * NUEVA (P1, 0.4.0): igual que detectDocumentEdges pero dice QUIÉN fabricó
+ * el quad.
+ * - "worker": el worker OpenCV devolvió quad válido (la cascada ganó).
+ * - "sobel": el fallback local lo fabricó — TAMBIÉN cuando el worker cae por
+ *   isDead/timeout, y TAMBIÉN cuando el catch interno del Sobel devuelve el
+ *   rect por defecto (la verdad es que el quad salió del Sobel; no se inventa
+ *   "desconocido").
+ */
+export async function detectDocumentEdgesDetail(
+  src: ImageSource
+): Promise<DetalleBordes> {
   // 1) Pipeline real: worker + OpenCV.js
   const quad = await detectWithWorker(src);
-  if (quad) return quad;
+  if (quad) return { quad, origen: "worker" };
   // 2) Fallback: Sobel simplificado (siempre devuelve algo)
-  return detectSobel(src);
+  return { quad: await detectSobel(src), origen: "sobel" };
 }
 
 async function detectWithWorker(src: ImageSource): Promise<Quad | null> {
@@ -657,11 +697,112 @@ async function detectSobel(src: ImageSource): Promise<Quad> {
       return bestY / H;
     };
 
+    /**
+     * P2 (0.4.0, kit e14-quad-sobel-v1 §3-B): el borde del PAPEL, no el máximo
+     * de energía. En campo (mesa-002-i2) la banda negra de NIVELACIÓN de la
+     * mesa (y≈0.60) le ganaba al borde papel/pupitre (y≈0.97) → quad corto →
+     * falso rechazo INCOMPLETA. MISMO mapa de energía a 160px; solo cambia
+     * CUÁL fila del rango inferior se elige (findEdgeY queda intacto para el
+     * top — no asumimos simetría).
+     * 1) Perfil E[y] = Σ energía horizontal en [x0, x1) para y ∈ [from, to).
+     * 2) Candidatos: máximos locales con E[y] ≥ UMBRAL_PICO · max(E).
+     * 3) Continuidad de laterales: el borde del papel es DONDE TERMINAN los
+     *    bordes verticales left/right (ventana ±2 px) — si siguen vivos MÁS
+     *    ABAJO de y, la banda es interna → penal(y) ∝ span lateral vivo bajo y;
+     *    score(y) = E[y] · (1 − penal(y)).
+     * 4) Desempate conservador hacia lo profundo (mayor y): incluir papel de
+     *    más (el crop ya aplica su propio margen y el gate/OCR protegen el
+     *    exceso; quedarse corto fabrica INCOMPLETAS).
+     * Sin candidatos ≥ umbral → degradación graciosa al comportamiento actual
+     * (máxima energía): el contrato «siempre devuelve algo» intacto.
+     */
+    const findEdgeYBottom = (
+      from: number,
+      to: number,
+      x0: number,
+      x1: number,
+      leftFrac: number,
+      rightFrac: number
+    ) => {
+      const E: number[] = [];
+      for (let y = from; y < to; y++) {
+        let e = 0;
+        for (let x = x0; x < x1; x++) e += energy[y * W + x];
+        E.push(e);
+      }
+      const maxE = Math.max(...E);
+      const yMax = from + E.indexOf(maxE); // comportamiento actual (fallback)
+      if (!(maxE > 0)) return yMax / H;
+
+      // pico de energía por columna lateral (ventana ±2 px) para el test de vida
+      const colPeak = (xf: number) => {
+        const xc = Math.round(xf * W);
+        let peak = 0;
+        for (let dx = -2; dx <= 2; dx++) {
+          const x = Math.min(W - 2, Math.max(1, xc + dx));
+          for (let y = 1; y < H - 1; y++) {
+            if (energy[y * W + x] > peak) peak = energy[y * W + x];
+          }
+        }
+        return peak;
+      };
+      const peakL = colPeak(leftFrac);
+      const peakR = colPeak(rightFrac);
+      const lateralVivo = (xf: number, peak: number, y: number) => {
+        if (!(peak > 0)) return false;
+        const xc = Math.round(xf * W);
+        for (let dx = -2; dx <= 2; dx++) {
+          const x = Math.min(W - 2, Math.max(1, xc + dx));
+          if (energy[y * W + x] >= LATERAL_VIVO * peak) return true;
+        }
+        return false;
+      };
+
+      let mejorY = yMax;
+      let mejorScore = -1;
+      for (let i = 0; i < E.length; i++) {
+        // máximos locales del perfil (vecinos fuera de rango = -1)
+        const prev = i > 0 ? E[i - 1]! : -1;
+        const next = i < E.length - 1 ? E[i + 1]! : -1;
+        if (E[i]! < prev || E[i]! < next) continue;
+        if (E[i]! < UMBRAL_PICO * maxE) continue;
+        // span lateral vivo DEBAJO de y (filas estrictamente > y)
+        let vivo = 0;
+        for (let yy = from + i + 1; yy < to; yy++) {
+          if (
+            lateralVivo(leftFrac, peakL, yy) ||
+            lateralVivo(rightFrac, peakR, yy)
+          )
+            vivo++;
+        }
+        const restante = Math.max(1, to - (from + i));
+        const spanFrac = vivo / restante;
+        const penal = Math.min(1, spanFrac / (SPAN_INTERNA * 2));
+        const score = E[i]! * (1 - penal);
+        // >= → empates hacia lo profundo (conservador: incluir papel de más)
+        if (score >= mejorScore) {
+          mejorScore = score;
+          mejorY = from + i;
+        }
+      }
+      // degradación graciosa: ningún candidato pasó el umbral → comportamiento actual
+      return (mejorScore >= 0 ? mejorY : yMax) / H;
+    };
+
     const m = Math.round(W * 0.06);
     const left = findEdgeX(1, Math.floor(W * 0.45), m, H - m);
     const right = findEdgeX(Math.ceil(W * 0.55), W - 1, m, H - m);
     const top = findEdgeY(1, Math.floor(H * 0.45), m, W - m);
-    const bottom = findEdgeY(Math.ceil(H * 0.55), H - 1, m, W - m);
+    // P2 (0.4.0): bottom por findEdgeYBottom — el borde del PAPEL (§3-B);
+    // findEdgeY queda INTACTO para el top (no falló en campo).
+    const bottom = findEdgeYBottom(
+      Math.ceil(H * 0.55),
+      H - 1,
+      m,
+      W - m,
+      left,
+      right
+    );
 
     return [
       { x: clamp01(left), y: clamp01(top) },
