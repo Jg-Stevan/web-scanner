@@ -79,7 +79,6 @@ import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
 // PERF-2 (lote5) — pdf-export (arrastra jspdf, 342 KB min) SOLO vía import
 // dinámico dentro de los handlers de export/share (mismo patrón que
 // diag-report en SettingsView). Cero import estático de pdf-export en la app.
-import { ocrTextOfPages } from "@jg-stevan/scanner-core/text-export";
 import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
 import { cn } from "@/lib/utils";
 import { perfProbe } from "@/lib/perf-probe";
@@ -88,6 +87,22 @@ import { beginBackgroundJob, endBackgroundJob } from "@/lib/burst-budget";
 import { qaStandardTest, useQaTestStore } from "@/lib/qa-standard-test";
 import { SaveSuccessOverlay } from "@/components/scanner/SaveSuccessOverlay";
 import { PresentationView, type PresentationPage } from "@/components/scanner/PresentationView";
+
+// PERF-2 (lote5) — helper local VERBATIM (Fuente: packages/scanner-core/src/
+// text-export.ts L18-26). El import estático de text-export arrastra
+// pdf-export → jspdf (425 KB) al chunk inicial: text-export importa
+// downloadBlob/sanitizeFileName de pdf-export. Copia puente byte-idéntica —
+// se elimina cuando el core separe los helpers de descarga de jspdf
+// (pendiente del dueño, desviación D-2 del doc del lote).
+type OcrPageLike = { ocrText?: string };
+function ocrTextOfPages(pages: readonly OcrPageLike[]): string {
+  const withText = pages
+    .map((p, i) => ({ index: i + 1, text: (p.ocrText ?? "").trim() }))
+    .filter((p) => p.text.length > 0);
+  if (withText.length === 0) return "";
+  if (withText.length === 1) return withText[0]!.text;
+  return withText.map((p) => `── Página ${p.index} ──\n${p.text}`).join("\n\n");
+}
 
 /** LOTE 2 (F2-E) — lado mayor del PRIMER pintado del editor (tier fast).
  *  2048: el warp del worker escala ~cuadrático con el output
