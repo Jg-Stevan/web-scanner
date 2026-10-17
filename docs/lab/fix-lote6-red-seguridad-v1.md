@@ -145,3 +145,38 @@ Añadido step «Tests — packages/scanner-core (bun test nativo)» al job `chec
 5. **PresentationView:443** (§6): fuera de whitelist — fix identificado (seguro), pendiente del dueño.
 6. **HALLAZGO del auto-OCR** (§6, L1734): con la dep antigua, el auto-OCR podía quedarse esperando para siempre en páginas <2048 px (fast y full producen el mismo data URL). El fix de dep implementado alinea el comportamiento con la intención documentada. Revisión del dueño recomendada en el PR.
 7. **Nuevos exports del core** (§4): `persistSafely`, `notePersistFailure`, `PERSIST_FAILURE_EVENT` (aditivos; `index.ts` ya re-exporta `page-store`). El kit del Lote 6 no pide bump y PROHIBE tocar `packages/*/package.json` → sin bump; decisión de versión para el dueño.
+
+---
+
+# ANEXO — Lote 9 (rama `refactor/lote9-estructural-v1`, PR apilado)
+
+**Kit:** `INSTR-ws-lote9-estructural-v1` · Apilado sobre `test/red-seguridad-v1` (la red de tests del Lote 6 está presente — regla madre). PR separado una vez #9 se mergeé.
+
+## Precondiciones del kit — estado real y decisiones
+
+| Requisito | Estado | Consecuencia |
+|---|---|---|
+| Lote 6 mergeado | PR #9 DRAFT abierto (sin merge) | L9 se APILA sobre test/red-seguridad-v1: los tests existen y corren; el PR de L9 mostrará también los commits de L6 hasta que #9 se mergeé |
+| Lote 5 mergeado (FASE A · DRY-3) | PR #8 abierto (sin merge) | **DRY-3 EXCLUIDA** (kit: «el jsPDF dinámico del Lote 5 debe estar mergeado (tocan los mismos handlers). Rebase antes») |
+| Lote 8 mergeado (FASES C y D) | **No existe** (ni rama ni kit visible) | **FASE C (DRY-1 visor) y FASE D (BP-1 hooks por dominio + DRY-5) EXCLUIDAS** — el kit las marca «REQUIERE L8 mergeado» |
+| BP-6: warnings < 60 | lint = 159 | **BP-6 EXCLUIDA** (elevación de reglas a error pospuesta por el propio kit) |
+| BP-5: smoke COMPLETO con cámara | sandbox sin cámara física | **BP-5 EXCLUIDA** (no se puede correr el smoke «cámara/detección/hidratación» completo; REGLAS #6: no marcar gates no ejecutados) |
+
+**Ejecutado:** FASE B completa (LEG-2, LEG-6, BP-11) + FASE A parcial (DRY-4, DRY-6) + FASE E parcial (BP-9, BP-10). El kit mismo contempla este recorte: «fases A+B pueden ir en PR propio antes que C+D».
+
+## LEG-6 — redacción PROPUESTA de la regla de oro #0 (AGENTS.md)
+
+> La kit pide la redacción en el doc ANTES de editar — el dueño revisa en el PR.
+
+**Antes (resumen):** «si existe en el lab → COPIA VERBATIM a la app destino…».
+
+**Propuesta (aplicada):**
+
+> **REGLA DE ORO #0 — EL LAB ES LA FUENTE DE VERDAD · EXTRAE, NO COPIES**
+> `apps/scanner-lab/` es el producto validado por el dueño. ANTES de implementar CUALQUIER cosa (lógica o UI/diseño) busca si ya existe en el lab:
+> 1. Si existe y la necesita UNA sola app → COPIA VERBATIM el bloque a la app destino, con comentario de origen `// Fuente: apps/scanner-lab/<ruta> L<ini>–L<fin>` y adapta SOLO el «re-vestido» (tokens de color/clases). NUNCA re-escribas ni «simplifiques» la lógica copiada (el intento de simplificar causó el bug F-LENS: la cámara abría la lente gran angular — ver D33).
+> 2. Si existe y la necesitan DOS O MÁS apps (o es lógica/UI reutilizable del dominio) → EXTRAER al paquete compartido que corresponda — `packages/scanner-core` (lógica sin React: motor, stores, formatos, cámara) o `packages/scanner-ui` (componentes React reutilizables) — e importar desde ahí. NUNCA dupliques el bloque entre apps: la copia puente es EXCEPCIÓN temporal documentada (con origen y plan de retirada), no el patrón por defecto. La extracción que añade API pública: bump minor del paquete.
+> 3. Si NO existe → impleméntalo siguiendo las specs en `apps/digitalizador-e14/docs/` y registra la decisión en `apps/digitalizador-e14/docs/DECISIONS.md`.
+> 4. Ante la duda: extraer al paquete si es compartible; copiar del lab solo si es específico de una app. Nunca «mejorar» el lab.
+
+Referencias del pie se conservan igual.

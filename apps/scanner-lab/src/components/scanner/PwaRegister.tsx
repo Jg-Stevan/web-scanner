@@ -6,7 +6,7 @@
  */
 import { useEffect } from "react";
 import { registerServiceWorker, setupPwaListeners } from "@jg-stevan/scanner-core/pwa";
-import { setupUpdateBanner } from "@/lib/pwa";
+import { setupUpdateBanner } from "@/lib/update-banner";
 import { warmUpOcr } from "@jg-stevan/scanner-core/ocr";
 import { useScannerStore } from "@jg-stevan/scanner-core/store";
 

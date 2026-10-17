@@ -81,6 +81,8 @@ import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
 // diag-report en SettingsView). Cero import estático de pdf-export en la app.
 import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
 import { dataUrlToBlob } from "@jg-stevan/scanner-core/codec";
+import type { ScanEngine } from "@jg-stevan/scanner-core/types";
+import { hapticConfirm } from "@/lib/haptics";
 import { cn } from "@/lib/utils";
 import { perfProbe } from "@/lib/perf-probe";
 import { readImageLongSide } from "@/lib/image-size";
@@ -460,7 +462,7 @@ export default function EditorView() {
   const [savedInfo, setSavedInfo] = useState<{
     docId: string;
     pages: number;
-    engine: "opencv" | "canvas";
+    engine: ScanEngine;
   } | null>(null);
   const savedInfoRef = useRef(savedInfo);
   savedInfoRef.current = savedInfo;
@@ -1429,7 +1431,7 @@ export default function EditorView() {
             .documents.find((d) => d.id === docId);
           if (saved) markSavedDoc(saved);
           if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-            navigator.vibrate([28, 60, 28]);
+            hapticConfirm();
           }
           // El botón sigue deshabilitado (saving) DURANTE la descarga: antes
           // se reseteaba antes del await y un doble tap caía en "No hay
@@ -1450,7 +1452,7 @@ export default function EditorView() {
           ? "opencv"
           : "canvas";
         if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-          navigator.vibrate([28, 60, 28]);
+          hapticConfirm();
         }
         setSavedInfo({ docId: doc.id, pages: doc.pages.length, engine });
       } else {

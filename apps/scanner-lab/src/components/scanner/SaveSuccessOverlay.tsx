@@ -13,6 +13,7 @@
  * elegir. El auto-cierre lleva a la BIBLIOTECA.
  */
 
+import type { ScanEngine } from "@jg-stevan/scanner-core/types";
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Download, ScanLine } from "lucide-react";
@@ -29,7 +30,7 @@ export function SaveSuccessOverlay({
   duration,
 }: {
   pageCount: number;
-  engine: "opencv" | "canvas";
+  engine: ScanEngine;
   onFinished: () => void;
   /** Modo lote: encadena otro documento tras este (opcional). */
   onScanAnother?: () => void;

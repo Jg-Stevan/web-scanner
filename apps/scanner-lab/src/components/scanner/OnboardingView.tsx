@@ -14,6 +14,7 @@
  * · Ilustraciones: solo iconos lucide 72-80px sobre círculo degradado azul.
  */
 
+import { hapticConfirm } from "@/lib/haptics";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Camera, Crop, FolderOpen, ScanSearch } from "lucide-react";
@@ -53,7 +54,6 @@ const STEPS: OnboardingStep[] = [
 /** Umbral de swipe para cambiar de paso (px). */
 const SWIPE_THRESHOLD = 50;
 /** Haptics del último paso (patrón éxito). */
-const HAPTIC_PATTERN = [28, 60, 28];
 
 export default function OnboardingView() {
   const completeOnboarding = useScannerStore((s) => s.completeOnboarding);
@@ -75,7 +75,7 @@ export default function OnboardingView() {
   useEffect(() => {
     if (step === STEPS.length - 1 && lastStepRef.current !== step) {
       try {
-        navigator.vibrate?.(HAPTIC_PATTERN);
+        hapticConfirm();
       } catch {
         /* sin Vibration API: silencio */
       }
@@ -85,7 +85,7 @@ export default function OnboardingView() {
 
   const finish = useCallback(() => {
     try {
-      navigator.vibrate?.(HAPTIC_PATTERN);
+      hapticConfirm();
     } catch {
       /* noop */
     }
