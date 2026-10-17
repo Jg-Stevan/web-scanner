@@ -50,10 +50,6 @@ jobs:
       - name: Install dependencies (workspace raíz)
         run: bun install --frozen-lockfile
 
-      # Los route handlers (src/app/api) requieren servidor y son
-      # incompatibles con el export estático. Solo se excluyen del build.
-      - name: Remove server-only API routes
-
       - name: Build estático scanner-lab (raíz del sitio)
         run: bunx next build
         working-directory: apps/scanner-lab
