@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./*": "./src/*.ts"
+    "./*": "./src/*.ts",
+    "./*.tsx": "./src/*.tsx"
   },
   "types": "./src/index.ts",
   "publishConfig": {
@@ -22,7 +23,10 @@
     },
     "types": "./dist/index.d.ts"
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "bunx tsc --project tsconfig.build.json",
     "publish:stage": "bun run build && bun make-publish-package.mjs",
@@ -32,9 +36,7 @@
     "framer-motion": "^12.23.2",
     "react": "^19.0.0"
   },
-  "dependencies": {
-    "@jg-stevan/scanner-core": "^0.1.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/react": "^19",
     "typescript": "^5"

@@ -47,8 +47,8 @@ local-*
 *.log
 dev.log
 dev.out.log
-test
-prompt
+/test
+/prompt
 
 server.log
 # Skills directory
@@ -56,8 +56,6 @@ server.log
 # artefactos de sesion / distribucion
 **/public/**/*.zip
 /tool-results
-tool-results/
-dev.log
 
 # Artefactos locales de auditoría/diseño (fuera del producto)
 /tmp-audit/
