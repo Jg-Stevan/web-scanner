@@ -80,6 +80,7 @@ import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
 // dinámico dentro de los handlers de export/share (mismo patrón que
 // diag-report en SettingsView). Cero import estático de pdf-export en la app.
 import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
+import { dataUrlToBlob } from "@jg-stevan/scanner-core/codec";
 import { cn } from "@/lib/utils";
 import { perfProbe } from "@/lib/perf-probe";
 import { readImageLongSide } from "@/lib/image-size";
@@ -259,14 +260,6 @@ async function rotateProcessedDataUrl(
     Promise.resolve(tCanvas.toDataURL("image/jpeg", 0.8)),
   ]);
   return { url: urlOut, thumb, w: cw, h: ch };
-}
-
-/** data URL → Blob (fetch soporta data URLs en todos los navegadores modernos). */
-async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
-  const res = await fetch(dataUrl);
-  const blob = await res.blob();
-  if (!blob || blob.size === 0) throw new Error("blob vacío");
-  return blob;
 }
 
 /** EXPERIMENTO v11 (crash-test fuente única) — tope de DISPLAY apagado
@@ -1223,7 +1216,11 @@ export default function EditorView() {
           tier: "full",
         });
       }
-      const blob = await dataUrlToBlob(exportUrl);
+      // DRY-4 (Lote 9): dataUrlToBlob ÚNICA (core, sincrónica — parse manual).
+      // Misma semántica que la fetch-based local: entrada inválida o blob
+      // vacío → throw → el catch de abajo avisa (antes: throw "blob vacío").
+      const blob = dataUrlToBlob(exportUrl);
+      if (blob === null || blob.size === 0) throw new Error("blob vacío");
       const ext = blob.type === "image/jpeg" ? "jpg" : "png";
       const name = sanitizeFileName(
         `${headerTitle}-página-${activeIdx + 1}.${ext}`

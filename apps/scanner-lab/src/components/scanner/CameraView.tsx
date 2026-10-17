@@ -69,6 +69,7 @@ import {
   type SensorProfile,
 } from "@jg-stevan/scanner-core/sensor-profiler";
 import { dataUrlBytes } from "@jg-stevan/scanner-core/format";
+import { blobToDataUrl } from "@jg-stevan/scanner-core/codec";
 import { perfProbe } from "@/lib/perf-probe";
 import {
   beginBackgroundJob,
@@ -532,12 +533,10 @@ async function downscaleImage(
       canvas.toBlob((b) => resolve(b), "image/jpeg", 0.95)
     );
     if (blob && blob.size > 0) {
-      return await new Promise<string>((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result));
-        fr.onerror = () => reject(new Error("FileReader falló"));
-        fr.readAsDataURL(blob);
-      });
+      // DRY-4 (Lote 9): FileReader inline → blobToDataUrl única del core.
+      // Misma semántica: resuelve el data URL, rechaza si el reader falla
+      // (el catch de abajo conserva el respaldo toDataURL).
+      return await blobToDataUrl(blob);
     }
   } catch {
     /* respaldo abajo */

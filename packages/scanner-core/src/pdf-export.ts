@@ -16,6 +16,7 @@
 
 import { jsPDF } from "jspdf";
 import { loadImage } from "./image-processor";
+import { blobToDataUrl } from "./codec";
 import { PNG_FILTERS, type ScanDocument } from "./types";
 
 const MB = 1024 * 1024;
@@ -70,12 +71,9 @@ async function canvasToJpegDataUrl(
       canvas.toBlob((b) => resolve(b), "image/jpeg", quality)
     );
     if (blob && blob.size > 0) {
-      return await new Promise<string>((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result));
-        fr.onerror = () => reject(new Error("FileReader falló"));
-        fr.readAsDataURL(blob);
-      });
+      // DRY-4 (Lote 9): FileReader inline → blobToDataUrl única (misma
+      // semántica: resuelve el data URL, rechaza si el reader falla).
+      return await blobToDataUrl(blob);
     }
   } catch {
     /* respaldo abajo */
