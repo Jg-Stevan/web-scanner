@@ -27,7 +27,9 @@ import {
 } from "./image-processor";
 import {
   clearAllDocuments as idbClearAll,
-  loadAllDocuments,
+  blobToDataUrl,
+  loadAllDocumentsLazy,
+  loadPageBlobs,
   loadSettings,
   persistDocument,
   removeDocument as idbRemove,
@@ -99,8 +101,11 @@ interface ScannerState {
    *  páginas del documento (con sus ids originales) y los cambios se
    *  fusionan de vuelta al salir (exitReviewToLibrary / X de la cámara). */
   reviewDocId: string | null;
-  /** Abre un documento guardado en el editor (carga sus páginas como sesión). */
-  beginReviewDocument: (docId: string) => void;
+  /** Abre un documento guardado en el editor (carga sus páginas como sesión).
+   *  BLQ-6 (lote7): async — materializa las páginas del doc (IndexedDB →
+   *  data URLs) ANTES de montar la sesión, así el editor recibe datos
+   *  completos y el resto de la biblioteca sigue lazy. */
+  beginReviewDocument: (docId: string) => Promise<void>;
   /** Fusiona la sesión con su documento (por id: actualiza, añade, quita) y
    *  vuelve a la biblioteca. Solo reprocesa las páginas realmente cambiadas.
    *  Devuelve el docId o null. */
@@ -124,7 +129,7 @@ interface ScannerState {
 
   setView: (view: ScannerView) => void;
   /** Abre un documento GUARDADO en el Editor (modo revisión, F-NOVIEW). */
-  openDocument: (id: string) => void;
+  openDocument: (id: string) => Promise<void>;
 
   /** Consulta que la biblioteca “presta” al detalle para abrir el buscador
    *  de texto OCR ya relleno y saltar a la primera coincidencia. */
@@ -165,7 +170,14 @@ interface ScannerState {
   /** Reordena las páginas de un documento por lista completa de ids. */
   reorderPages: (docId: string, order: string[]) => void;
   /** Duplica un documento completo (copia profunda, «Título (copia)»). */
-  duplicateDocument: (docId: string) => void;
+  duplicateDocument: (docId: string) => Promise<void>;
+  /** BLQ-6 (lote7): materializa todas las páginas de un doc (IndexedDB →
+   *  data URLs) en el store y devuelve el doc. Para export/share/OCR desde
+   *  biblioteca; emparejar con reLazyDocument en el finally. */
+  materializeDocument: (docId: string) => Promise<ScanDocument | null>;
+  /** BLQ-6 (lote7): restaura la hidratación perezosa de un doc tras export
+   *  (original/processed → ""). Seguro con el guard de persistDocument. */
+  reLazyDocument: (docId: string) => void;
   /** Aplica el orden MANUAL completo de la biblioteca (lista de ids del
    *  drag & drop) y lo persiste en el meta store. */
   setDocumentsOrder: (order: string[]) => void;
@@ -205,13 +217,13 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       batchSavedCount:
         view === "library" || view === "settings" ? 0 : s.batchSavedCount,
     })),
-  openDocument: (id) => {
+  openDocument: async (id) => {
     const doc = get().documents.find((d) => d.id === id);
     // Un documento de la papelera nunca se abre en el editor desde la UI;
     // este guard evita carreras (p. ej. clic residual tras vaciarla).
     if (!doc || isTrashed(doc)) return;
     set({ activeDocumentId: id, batchSavedCount: 0 });
-    get().beginReviewDocument(id);
+    await get().beginReviewDocument(id);
   },
 
   pendingFindQuery: null,
@@ -345,15 +357,37 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   },
 
   // ── Modo revisión de documento (F-NOVIEW) ─────────────────────────────
-  beginReviewDocument: (docId) => {
+  beginReviewDocument: async (docId) => {
     const doc = get().documents.find((d) => d.id === docId);
     if (!doc || doc.pages.length === 0) return;
+    // BLQ-6 (lote7) — materializa el doc ANTES de montar la sesión: el
+    // editor y su pipeline de previews reciben data URLs completas (igual
+    // que antes del lote, cero cambios en EditorView) mientras el resto de
+    // la biblioteca permanece lazy. Coste RAM = un doc abierto, no la
+    // biblioteca entera. Las páginas ya materializadas pasan tal cual.
+    let materialized = doc.pages;
+    try {
+      materialized = await Promise.all(
+        doc.pages.map(async (p) => {
+          if (p.original && p.processed) return p;
+          const blobs = await loadPageBlobs(docId, p.id);
+          if (!blobs) return p;
+          const [original, processed] = await Promise.all([
+            blobToDataUrl(blobs.original),
+            blobToDataUrl(blobs.processed),
+          ]);
+          return { ...p, original, processed };
+        }),
+      );
+    } catch {
+      /* sin IndexedDB o lectura fallida: usa el doc tal cual (mocks/lazy) */
+    }
     set({
       // Las páginas conservan su id → el merge posterior sabe cuáles
       // existen (actualizar) y cuáles son nuevas (añadir). `processed` viaja
       // en la sesión con su `processedKey` (estado exacto con el que se
       // generó) → preview inmediato SOLO mientras la página no cambie.
-      capturePages: doc.pages.map((p) => ({
+      capturePages: materialized.map((p) => ({
         id: p.id,
         original: p.original,
         quad: p.quad,
@@ -657,10 +691,30 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   },
 
   /** Duplica un documento (menú contextual de la biblioteca). */
-  duplicateDocument: (docId) => {
+  duplicateDocument: async (docId) => {
     const doc = get().documents.find((d) => d.id === docId);
     if (!doc) return;
     const now = Date.now();
+    // BLQ-6 (lote7) — materializa antes de copiar: los campos lazy ("") no
+    // se pueden copiar tal cual (la copia se persistiría vacía y SIN
+    // registro previo que rescatar en el guard de persistDocument).
+    let pages = doc.pages;
+    try {
+      pages = await Promise.all(
+        doc.pages.map(async (p) => {
+          if (p.original && p.processed) return p;
+          const blobs = await loadPageBlobs(docId, p.id);
+          if (!blobs) return p;
+          const [original, processed] = await Promise.all([
+            blobToDataUrl(blobs.original),
+            blobToDataUrl(blobs.processed),
+          ]);
+          return { ...p, original, processed };
+        }),
+      );
+    } catch {
+      /* sin IndexedDB: usa las páginas tal cual (mocks) */
+    }
     const { deletedAt: _trashed, ...live } = doc; // la copia nace viva
     const copy: ScanDocument = {
       ...live,
@@ -672,13 +726,63 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       // C-11 (auditoría leaks-recursos): la copia necesita ids de página
       // NUEVOS — conservar los originales rompía la unicidad global de ids
       // (la caché de LibraryView keyea por p.id).
-      pages: doc.pages.map((p) => ({ ...p, id: nextId("page") })),
+      pages: pages.map((p) => ({ ...p, id: nextId("page") })),
     };
     set((s) => ({ documents: [copy, ...s.documents] }));
     void persistDocument(copy);
     // Sincroniza el orden manual con la nueva membresía (misma razón que
     // saveSessionAsDocument).
     void saveManualOrder(get().documents.map((d) => d.id));
+  },
+
+  /** BLQ-6 (lote7) — materializa TODAS las páginas de un doc en el store
+   *  (IndexedDB → data URLs) y devuelve el doc actualizado. Para export/
+   *  share/OCR desde la biblioteca: pdf-export consume data URLs y queda
+   *  INTOCADO (whitelist). Emparejada SIEMPRE con reLazyDocument en el
+   *  finally del handler (restaura la residencia lazy). */
+  materializeDocument: async (docId) => {
+    const doc = get().documents.find((d) => d.id === docId);
+    if (!doc) return null;
+    if (doc.pages.every((p) => p.original && p.processed)) return doc;
+    try {
+      const pages = await Promise.all(
+        doc.pages.map(async (p) => {
+          if (p.original && p.processed) return p;
+          const blobs = await loadPageBlobs(docId, p.id);
+          if (!blobs) return p;
+          const [original, processed] = await Promise.all([
+            blobToDataUrl(blobs.original),
+            blobToDataUrl(blobs.processed),
+          ]);
+          return { ...p, original, processed };
+        }),
+      );
+      const updated: ScanDocument = { ...doc, pages };
+      set((s) => ({
+        documents: s.documents.map((d) => (d.id === docId ? updated : d)),
+      }));
+      return updated;
+    } catch {
+      return doc;
+    }
+  },
+
+  /** BLQ-6 (lote7) — restaura la hidratación perezosa de un doc tras un
+   *  export (fields original/processed → ""). Seguro: persistDocument
+   *  reutiliza los Blobs de IndexedDB por page.id para campos vacíos, así
+   *  que ninguna mutación posterior puede perder los datos (y cualquier
+   *  edición previa ya fue persistida por saveSessionToDocument). */
+  reLazyDocument: (docId) => {
+    set((s) => ({
+      documents: s.documents.map((d) =>
+        d.id === docId
+          ? {
+              ...d,
+              pages: d.pages.map((p) => ({ ...p, original: "", processed: "" })),
+            }
+          : d,
+      ),
+    }));
   },
 
   /** Orden manual: aplica la lista completa de ids (drag & drop de la vista
@@ -707,11 +811,22 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
     const doc = get().documents.find((d) => d.id === docId);
     const page = doc?.pages.find((p) => p.id === pageId);
     if (!doc || !page) return;
+    // BLQ-6 (lote7) — materializa la página lazy ANTES del reproceso (con
+    // original "" el processImage fallaría y el filtro no se aplicaría en
+    // silencio). La data URL es pasajera: el resultado re-materializa la
+    // página editada en el store y el guard de persistDocument escribe los
+    // blobs nuevos a IndexedDB.
+    let pageOriginal = page.original;
+    if (!pageOriginal) {
+      const blobs = await loadPageBlobs(docId, pageId);
+      if (!blobs) return; // sin datos en disco: nada que reprocesar
+      pageOriginal = await blobToDataUrl(blobs.original);
+    }
     let processed = page.processed;
     let thumbnail = page.thumbnail;
     let precision: ScanPage["precision"] = page.precision;
     try {
-      const res = await processImage(page.original, page.quad, filter, page.rotation, {
+      const res = await processImage(pageOriginal, page.quad, filter, page.rotation, {
         manual: page.quadManual === true,
         maxLongSide: PROCESSED_MAX_LONG_SIDE,
       });
@@ -776,7 +891,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   hydrateFromStorage: async () => {
     if (get().hydrated) return;
     const settings = loadSettings();
-    const docs = await loadAllDocuments();
+    const docs = await loadAllDocumentsLazy();
     // F-TRASH: purga automática de la papelera caducada (>30 días) al arrancar.
     // Se hace en memoria + IndexedDB (best-effort) — patrón «Eliminados
     // recientemente» de iOS Files.
