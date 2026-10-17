@@ -58,6 +58,10 @@ export default function Home() {
   const view = useScannerStore((s) => s.view);
   const hydrated = useScannerStore((s) => s.hydrated);
   const onboardingDone = useScannerStore((s) => s.onboardingDone);
+  // Lote D (D-3, BP-7): gate del panel QA — el overlay SOLO se monta con
+  // devMode activo (Ajustes › Modo desarrollador). Select fino.
+  const devMode = useScannerStore((s) => s.settings.devMode ?? false);
+
   // Onboarding de primera ejecución: el store arranca SIEMPRE con false
   // (server + primer render del cliente — sin mismatch de hidratación);
   // tras montar se lee la marca persistida y, una vez hidratado el store,
@@ -249,7 +253,7 @@ export default function Home() {
             cámara armada, checklist permanente durante el test y tarjeta final
             con el informe. Fuera de AnimatePresence: vive SOBRE todas las
             vistas sin intervenir en las transiciones. */}
-        {!showOnboarding && <QAOverlay />}
+        {!showOnboarding && devMode && <QAOverlay />}
 
         {!showOnboarding && (view === "library" || view === "settings") && <BottomNav />}
       </div>
