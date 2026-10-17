@@ -4,9 +4,15 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## HOTFIX — step huérfano sin `run` invalidaba `deploy-pages.yml` en el próximo push a main (commit `e7ad9b7`)
+
+**Base:** rama `fix/limpieza-v1` @ `30a9c83` · **Disparo:** al retirar la línea muerta E-09 (`run: rm -rf apps/scanner-lab/src/app/api`) quedó el step `- name: Remove server-only API routes` sin `run` ni `uses` — GitHub Actions rechaza el workflow completo en el próximo push a main («every step must have a run or uses») y mata el deploy. El CI del PR no lo detecta porque este workflow no corre en PRs — mismo modo de fallo que el hotfix de concurrency de abajo. **Fix:** commit `e7ad9b7` — 1 archivo, −4 líneas (2 comentarios del step + la línea `- name:` + línea en blanco). **Verificado:** pyyaml (YAML válido, trigger `[main]` intacto, todos los steps con `run`/`uses`); `apps/scanner-lab/src/app/api` inexistente en `bc38bf8` y `30a9c83` (el step sobraba); CI del head 2/2 (Vercel Preview Comments + checks). **Merge:** PR #7 (`limpieza-v1`, 8 commits, 59 archivos +412/−3046) mergeado → main `6af48d1`; el push disparó `Deploy to GitHub Pages` #10 y `Quality Gate` #19 — **ambos success**.
+
+---
+
 ## PR-LIMPIEZA — deps muertas, configs, mock fuera del pipeline (rama `fix/limpieza-v1`)
 
-**Base:** `main` @ `bc38bf8` · **Kit:** `INSTR-ws-pr4-limpieza-v1` · PR de limpieza: **solo eliminación, movimiento e higiene de tipos/config — CERO cambios de comportamiento** en los paths de runtime del scanner (cámara, detección, burst, editor, persistencia, SW). PR DRAFT a main; evidencia completa fase a fase en `docs/lab/fix-limpieza-v1.md`.
+**Base:** `main` @ `bc38bf8` · **Kit:** `INSTR-ws-pr4-limpieza-v1` · PR de limpieza: **solo eliminación, movimiento e higiene de tipos/config — CERO cambios de comportamiento** en los paths de runtime del scanner (cámara, detección, burst, editor, persistencia, SW). MERGEADO a main (PR #7 → `6af48d1`, con hotfix de deploy `e7ad9b7` incluido); evidencia completa fase a fase en `docs/lab/fix-limpieza-v1.md`.
 
 | Fase | Hallazgos | Qué se eliminó/movió |
 |------|-----------|----------------------|
