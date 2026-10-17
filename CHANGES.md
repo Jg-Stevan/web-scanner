@@ -4,6 +4,24 @@
 > Todos los cambios están verificados con `eslint`, `tsc --noEmit` y pruebas E2E en navegador (flujo completo: onboarding → biblioteca → cámara con detección OpenCV → captura manual y automática → editor con filtros → exportar PDF → persistencia IndexedDB), sin errores de consola.
 > Rama de trabajo local: `fix/camera-stabilizer-perf`.
 
+## LOTE 7 — RAM: hidratación perezosa + Blob URLs on-demand (rama `feat/lote7-ram-hidratacion-v1`)
+
+**Base:** `fix/lote5-quickwins-v1` @ `ab39e51` (apilado) · **Kit:** `INSTR-ws-lote7-ram-hidratacion-v1` · **Diseño-first:** `docs/lab/fix-lote7-ram-hidratacion-v1.md` (T0 commiteado ANTES del código) · **4 commits** · gates exit 0 · `bun test` 6/6 · smoke headless con **prueba de integridad de datos en vivo**.
+
+**Diseño (T0):** hidratación SOLO thumbnail al boot (`loadAllDocumentsLazy`); `original`/`processed` llegan `""` y se materializan on-demand — `getPageImageData` con **LRU de 8 Blob URLs** (cero base64 en RAM, revoke determinista) + `loadPageBlobs` (lectura directa IndexedDB). **GUARD anti-pérdida en `persistDocument`** (reutiliza los Blobs previos por page.id para campos no convertibles — firewall contra la omisión histórica de páginas). Editor: `beginReviewDocument` async materializa el doc abierto ANTES de montar la sesión (EditorView/PresentationView/pdf-export **cero cambios**). Exports de biblioteca: `materializeDocument` → build → `reLazyDocument` en finally.
+
+| Verificación | Resultado |
+|---|---|
+| Reload lazy → abrir doc | 2/2 imágenes materializadas en editor ✓ |
+| **Rename con campos lazy → reload** | **imagen intacta (sin el guard: pérdida total)** ✓ |
+| Export PDF desde biblioteca | «PDF exportado · 1 página · 40.8 KB» (materialize→re-lazy) ✓ |
+| `bun test` LRU | 6/6 ✓ |
+| Errores de consola | 0 ✓ |
+
+**Desviaciones:** T3 COMP-3 pendiente (pipeline de captura blindado); stats de SettingsView subcuentan (fuera de whitelist); QA de heap en dispositivo = pendiente del dueño (meta <80 MB residente).
+
+---
+
 ## LOTE 5 — quick wins perf + limpieza-v2 (rama `fix/lote5-quickwins-v1`)
 
 **Base:** `main` @ `1e874d4` · **Kit:** `INSTR-ws-lote5-quickwins-v1` · **6 commits** · gates `core:check`/`ui:check`/`app:check`/`lint`/`build:static` exit 0 · smoke headless 0 errores de consola. NOTA: las referencias históricas de este fichero a `apps/digitalizador-e14/` apuntan al repo origen (pre-split) — ver AGENTS.md L12-17.

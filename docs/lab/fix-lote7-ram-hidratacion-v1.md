@@ -65,3 +65,26 @@ Commits: `perf(store): hidratación perezosa — solo thumbnails al boot (BLQ-6)
 
 ## T0.4 — QA pendiente de dispositivo (registrado para el dueño)
 La medición de heap en dispositivo físico (15 docs × 3-4 págs, open/close ×10, iOS jetsam) requiere dispositivo real — en sandbox se ejecuta smoke headless completo (biblioteca → abrir doc → editar → guardar → **reload y verificar integridad de datos** → export → OCR lote) + `bun test` de la LRU.
+
+## QA ejecutado (post-implementación)
+
+**Gates:** `core:check` + `ui:check` + `app:check` + `lint` = exit 0 · `bun test` **6/6** (LRU: hit, evict, refresh-LRU, release, fallo-no-cacheado, concurrencia) · `build:static` exit 0.
+
+**Smoke headless Chromium (build estático, sesión completa):**
+| Paso | Resultado |
+|---|---|
+| Captura sintética → guardar → biblioteca | doc «Digitalización 7» persistido ✓ |
+| **Reload (hidratación lazy)** → abrir doc | **materialización al abrir: 2 imgs dataURL en el editor**, 0 errores ✓ |
+| Volver a biblioteca → **renombrar (persist con campos lazy)** | guard anti-pérdida activo ✓ |
+| **Reload → abrir de nuevo** | **imagen intacta (2/2 imgs)** — sin el guard, persistDocument habría OMITIDO las páginas (pérdida) ✓ |
+| Export PDF desde menú del doc (materialize → build → re-lazy) | toast «PDF exportado · 1 página · 40.8 KB» ✓ |
+| Errores de consola totales | **0** ✓ |
+
+**QA pendiente de dispositivo (dueño):** heap con biblioteca ≥15 docs × 3-4 págs (meta <80 MB residente vs ~500-900 MB), open/close ×10 sin growth, iOS Safari sin jetsam. En sandbox no hay dispositivo físico — la reducción estructural (0 base64 en boot; Blobs solo transitando) es verificable por diseño: la hidratación ya solo convierte thumbnails.
+
+## Desviaciones del lote 7
+
+1. **Commits 3 en vez de 4** (kit §4): hidratación lazy + API de materialización + guard de persistencia son acoplados (el guard protege el lazy) — fueron en 2 commits de código (`9382736` core, `255e6cf` vistas) + 1 de tests (`13ffe40`). Mensajes del kit respetados para core/views.
+2. **T3 COMP-3 (captura como Blob) NO implementada** — toca `CameraView.tsx:1946` `dispatchPhotoBlob`/FileReader, el pipeline de captura está blindado en la whitelist del lote 7 («si toca algo más → NO y reporta pendiente»). Pendiente del dueño (no bloquea).
+3. **SettingsView (stats de storage)** — fuera de whitelist §6: con páginas lazy `dataUrlBytes("") = 0` → la fila de uso de almacenamiento subcuenta (solo thumbnails). No rompe; fix canónico = leer tamaños de Blob desde IDB (requiere whitelist de SettingsView — lote futuro).
+4. **`EditorView`/`PresentationView`/`pdf-export.ts` SIN cambios** — el diseño (materialización en `beginReviewDocument` + `materializeDocument` en handlers) los hizo innecesarios; menor superficie de riesgo.
