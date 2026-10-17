@@ -277,8 +277,6 @@ export class CameraFrameLoop {
           bitmap.close();
           return;
         }
-        // Exposición: miniatura de 96 px del MISMO frame (main thread).
-        const hist = this.frameHistogram(video);
         void client
           .detectRaw(bitmap, dims.w, dims.h)
           .then((out) => {
@@ -286,6 +284,14 @@ export class CameraFrameLoop {
             this.processed += 1;
             this.fpsWindow.push(now);
             this.fpsWindow = this.fpsWindow.filter((t) => now - t <= 1000);
+            // PERF-6 (lote8) — el histograma viaja en el ResultReply
+            // (calculado en el worker sobre el frame de trabajo); fallback
+            // local (miniatura 96 px) para workers sin el campo — compat
+            // bidireccional worker viejo ⇄ app nueva.
+            const hist =
+              out.hist && out.hist.length > 0
+                ? out.hist
+                : this.frameHistogram(video);
             this.handleResult(out, hist, dims.w, dims.h, now);
           })
           .catch(() => {

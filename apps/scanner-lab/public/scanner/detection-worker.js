@@ -1267,6 +1267,21 @@
       hierarchy.delete();
     }
   }
+  // PERF-6 (lote8) — histograma de luma en el worker (espejo JS plano de
+  // quality.ts `lumaHistogram` — MISMA fórmula 0.299/0.587/0.114; no
+  // duplica nada de image-modes). Se calcula sobre el frame de trabajo
+  // (~400 px ya transferido) y viaja en el ResultReply (campo `hist`);
+  // el main thread cae a su cálculo local si el campo falta (compat
+  // bidireccional worker viejo ⇄ app nueva).
+  function lumaHistogram(data) {
+    const hist = new Array(256).fill(0);
+    for (let i = 0; i < data.length; i += 4) {
+      const l = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      hist[Math.min(255, Math.max(0, Math.round(l)))] += 1;
+    }
+    return hist;
+  }
+
   function processFrame(cv, imageData, frameW, frameH, ts, canny = null) {
     const procW = imageData.width;
     const procH = imageData.height;
@@ -1348,6 +1363,9 @@
         type: "result",
         corners: quad === null ? null : toFractions(quad, frameW, frameH),
         qualityInput,
+        // PERF-6 (lote8) — histograma del frame de trabajo (exposición en
+        // el worker; el main ya no hace getImageData por frame analizado).
+        hist: lumaHistogram(imageData.data),
         ts
       };
     });
