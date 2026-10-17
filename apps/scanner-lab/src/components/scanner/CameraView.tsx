@@ -677,6 +677,14 @@ export default function CameraView() {
   /** F-FLASH v3: espejo de torchOn legible desde listeners sin re-render. */
   const torchOnRef = useRef(false);
   const lastTelemetryAt = useRef(0);
+  // PERF-5 (lote8) — throttle separado para el ESTADO React del live (2 Hz):
+  // el quad del overlay se pinta por REF DIRECTA a 10 Hz (mismo patrón que
+  // window.__cameraTelemetry) — sin re-render de CameraView (3.7k L) por
+  // frame. liveRef sigue fresco a 10 Hz para el instante del disparo (v5.2).
+  const lastLiveStateAt = useRef(0);
+  const overlayPathMaskRef = useRef<SVGPathElement | null>(null);
+  const overlayPathQuadRef = useRef<SVGPathElement | null>(null);
+  const overlayDotsRef = useRef<(HTMLSpanElement | null)[]>([]);
   // F-ZSL — buffer circular Best-Shot: los últimos 8 fotogramas medidos del
   // <video>. En captura MANUAL el ganador (mayor lapVar) entre 80 y 450 ms
   // ANTES del tap sustituye a la foto del instante del impacto (el tap shock
@@ -2902,6 +2910,14 @@ export default function CameraView() {
           searching: t.corners === null,
         };
         liveRef.current = next; // FIX v5 (5.2): fresco para el instante del disparo
+        // PERF-5 (lote8) — overlay por REF DIRECTA a 10 Hz: polygon + 4
+        // esquinas se actualizan con setAttribute/style SIN re-render de
+        // CameraView. mapPoint fresco vía ref (cambia con resize).
+        paintOverlayRef.current?.(next);
+        // PERF-5 (lote8) — el ESTADO React baja a 2 Hz: solo alimenta
+        // textos/labels/standby (la puerta del disparo lee liveRef a 10 Hz).
+        if (now - lastLiveStateAt.current < 500) return;
+        lastLiveStateAt.current = now;
         setLive(next);
       },
       onTrigger: () => {
@@ -3075,12 +3091,54 @@ export default function CameraView() {
   );
 
   const overlayQuad = precisionLive ? live.corners : hasStream || status === "simulated" ? quad : null;
-  const quadPoints = overlayQuad
-    ?.map((p) => {
-      const m = mapPoint(p);
-      return `${m.x.toFixed(2)} ${m.y.toFixed(2)}`;
-    })
-    .join(" L ");
+
+  // PERF-5 (lote8) — pinta el quad del overlay por ref directa (10 Hz, sin
+  // React). El mapeo object-cover queda AQUÍ (no en el render de CameraView).
+  // Los paths/esquinas del JSX son NO controlados (d/estilo constantes en el
+  // render — solo las refs los actualizan), así React nunca pisa el valor
+  // fresco de 10 Hz.
+  const paintOverlay = useCallback(
+    (ui: { corners: { x: number; y: number }[] | null }) => {
+      const q = precisionLive
+        ? ui.corners
+        : hasStream || status === "simulated"
+          ? quad
+          : null;
+      if (!q || q.length < 4) return;
+      const pts = q
+        .map((p) => {
+          const m = mapPoint(p);
+          return `${m.x.toFixed(2)} ${m.y.toFixed(2)}`;
+        })
+        .join(" L ");
+      overlayPathMaskRef.current?.setAttribute(
+        "d",
+        `M 0 0 L 100 0 L 100 100 L 0 100 Z M ${pts} Z`,
+      );
+      overlayPathQuadRef.current?.setAttribute("d", `M ${pts} Z`);
+      for (let i = 0; i < 4; i++) {
+        const dot = overlayDotsRef.current[i];
+        const p = q[i];
+        if (!dot || !p) continue;
+        const m = mapPoint(p);
+        dot.style.left = `${m.x}%`;
+        dot.style.top = `${m.y}%`;
+      }
+    },
+    [precisionLive, hasStream, status, quad, mapPoint],
+  );
+  const paintOverlayRef = useRef(paintOverlay);
+  useEffect(() => {
+    // PERF-5 — el frame loop (callback fuera de React) siempre pinta con el
+    // mapeo fresco; la asignación en effect cumple la regla de refs.
+    paintOverlayRef.current = paintOverlay;
+  }, [paintOverlay]);
+  // Primera pintura al montar el overlay (hasta 100 ms después la retoma el
+  // frame loop a 10 Hz).
+  useEffect(() => {
+    paintOverlay(liveRef.current);
+  }, [paintOverlay]);
+
   const overlayStable = precisionLive
     ? (live.score ?? 0) > SHUTTER_SCORE
     : stable;
@@ -3314,8 +3372,11 @@ export default function CameraView() {
           </div>
         )}
 
-        {/* Marco de detección: quad REAL (o fallback) mapeado al visor */}
-        {quadPoints && (
+        {/* Marco de detección: quad REAL (o fallback) mapeado al visor.
+            PERF-5 (lote8) — los paths/esquinas son NO controlados: React
+            solo monta/desmonta el contenedor (gate a 2 Hz); el dibujado a
+            10 Hz vive en paintOverlay (refs directas, sin re-render). */}
+        {overlayQuad && (
           <div
             className={cn("absolute inset-0", overlayStable && "animate-doc-stable")}
             aria-hidden="true"
@@ -3326,12 +3387,14 @@ export default function CameraView() {
               preserveAspectRatio="none"
             >
               <path
-                d={`M 0 0 L 100 0 L 100 100 L 0 100 Z M ${quadPoints} Z`}
+                ref={overlayPathMaskRef}
+                d=""
                 fill="rgba(0,0,0,0.32)"
                 fillRule="evenodd"
               />
               <path
-                d={`M ${quadPoints} Z`}
+                ref={overlayPathQuadRef}
+                d=""
                 fill="none"
                 stroke="#007aff"
                 strokeWidth={2}
@@ -3339,16 +3402,16 @@ export default function CameraView() {
                 vectorEffect="non-scaling-stroke"
               />
             </svg>
-            {overlayQuad?.map((p, i) => {
-              const m = mapPoint(p);
-              return (
-                <span
-                  key={i}
-                  className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(0,122,255,0.9),0_1px_4px_rgba(0,0,0,0.5)]"
-                  style={{ left: `${m.x}%`, top: `${m.y}%` }}
-                />
-              );
-            })}
+            {[0, 1, 2, 3].map((i) => (
+              <span
+                key={i}
+                ref={(el) => {
+                  overlayDotsRef.current[i] = el;
+                }}
+                className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(0,122,255,0.9),0_1px_4px_rgba(0,0,0,0.5)]"
+                style={{ left: "-100%", top: "-100%" }}
+              />
+            ))}
           </div>
         )}
 
