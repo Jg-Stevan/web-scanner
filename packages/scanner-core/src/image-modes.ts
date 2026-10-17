@@ -88,10 +88,18 @@ export function grayToRgba(gray: Uint8ClampedArray, w: number, h: number): Uint8
 
 // ─── Bradley-Roth + Sauvola + despeckle (B/N adaptativo) ────────────────────
 
-function integralImage(gray: Uint8ClampedArray, w: number, h: number): Float64Array {
+function integralImage(gray: Uint8ClampedArray, w: number, h: number): Float64Array | Uint32Array {
   if (!(w > 0) || !(h > 0) || gray.length < w * h) return new Float64Array(0);
   const iw = w + 1;
-  const ii = new Float64Array(iw * (h + 1));
+  const cells = iw * (h + 1);
+  // PERF-4 (lote8) — la integral simple de grises 8-bit cabe en Uint32:
+  // máx = 255·w·h (4032×3024 ≈ 3,11e9; incluso 4096×4096 ≈ 4,28e9 —
+  // ambos < 2³² ≈ 4,295e9) y TODOS los valores son enteros exactos, así
+  // que la conversión es sin pérdida (−50% de memoria por integral:
+  // 97,6 → 48,8 MB en 4032×3024). Con inputs mayores (fuera del cap de la
+  // app) degrada a Float64 en vez de desbordar.
+  const useUint32 = 255 * w * h < 0x100000000;
+  const ii = useUint32 ? new Uint32Array(cells) : new Float64Array(cells);
   for (let y = 0; y < h; y++) {
     let rowAcc = 0;
     const src = y * w;
@@ -105,6 +113,11 @@ function integralImage(gray: Uint8ClampedArray, w: number, h: number): Float64Ar
   return ii;
 }
 
+/** PERF-4 (lote8) — la integral de CUADRADOS NO cabe en Uint32:
+ *  máx = 255²·4032·3024 ≈ 7,93e14 ≫ 4,295e9 (y en float64 los enteros
+ *  hasta 2⁵³ son exactos, así que Float64 es el tipo mínimo correcto).
+ *  Límite alcanzado documentado — la mitad de la memoria de Sauvola (la
+ *  integral simple) sí se ahorra vía integralImage Uint32. */
 function integralImageSq(gray: Uint8ClampedArray, w: number, h: number): Float64Array {
   if (!(w > 0) || !(h > 0) || gray.length < w * h) return new Float64Array(0);
   const iw = w + 1;
