@@ -263,10 +263,11 @@ describe("edición de documentos guardados", () => {
     expect(useScannerStore.getState().documents.find((d) => d.id === id)!.favorite).toBe(before);
   });
 
-  test("duplicateDocument: copia profunda con título «(copia)» e ids NUEVOS de página (C-11)", () => {
+  test("duplicateDocument: copia profunda con título «(copia)» e ids NUEVOS de página (C-11)", async () => {
     const s = useScannerStore.getState();
     const orig: ScanDocument = s.documents[0]!;
-    s.duplicateDocument(orig.id);
+    // Lote 7: duplicateDocument es async (persistencia fire-and-forget dentro).
+    await s.duplicateDocument(orig.id);
     const st = useScannerStore.getState();
     expect(st.documents).toHaveLength(7);
     const copy = st.documents[0]!;
@@ -325,10 +326,11 @@ describe("edición de documentos guardados", () => {
 });
 
 describe("modo revisión (F-NOVIEW) y merge B4", () => {
-  test("beginReviewDocument carga el doc como sesión con ids originales", () => {
+  test("beginReviewDocument carga el doc como sesión con ids originales", async () => {
     const s = useScannerStore.getState();
     const doc = s.documents[0]!;
-    s.beginReviewDocument(doc.id);
+    // Lote 7: async — materializa el doc (IndexedDB → data URLs) antes de montar.
+    await s.beginReviewDocument(doc.id);
     const st = useScannerStore.getState();
     expect(st.reviewDocId).toBe(doc.id);
     expect(st.view).toBe("editor");
@@ -336,9 +338,9 @@ describe("modo revisión (F-NOVIEW) y merge B4", () => {
     expect(st.capturePages[0]!.processedKey).toBeTruthy();
   });
 
-  test("beginReviewDocument con doc inexistente/vacío → noop", () => {
+  test("beginReviewDocument con doc inexistente/vacío → noop", async () => {
     const s = useScannerStore.getState();
-    s.beginReviewDocument("no-existe");
+    await s.beginReviewDocument("no-existe");
     expect(useScannerStore.getState().reviewDocId).toBeNull();
   });
 
@@ -350,7 +352,7 @@ describe("modo revisión (F-NOVIEW) y merge B4", () => {
     const s = useScannerStore.getState();
     const doc = s.documents[0]!;
     const origProcessed = doc.pages[0]!.processed;
-    s.beginReviewDocument(doc.id);
+    await s.beginReviewDocument(doc.id);
     // La página existente NO cambia → merge conserva procesada persistida.
     // Añadimos una página NUEVA durante la revisión.
     useScannerStore.getState().addCapturePage(makeCapturePage("c-nueva"));
@@ -375,7 +377,7 @@ describe("modo revisión (F-NOVIEW) y merge B4", () => {
     // capturePages queda vacío SOLO con las páginas fusionadas.
     const s = useScannerStore.getState();
     const doc = s.documents[0]!;
-    s.beginReviewDocument(doc.id);
+    await s.beginReviewDocument(doc.id);
     const mergedId = await useScannerStore.getState().saveSessionToDocument();
     expect(mergedId).toBe(doc.id);
     expect(useScannerStore.getState().capturePages).toHaveLength(0);
@@ -384,7 +386,7 @@ describe("modo revisión (F-NOVIEW) y merge B4", () => {
   test("sesión de revisión vaciada = usuario eliminó la última página → doc a papelera", async () => {
     const s = useScannerStore.getState();
     const doc = s.documents[0]!;
-    s.beginReviewDocument(doc.id);
+    await s.beginReviewDocument(doc.id);
     for (const p of doc.pages) useScannerStore.getState().removeCapturePage(p.id);
     expect(useScannerStore.getState().capturePages).toHaveLength(0);
     const result = await useScannerStore.getState().saveSessionToDocument();
