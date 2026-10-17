@@ -69,6 +69,7 @@ import {
   type SensorProfile,
 } from "@jg-stevan/scanner-core/sensor-profiler";
 import { dataUrlBytes } from "@jg-stevan/scanner-core/format";
+import { blobToDataUrl } from "@jg-stevan/scanner-core/codec";
 import { perfProbe } from "@/lib/perf-probe";
 import {
   beginBackgroundJob,
@@ -532,12 +533,10 @@ async function downscaleImage(
       canvas.toBlob((b) => resolve(b), "image/jpeg", 0.95)
     );
     if (blob && blob.size > 0) {
-      return await new Promise<string>((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result));
-        fr.onerror = () => reject(new Error("FileReader falló"));
-        fr.readAsDataURL(blob);
-      });
+      // DRY-4 (Lote 9): FileReader inline → blobToDataUrl única del core.
+      // Misma semántica: resuelve el data URL, rechaza si el reader falla
+      // (el catch de abajo conserva el respaldo toDataURL).
+      return await blobToDataUrl(blob);
     }
   } catch {
     /* respaldo abajo */
@@ -3435,6 +3434,12 @@ export default function CameraView() {
                 vectorEffect="non-scaling-stroke"
               />
             </svg>
+            {/* BP-10 (Lote 9): key por índice JUSTIFICADA — el quad del overlay
+                es SIEMPRE una tupla fija de 4 esquinas (TL,TR,BR,BL) en orden
+                estable; el contenido de cada posición puede cambiar pero las
+                posiciones no se reordenan ni insertan. NOTA (Lote 8 T2): el
+                posicionamiento va por REF directa a 10 Hz (overlayDotsRef),
+                no por style en render. */}
             {[0, 1, 2, 3].map((i) => (
               <span
                 key={i}

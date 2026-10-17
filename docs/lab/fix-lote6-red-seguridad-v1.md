@@ -145,3 +145,4 @@ Añadido step «Tests — packages/scanner-core (bun test nativo)» al job `chec
 5. **PresentationView:443** (§6): fuera de whitelist — fix identificado (seguro), pendiente del dueño.
 6. **HALLAZGO del auto-OCR** (§6, L1734): con la dep antigua, el auto-OCR podía quedarse esperando para siempre en páginas <2048 px (fast y full producen el mismo data URL). El fix de dep implementado alinea el comportamiento con la intención documentada. Revisión del dueño recomendada en el PR.
 7. **Nuevos exports del core** (§4): `persistSafely`, `notePersistFailure`, `PERSIST_FAILURE_EVENT` (aditivos; `index.ts` ya re-exporta `page-store`). El kit del Lote 6 no pide bump y PROHIBE tocar `packages/*/package.json` → sin bump; decisión de versión para el dueño.
+

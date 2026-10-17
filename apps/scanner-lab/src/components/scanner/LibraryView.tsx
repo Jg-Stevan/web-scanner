@@ -12,6 +12,7 @@
  * PDF, favoritos y eliminación masiva. FAB flotante "Nuevo escaneo".
  */
 
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion";
 import {
@@ -154,6 +155,54 @@ function letterSectionLabel(title: string): string {
   return /[A-Z]/.test(ch) ? ch : "#";
 }
 
+/** DRY-6 (Lote 9) — AlertDialog de confirmación ÚNICO (antes ×3 casi
+ *  idénticos: eliminar uno, eliminar selección, exportar todo). Mismos
+ *  textos, mismos estilos (shell 320px, botones pill flex-1) y MISMA
+ *  semántica: Cancel/Action cierran por sí mismos (ui/alert-dialog).
+ *  `tone` cubre las dos variantes de color existentes (rojo eliminar,
+ *  azul exportar); `title`/`description` aceptan ReactNode (el diálogo de
+ *  exportar compone JSX). Local a LibraryView por decisión del kit. */
+function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  actionLabel,
+  onAction,
+  tone = "danger",
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: ReactNode;
+  description: ReactNode;
+  actionLabel: string;
+  onAction: () => void;
+  tone?: "danger" | "primary";
+}) {
+  const actionClass =
+    tone === "danger"
+      ? "flex-1 rounded-full border-0 bg-[#ff3b30] text-[15px] font-semibold text-white hover:bg-[#ff453a]"
+      : "flex-1 rounded-full border-0 bg-[#007aff] text-[15px] font-semibold text-white hover:bg-[#0071e8]";
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="max-w-[320px] rounded-2xl">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="flex-row gap-2">
+          <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
+            Cancelar
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={onAction} className={actionClass}>
+            {actionLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 /** Agrupa los documentos visibles en secciones según el orden activo:
  *  · A-Z        → una sección por inicial (patrón Contactos).
  *  · Recientes/Favoritos → tramos temporales (patrón Fotos/Notas).
@@ -163,7 +212,8 @@ function letterSectionLabel(title: string): string {
 function buildListSections(
   docs: ScanDocument[],
   sort: SortMode,
-  hasActiveFilter: boolean
+  hasActiveFilter: boolean,
+  now: number
 ): ListSection[] {
   if (hasActiveFilter || sort === "manual" || docs.length === 0) {
     return docs.length === 0 ? [] : [{ key: "all", label: "", docs }];
@@ -179,7 +229,10 @@ function buildListSections(
     return out;
   }
   for (const d of docs) {
-    const key = timeSectionKey(d.updatedAt, Date.now());
+    // BP-11 (Lote 9): `now` llega por parámetro (puro de nuevo) — antes leía
+    // Date.now() en cada llamada de render y las secciones quedaban
+    // obsoletas tras medianoche hasta el próximo cambio de datos.
+    const key = timeSectionKey(d.updatedAt, now);
     const last = out[out.length - 1];
     if (last && last.key === key) last.docs.push(d);
     else out.push({ key, label: TIME_SECTION_LABELS[key] ?? "", docs: [d] });
@@ -476,11 +529,24 @@ export default function LibraryView() {
   );
 
   /** Secciones de la vista de lista (A-Z → inicial, Recientes/Favoritos →
-   *  tramos temporales; sin agrupar si hay búsqueda/etiqueta activa). */
+   *  tramos temporales; sin agrupar si hay búsqueda/etiqueta activa).
+   *  BP-11 (Lote 9): `sectionNowMs` llega como estado del componente (nace en
+   *  el montaje y se refresca solo si cambió el día local — intervalo de 60 s
+   *  con comparación de día): las secciones ya no quedan obsoletas tras
+   *  medianoche y la función vuelve a ser pura/testeable. */
+  const [sectionNowMs, setSectionNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setSectionNowMs((prev) =>
+        new Date(prev).toDateString() === new Date().toDateString() ? prev : Date.now()
+      );
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
   const listSections = useMemo(
     () =>
-      buildListSections(visible, sort, Boolean(query.trim()) || tagFilter !== null),
-    [visible, sort, query, tagFilter]
+      buildListSections(visible, sort, Boolean(query.trim()) || tagFilter !== null, sectionNowMs),
+    [visible, sort, query, tagFilter, sectionNowMs]
   );
 
   /** Índice global de una fila (para la animación escalonada continua
@@ -659,7 +725,8 @@ export default function LibraryView() {
     let ok = 0;
     try {
       for (let i = 0; i < targets.length; i += 1) {
-        const t = targets[i]!;
+        const t = targets[i]; // BP-9 (Lote 9): guard trivial en vez de assertion
+        if (!t) continue;
         toast.loading("Reconociendo texto", {
           id: progressId,
           description: `Página ${i + 1} de ${targets.length} · ${t.title}`,
@@ -1467,98 +1534,62 @@ export default function LibraryView() {
         </DialogContent>
       </Dialog>
 
-      {/* AlertDialog: Eliminar (uno) — F-TRASH: borrado suave */}
-      <AlertDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
-        <AlertDialogContent className="max-w-[320px] rounded-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>¿Eliminar documento?</AlertDialogTitle>
-            <AlertDialogDescription>
-              “{deleting?.title}” se moverá a «Eliminados» con todas sus páginas. Podrás
-              recuperarlo durante {TRASH_RETENTION_DAYS} días.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
-              Cancelar
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDelete}
-              className="flex-1 rounded-full border-0 bg-[#ff3b30] text-[15px] font-semibold text-white hover:bg-[#ff453a]"
-            >
-              Eliminar
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* ConfirmDialog (DRY-6): Eliminar (uno) — F-TRASH: borrado suave */}
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        title="¿Eliminar documento?"
+        description={`“${deleting?.title}” se moverá a «Eliminados» con todas sus páginas. Podrás recuperarlo durante ${TRASH_RETENTION_DAYS} días.`}
+        actionLabel="Eliminar"
+        onAction={confirmDelete}
+        tone="danger"
+      />
 
-      {/* AlertDialog: Eliminar la selección — F-TRASH: borrado suave */}
-      <AlertDialog open={deleteManyOpen} onOpenChange={setDeleteManyOpen}>
-        <AlertDialogContent className="max-w-[320px] rounded-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              ¿Eliminar {plural(selCount, "documento", "documentos")}?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              Se moverán a «Eliminados»{" "}
-              {plural(selCount, "documento y todas sus páginas", "documentos y todas sus páginas")}
-              , donde podrás recuperarlos durante {TRASH_RETENTION_DAYS} días.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
-              Cancelar
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDeleteMany}
-              className="flex-1 rounded-full border-0 bg-[#ff3b30] text-[15px] font-semibold text-white hover:bg-[#ff453a]"
-            >
-              Eliminar
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* ConfirmDialog (DRY-6): Eliminar la selección — F-TRASH: borrado suave */}
+      <ConfirmDialog
+        open={deleteManyOpen}
+        onOpenChange={setDeleteManyOpen}
+        title={`¿Eliminar ${plural(selCount, "documento", "documentos")}?`}
+        description={`Se moverán a «Eliminados» ${plural(
+          selCount,
+          "documento y todas sus páginas",
+          "documentos y todas sus páginas"
+        )}, donde podrás recuperarlos durante ${TRASH_RETENTION_DAYS} días.`}
+        actionLabel="Eliminar"
+        onAction={confirmDeleteMany}
+        tone="danger"
+      />
 
-      {/* AlertDialog: Exportar toda la biblioteca a un único PDF */}
-      <AlertDialog open={exportAllOpen} onOpenChange={setExportAllOpen}>
-        <AlertDialogContent className="max-w-[320px] rounded-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {exportScope.scoped
-                ? `¿Exportar “${exportScope.label}” en un PDF?`
-                : "¿Exportar todo en un PDF?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {exportScope.scoped ? (
-                <>
-                  Se unirán los {exportScopeCount}{" "}
-                  {exportScopeCount === 1 ? "documento visible" : "documentos visibles"} (
-                  {exportScopePages} {exportScopePages === 1 ? "página" : "páginas"}) en un
-                  único PDF con una portada de índice titulada “{exportScope.label}” y un
-                  marcador por documento.
-                </>
-              ) : (
-                <>
-                  Se unirán {exportableCount} {exportableCount === 1 ? "documento" : "documentos"} (
-                  {exportablePages} {exportablePages === 1 ? "página" : "páginas"}) en un único PDF
-                  con una portada de índice y un marcador por documento.
-                </>
-              )}{" "}
-              Cada página mantiene su tamaño y calidad adaptativos.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-row gap-2">
-            <AlertDialogCancel className="mt-0 flex-1 rounded-full bg-[#f2f2f7] text-[15px] font-semibold text-[#3c3c43] hover:bg-[#e5e5ea] dark:bg-[#2c2c2e] dark:text-white dark:hover:bg-[#3a3a3c]">
-              Cancelar
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={runExportAll}
-              className="flex-1 rounded-full border-0 bg-[#007aff] text-[15px] font-semibold text-white hover:bg-[#0071e8]"
-            >
-              Exportar
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* ConfirmDialog (DRY-6): Exportar toda la biblioteca a un único PDF */}
+      <ConfirmDialog
+        open={exportAllOpen}
+        onOpenChange={setExportAllOpen}
+        title={
+          exportScope.scoped
+            ? `¿Exportar “${exportScope.label}” en un PDF?`
+            : "¿Exportar todo en un PDF?"
+        }
+        description={
+          exportScope.scoped ? (
+            <>
+              Se unirán los {exportScopeCount}{" "}
+              {exportScopeCount === 1 ? "documento visible" : "documentos visibles"} (
+              {exportScopePages} {exportScopePages === 1 ? "página" : "páginas"}) en un único PDF
+              con una portada de índice titulada “{exportScope.label}” y un marcador por
+              documento.
+            </>
+          ) : (
+            <>
+              Se unirán {exportableCount} {exportableCount === 1 ? "documento" : "documentos"} (
+              {exportablePages} {exportablePages === 1 ? "página" : "páginas"}) en un único PDF
+              con una portada de índice y un marcador por documento.
+            </>
+          )
+        }
+        actionLabel="Exportar"
+        onAction={runExportAll}
+        tone="primary"
+      />
 
       {/* AlertDialog: Exportar la selección a un único PDF */}
       <AlertDialog open={exportSelOpen} onOpenChange={setExportSelOpen}>

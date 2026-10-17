@@ -9,6 +9,7 @@
  */
 export * from "./store";
 export * from "./types";
+export * from "./codec"; // DRY-4 (Lote 9): conversiones blob⇄dataURL únicas
 export * from "./image-processor";
 export * from "./demo-page";
 export * from "./quality";

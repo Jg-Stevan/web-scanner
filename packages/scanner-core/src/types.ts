@@ -68,6 +68,11 @@ export interface Point {
 /** Cuadrilátero de perspectiva: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left */
 export type Quad = [Point, Point, Point, Point];
 
+/** DRY-6 (Lote 9) — motor que produjo el resultado del guardado/overlay:
+ *  "opencv" = pipeline del worker (OpenCV) · "canvas" = fallback local.
+ *  Única definición — antes estaba duplicado en EditorView y SaveSuccessOverlay. */
+export type ScanEngine = "opencv" | "canvas";
+
 export type QualityLevel = "excellent" | "good" | "fair" | "poor";
 
 export interface PageQuality {

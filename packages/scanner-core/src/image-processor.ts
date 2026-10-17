@@ -19,7 +19,8 @@ import { normalizePageFilter } from "./types";
 import { enhanceToRgba, unsharpRgba, type EnhanceMode as SharedEnhanceMode } from "./image-modes";
 // LOTE 3 (F3-A) — blob-first decode del tier fast: dataUrlToBlob es sync y
 // page-store NO importa image-processor (sin ciclo, verificado).
-import { dataUrlToBlob } from "./page-store";
+// DRY-4 (Lote 9): import único desde codec (page-store solo lo re-exporta).
+import { dataUrlToBlob } from "./codec";
 import {
   getScannerWorker,
   type EnhanceMode,

@@ -80,6 +80,9 @@ import { ocrTextIsValid, requestOcr } from "@jg-stevan/scanner-core/ocr";
 // dinámico dentro de los handlers de export/share (mismo patrón que
 // diag-report en SettingsView). Cero import estático de pdf-export en la app.
 import { dataUrlBytes, formatBytes } from "@jg-stevan/scanner-core/format";
+import { dataUrlToBlob } from "@jg-stevan/scanner-core/codec";
+import type { ScanEngine } from "@jg-stevan/scanner-core/types";
+import { hapticConfirm } from "@/lib/haptics";
 import { cn } from "@/lib/utils";
 import { perfProbe } from "@/lib/perf-probe";
 import { readImageLongSide } from "@/lib/image-size";
@@ -261,14 +264,6 @@ async function rotateProcessedDataUrl(
   return { url: urlOut, thumb, w: cw, h: ch };
 }
 
-/** data URL → Blob (fetch soporta data URLs en todos los navegadores modernos). */
-async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
-  const res = await fetch(dataUrl);
-  const blob = await res.blob();
-  if (!blob || blob.size === 0) throw new Error("blob vacío");
-  return blob;
-}
-
 /** EXPERIMENTO v11 (crash-test fuente única) — tope de DISPLAY apagado
  *  por decisión del dueño: TODOS los dispositivos ven el mismo dato de
  *  imagen (el de 4032 px), sin degradación por tier y sin red de
@@ -380,6 +375,9 @@ function OcrHighlightedText({
   const needle = q.toLowerCase();
   return (
     <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/90">
+      {/* BP-10 (Lote 9): key por índice JUSTIFICADA — la lista es un split
+          estático del texto actual (orden/longitud inmutables entre renders
+          del mismo texto); sin reordenar ni insertar en medio. */}
       {parts.map((part, i) =>
         part.toLowerCase() === needle ? (
           <mark
@@ -467,7 +465,7 @@ export default function EditorView() {
   const [savedInfo, setSavedInfo] = useState<{
     docId: string;
     pages: number;
-    engine: "opencv" | "canvas";
+    engine: ScanEngine;
   } | null>(null);
   const savedInfoRef = useRef(savedInfo);
   savedInfoRef.current = savedInfo;
@@ -513,7 +511,21 @@ export default function EditorView() {
 
   // ── Título del header (estilo Adobe Scan: "Digitalización N · fecha") ────
   const headerTitle = reviewDoc ? reviewDoc.title : `Digitalización ${documentsCount + 1}`;
-  const headerDate = prettyDate(reviewDoc ? reviewDoc.updatedAt : Date.now());
+  // BP-11 (Lote 9) — la fecha de la sesión ya NO se lee con Date.now() en
+  // render (impuro + congelado tras medianoche): nace en el montaje (lazy
+  // state) y se refresca SOLO si cambió el día local (el header no muestra
+  // hora — un intervalo de 60 s con comparación de día es el mínimo).
+  // Comportamiento visible idéntico (fechas correctas), sin impureza.
+  const [sessionNowMs, setSessionNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setSessionNowMs((prev) =>
+        new Date(prev).toDateString() === new Date().toDateString() ? prev : Date.now()
+      );
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const headerDate = prettyDate(reviewDoc ? reviewDoc.updatedAt : sessionNowMs);
 
   // ── Badge "Bordes detectados" (persistente 4s y se desvanece) ────────────
   const showBadge = useCallback(() => {
@@ -972,11 +984,16 @@ export default function EditorView() {
       let fx: number;
       let fy: number;
       if (kind === "corner") {
-        fx = q[index]!.x;
-        fy = q[index]!.y;
+        // BP-9 (Lote 9): guard explícito en vez de non-null assertion (el
+        // índice es 0-3 por construcción, pero el guard es trivial y barato).
+        const pt = q[index];
+        if (!pt) return;
+        fx = pt.x;
+        fy = pt.y;
       } else {
-        const a = q[index]!;
-        const b = q[(index + 1) % 4]!;
+        const a = q[index];
+        const b = q[(index + 1) % 4];
+        if (!a || !b) return;
         fx = (a.x + b.x) / 2;
         fy = (a.y + b.y) / 2;
       }
@@ -1138,8 +1155,10 @@ export default function EditorView() {
         if (natW > 0 && natH > 0) {
           let maxEdge = 0;
           for (let i = 0; i < 4; i += 1) {
-            const a = p.quad[i]!;
-            const b = p.quad[(i + 1) % 4]!;
+            // BP-9 (Lote 9): guard trivial en vez de assertion (quad de 4 por tipo).
+            const a = p.quad[i];
+            const b = p.quad[(i + 1) % 4];
+            if (!a || !b) continue;
             maxEdge = Math.max(maxEdge, Math.hypot((b.x - a.x) * natW, (b.y - a.y) * natH));
           }
           targetLong = Math.min(PROCESSED_MAX_LONG_SIDE, maxEdge);
@@ -1209,7 +1228,11 @@ export default function EditorView() {
           tier: "full",
         });
       }
-      const blob = await dataUrlToBlob(exportUrl);
+      // DRY-4 (Lote 9): dataUrlToBlob ÚNICA (core, sincrónica — parse manual).
+      // Misma semántica que la fetch-based local: entrada inválida o blob
+      // vacío → throw → el catch de abajo avisa (antes: throw "blob vacío").
+      const blob = dataUrlToBlob(exportUrl);
+      if (blob === null || blob.size === 0) throw new Error("blob vacío");
       const ext = blob.type === "image/jpeg" ? "jpg" : "png";
       const name = sanitizeFileName(
         `${headerTitle}-página-${activeIdx + 1}.${ext}`
@@ -1418,7 +1441,7 @@ export default function EditorView() {
             .documents.find((d) => d.id === docId);
           if (saved) markSavedDoc(saved);
           if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-            navigator.vibrate([28, 60, 28]);
+            hapticConfirm();
           }
           // El botón sigue deshabilitado (saving) DURANTE la descarga: antes
           // se reseteaba antes del await y un doble tap caía en "No hay
@@ -1439,7 +1462,7 @@ export default function EditorView() {
           ? "opencv"
           : "canvas";
         if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-          navigator.vibrate([28, 60, 28]);
+          hapticConfirm();
         }
         setSavedInfo({ docId: doc.id, pages: doc.pages.length, engine });
       } else {
@@ -1592,7 +1615,8 @@ export default function EditorView() {
     setOcrRunning(true);
     try {
       for (let i = 0; i < pages.length; i += 1) {
-        const p = pages[i]!;
+        const p = pages[i]; // BP-9 (Lote 9): guard trivial en vez de assertion
+        if (!p) continue;
         setOcrProgress({ i: i + 1, n: pages.length });
         if (p.ocrDone && p.ocrText) continue;
         // La procesada guardada solo sirve si el estado no cambió (como el
