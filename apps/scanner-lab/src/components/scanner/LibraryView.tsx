@@ -725,7 +725,8 @@ export default function LibraryView() {
     let ok = 0;
     try {
       for (let i = 0; i < targets.length; i += 1) {
-        const t = targets[i]!;
+        const t = targets[i]; // BP-9 (Lote 9): guard trivial en vez de assertion
+        if (!t) continue;
         toast.loading("Reconociendo texto", {
           id: progressId,
           description: `Página ${i + 1} de ${targets.length} · ${t.title}`,

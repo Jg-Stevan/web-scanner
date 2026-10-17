@@ -3434,6 +3434,12 @@ export default function CameraView() {
                 vectorEffect="non-scaling-stroke"
               />
             </svg>
+            {/* BP-10 (Lote 9): key por índice JUSTIFICADA — el quad del overlay
+                es SIEMPRE una tupla fija de 4 esquinas (TL,TR,BR,BL) en orden
+                estable; el contenido de cada posición puede cambiar pero las
+                posiciones no se reordenan ni insertan. NOTA (Lote 8 T2): el
+                posicionamiento va por REF directa a 10 Hz (overlayDotsRef),
+                no por style en render. */}
             {[0, 1, 2, 3].map((i) => (
               <span
                 key={i}
