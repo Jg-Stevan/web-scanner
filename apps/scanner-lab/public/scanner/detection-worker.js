@@ -1733,7 +1733,11 @@
       if (canvas === null || canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
         canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       }
-      const ctx = canvas.getContext("2d");
+      // D57 — KIT e14-instrumentos-espera-v1 (T4): willReadFrequently en el
+      // PRIMER getContext del canvas compartido (detect/warp/enhance usan el
+      // MISMO canvas reutilizado — el atributo va en TODOS: quien corra
+      // primero crea el contexto). Silencia el aviso Canvas2D del dueño.
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx === null) throw new Error("OffscreenCanvas 2d null");
       ctx.drawImage(bitmap, 0, 0);
       const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
@@ -1771,7 +1775,11 @@
       if (canvas === null || canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
         canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       }
-      const ctx = canvas.getContext("2d");
+      // D57 — KIT e14-instrumentos-espera-v1 (T4): willReadFrequently en el
+      // PRIMER getContext del canvas compartido (detect/warp/enhance usan el
+      // MISMO canvas reutilizado — el atributo va en TODOS: quien corra
+      // primero crea el contexto). Silencia el aviso Canvas2D del dueño.
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx === null) throw new Error("OffscreenCanvas 2d null");
       ctx.drawImage(bitmap, 0, 0);
       const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
@@ -1803,7 +1811,9 @@
       if (warpCanvas === null || warpCanvas.width !== dims.w || warpCanvas.height !== dims.h) {
         warpCanvas = new OffscreenCanvas(dims.w, dims.h);
       }
-      const octx = warpCanvas.getContext("2d");
+      // D57 (T4): canvas de salida (solo-dibujo/putImageData) — inofensivo
+      // según kit §4-T4; coherencia con los readback del archivo.
+      const octx = warpCanvas.getContext("2d", { willReadFrequently: true });
       if (octx === null) throw new Error("OffscreenCanvas destino 2d null");
       const img = octx.createImageData(dims.w, dims.h);
       img.data.set(pix.data);
@@ -1867,7 +1877,11 @@
       if (canvas === null || canvas.width !== tw || canvas.height !== th) {
         canvas = new OffscreenCanvas(tw, th);
       }
-      const ctx = canvas.getContext("2d");
+      // D57 — KIT e14-instrumentos-espera-v1 (T4): willReadFrequently en el
+      // PRIMER getContext del canvas compartido (detect/warp/enhance usan el
+      // MISMO canvas reutilizado — el atributo va en TODOS: quien corra
+      // primero crea el contexto). Silencia el aviso Canvas2D del dueño.
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx === null) throw new Error("OffscreenCanvas 2d null (enhance)");
       ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, 0, 0, tw, th);
       const imageData = ctx.getImageData(0, 0, tw, th);
@@ -1888,7 +1902,9 @@
       if (enhanceCanvas === null || enhanceCanvas.width !== tw || enhanceCanvas.height !== th) {
         enhanceCanvas = new OffscreenCanvas(tw, th);
       }
-      const octx = enhanceCanvas.getContext("2d");
+      // D57 (T4): canvas de salida (solo-dibujo/putImageData) — inofensivo
+      // según kit §4-T4; coherencia con los readback del archivo.
+      const octx = enhanceCanvas.getContext("2d", { willReadFrequently: true });
       if (octx === null) throw new Error("OffscreenCanvas destino 2d null (enhance)");
       const img = octx.createImageData(tw, th);
       img.data.set(pix.data);
