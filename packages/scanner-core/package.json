@@ -40,7 +40,7 @@
     "jspdf": "^4.2.1"
   },
   "devDependencies": {
-    "typescript": "^5"
+    "typescript": "^7"
   },
   "repository": {
     "type": "git",
