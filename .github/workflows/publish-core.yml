@@ -1,0 +1,87 @@
+name: Publicar scanner-core
+
+# Fase C4 (PLAN-ruta-pendiente-v2): publish trazable del paquete npm.
+# Trigger: tags scanner-core-v* (ejemplo: scanner-core-v0.4.2).
+# El token npm llega SOLO como secret NPM_TOKEN del repo (canal autorizado
+# por el plan: GitHub Actions Secrets). Jamás en archivos ni commits.
+
+on:
+  push:
+    tags:
+      - "scanner-core-v*"
+
+permissions:
+  contents: write # crear el GitHub Release con las notas
+  id-token: write # npm publish --provenance (OIDC del runner)
+
+concurrency:
+  group: publish-core-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # necesario para notas desde el tag anterior
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies (workspace raíz, lockfile congelado)
+        run: bun install --frozen-lockfile
+
+      - name: Verificar alineación tag <-> versión del paquete
+        working-directory: packages/scanner-core
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#scanner-core-v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::El tag ($TAG_VERSION) no coincide con packages/scanner-core/package.json ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "tag y version alineados: $PKG_VERSION"
+
+      - name: Build + staging del paquete
+        working-directory: packages/scanner-core
+        run: bun run publish:stage
+
+      - name: Guardia de staging — LICENSE presente
+        working-directory: packages/scanner-core
+        run: |
+          test -f .publish/LICENSE || { echo "::error::.publish/LICENSE no existe (fix C1 regreso)"; exit 1; }
+          echo "staging OK: LICENSE incluido"
+
+      - name: Publicar en npm desde .publish con provenance
+        working-directory: packages/scanner-core/.publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm publish --provenance --access public
+
+      - name: GitHub Release con notas
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#scanner-core-v}"
+          PREV=$(git tag --sort=-creatordate | grep '^scanner-core-v' | sed -n '2p')
+          RANGE=""
+          if [ -n "$PREV" ]; then RANGE="$PREV..$GITHUB_REF_NAME"; fi
+          NOTES=$(git log --pretty=format:'- %s (%h)' $RANGE -- packages/scanner-core | head -40)
+          {
+            echo "Publicación de @jg-stevan/scanner-core v$VERSION desde el tag $GITHUB_REF_NAME."
+            echo ""
+            echo "### Commits del paquete desde el tag anterior"
+            echo ""
+            if [ -n "$NOTES" ]; then echo "$NOTES"; else echo "- sin commits de packages/scanner-core desde el tag anterior"; fi
+            echo ""
+            echo "### Verificación"
+            echo ""
+            echo '```'
+            echo "npm view @jg-stevan/scanner-core@$VERSION"
+            echo '```'
+          } > notas.md
+          gh release create "$GITHUB_REF_NAME" --title "scanner-core v$VERSION" --notes-file notas.md

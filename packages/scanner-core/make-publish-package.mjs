@@ -33,5 +33,9 @@ else delete published.scripts;
 writeFileSync(".publish/package.json", JSON.stringify(published, null, 2) + "\n");
 cpSync("dist", ".publish/dist", { recursive: true });
 cpSync("README.md", ".publish/README.md");
+// C1 (PLAN-ruta-pendiente-v2): el tarball 0.4.1 viajó sin LICENSE.
+// npm solo auto-incluye LICENSE si el archivo existe en la carpeta
+// publicada — copiarlo explícitamente al staging.
+cpSync("LICENSE", ".publish/LICENSE");
 
 console.log(".publish/ listo - exports apuntan a dist/");
