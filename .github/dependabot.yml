@@ -1,0 +1,27 @@
+# Dependabot — actualización semanal de dependencias (Fase B2).
+# Nota: el repo usa bun.lock. Si un PR de dependabot no actualiza el lockfile,
+# `bun install --frozen-lockfile` en CI lo marcará; resolver antes de mezclar.
+version: 2
+updates:
+  # Workspace raíz
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/apps/scanner-lab"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/packages/scanner-core"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/packages/scanner-ui"
+    schedule:
+      interval: "weekly"
+  # Acciones de GitHub usadas en .github/workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
